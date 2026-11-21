@@ -1,3 +1,24 @@
+# Magnetite
+
+**Minecraft: Java Edition 26.3 in Rust on PC, Android and iOS, from one core.**
+
+Magnetite is a fork of [Horizon](https://github.com/horizon-rust/horizon) that brings the desktop game, an Android
+port and an iOS port together on a single shared Rust core, so a fix or a mod hook lands on every platform at once.
+
+- **Magnetite**: Windows, macOS, Linux.
+- **Magnetite Android** and **Magnetite iOS**: the same core with the `mobile` build profile, touch controls you can
+  lay out yourself, and Microsoft and Ely.by sign-in inside the game.
+- **Native Rust mods**: generic mod hooks over WASM, with a Lua layer on the way.
+
+Work in progress: the merge plan and status are in [docs/unification/](docs/unification/plan.md). You need your
+own copy of Minecraft: Java Edition. Licence: GNU LGPL 3.0 or later, as Horizon (see below).
+
+NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.
+
+---
+
+*The Horizon README follows.*
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/media/readme/title-dark.png">
