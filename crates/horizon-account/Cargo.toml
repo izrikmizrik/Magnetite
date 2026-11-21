@@ -1,0 +1,21 @@
+[package]
+name = "horizon-account"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Platform-neutral account sign-in: Microsoft (device code, Xbox Live, XSTS, Minecraft services) and Ely.by (Yggdrasil), the session file the game reads, and the refresh-secret store"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# HTTPS to the account services: rustls through ureq's `tls` feature, no native TLS.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# The Ely.by client token: 16 random bytes.
+getrandom = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
