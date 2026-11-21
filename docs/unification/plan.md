@@ -8,6 +8,9 @@
      вендоренный winit Android-форка (готово); Metal на iOS (готово); точки входа: крейты `magnetite-android`
      (`android_main`, cdylib, NativeActivity) и `magnetite-ios` (boot-loop) поверх `horizon-game`; упаковка
      `packaging/android` (APK) и `packaging/ios` (IPA) с CI-сборкой артефактов; GLES/PowerVR-ветки рендера с Android.
+     Графика Android: **Vulkan первым везде, включая PowerVR** (Pixel 10 / Tensor G5); GLES — запасной: после вылета
+     при старте рендера следующий запуск сам берёт GLES (как ПК переключается на DX12 после вылета на Vulkan), плюс
+     ручной выбор Авто / Vulkan / OpenGL ES. Не «PowerVR — всегда GLES», как в форке. minSdk 28 остаётся.
    - **1. Вход как в iOS** (Microsoft device code + Ely.by, в игре) — общий для ПК, Android, iOS.
    - **2. Тач как в iOS** (редактор, ≤3 раскладки, кнопки-клавиши, свои иконки) + гироскоп/пресеты Android.
    - **3. Память и вылеты** (memory_limit, плавная дальность, crash catcher / tombstone).
