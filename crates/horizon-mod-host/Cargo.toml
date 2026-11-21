@@ -31,7 +31,7 @@ workspace = true
 default = ["audio", "controllers", "horizon-extras", "desktop"]
 # The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["horizon-client/audio"]
 # Agent control: the control socket and horizon-ctl's commands (horizon-client's feature).
@@ -42,6 +42,7 @@ benchmark = ["horizon-client/benchmark"]
 telemetry-store = ["horizon-client/telemetry-store"]
 # Opening a folder or a link in the desktop's handler (horizon-client's feature).
 desktop-opener = ["horizon-client/desktop-opener"]
+native-mods = ["horizon-client/native-mods"]
 audio = ["horizon-client/audio"]
 controllers = ["horizon-client/controllers"]
 horizon-extras = ["horizon-client/horizon-extras"]

@@ -10,6 +10,7 @@ pub(crate) mod runtime_environment;
 pub struct Startup {
     launch: LaunchArguments,
     options: game::Options,
+    #[cfg(feature = "native-mods")]
     _capture: Option<horizon_mod_package::output::Capture>,
 }
 
@@ -24,6 +25,7 @@ impl Startup {
 /// and resource marker metadata only: no logging, account loading, mods or worker threads.
 /// Account IO, cwd changes and command registration remain in Options::read, after leases.
 pub fn prepare() -> Startup {
+    #[cfg(feature = "native-mods")]
     horizon_mod_package::holder::enter();
     let result: crate::Result<_> = (|| {
         let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -39,11 +41,11 @@ pub fn prepare() -> Startup {
     let Some(options) = options else {
         std::process::exit(0);
     };
-    let capture = horizon_mod_package::holder::acquire(&launch);
     Startup {
+        #[cfg(feature = "native-mods")]
+        _capture: horizon_mod_package::holder::acquire(&launch),
         launch,
         options,
-        _capture: capture,
     }
 }
 
@@ -102,6 +104,7 @@ pub fn start<G>(
     let Startup {
         launch,
         options,
+        #[cfg(feature = "native-mods")]
         _capture,
     } = startup;
     runtime_environment::capture(&launch);

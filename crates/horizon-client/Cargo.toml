@@ -59,7 +59,7 @@ horizon-friends = { path = "../horizon-friends", optional = true }
 horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/modding/src/how-to/content-mods.md).
 # Their runtime is the `mods` feature.
-horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index", "runtime-process"] }
+horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
@@ -134,7 +134,7 @@ upstream-parallel-mobs = ["horizon-gameplay/upstream-parallel-mobs"]
 default = ["audio", "controllers", "horizon-extras", "desktop"]
 # The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["audio"]
 # Agent control: the control socket, horizon-ctl's commands and the AI Agent settings page
@@ -149,6 +149,9 @@ telemetry-store = ["horizon-client-lib/telemetry-store", "dep:horizon-telemetry"
 # Opening a folder or a link in the desktop's own handler (desktop.rs): the "Open Folder"
 # buttons. Without it they do nothing.
 desktop-opener = ["horizon-client-lib/desktop-opener"]
+# The PC launcher's native mods: the holder process that keeps the launch's leases and captures its
+# output (horizon-mod-package's `runtime-process`). Phones load prebuilt mod libraries instead.
+native-mods = ["horizon-mod-package/runtime-process"]
 # Scoped trait-mod installation for a mod's own tests.
 testing = []
 # Per-level-tick state digest for determinism checks (game/state_digest.rs).
