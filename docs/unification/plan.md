@@ -1,9 +1,19 @@
 # План сведения Horizon (main как единое ядро)
 
 ## Сейчас
-1. Урезание мобильной сборки фичами (`desktop` в default, `mobile` для телефонов): `mobile-trim-plan.md`.
+1. ~~Урезание мобильной сборки фичами~~ — готово (`mobile-trim-plan.md`, раздел «Итог урезания»).
 2. Шаги ТЗ по порядку из ТЗ: `step0-core-map.md` — разведка готова.
-3. Перенос платформенных слоёв iOS и Android на main, вход и тач-редактор «как в iOS»: `fork-feature-map.md`.
+3. **Перенос платформенных слоёв iOS и Android на main** (идёт), этапы по `fork-feature-map.md` §4:
+   - **0. Фундамент** (идёт): `cargo check` под `aarch64-linux-android` и `aarch64-apple-ios` в CI;
+     вендоренный winit Android-форка (готово); Metal на iOS (готово); точки входа: крейты `magnetite-android`
+     (`android_main`, cdylib, NativeActivity) и `magnetite-ios` (boot-loop) поверх `horizon-game`; упаковка
+     `packaging/android` (APK) и `packaging/ios` (IPA) с CI-сборкой артефактов; GLES/PowerVR-ветки рендера с Android.
+   - **1. Вход как в iOS** (Microsoft device code + Ely.by, в игре) — общий для ПК, Android, iOS.
+   - **2. Тач как в iOS** (редактор, ≤3 раскладки, кнопки-клавиши, свои иконки) + гироскоп/пресеты Android.
+   - **3. Память и вылеты** (memory_limit, плавная дальность, crash catcher / tombstone).
+   - **4. Платформенные сервисы** (IME, буфер обмена, файлы/SAF, GameController, safe-area).
+   - **5. Лаунчер в игре, профили, обновления, ferrite-signer.**
+   - **6. Игровые фичи** (Speed Trade, инвентарь пальцем, голосовой чат) и площадка модов.
 
 ## Решения владельца
 - Ядро — из main; ПК-сборку не менять.
