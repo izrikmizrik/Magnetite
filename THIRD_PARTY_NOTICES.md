@@ -96,6 +96,15 @@ program. It is licensed under MIT or
 Apache-2.0; both licenses are in that folder
 (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+## winit
+
+`third_party/winit` is [winit](https://github.com/rust-windowing/winit) 0.30.13 by the winit
+contributors, with the Android input patch of [Horizon Android](https://github.com/GoyDevv/Horizon-Android)
+(`PATCHES.md` there): mouse hover, buttons, wheel and relative motion, modifier snapshots, the
+presentation's safe-area rectangle for touch coordinates, and native gamepad and inset hooks. Every
+change is behind `cfg(android_platform)`; desktop backends are upstream's. It is licensed under
+Apache-2.0 (`LICENSE` in that folder).
+
 ## naga
 
 `third_party/naga` is [naga](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs developers, with

@@ -298,13 +298,26 @@ pub use horizon_client_core::key_display::{
     reset_action_bindings, set_action_binding, set_action_resolver,
 };
 
+/// What the layout writes on the event's key without modifiers. winit has no unmodified key on
+/// Android and iOS: there the key as typed stands for it, which a hardware keyboard's plain
+/// press matches.
+pub fn unmodified_key(event: &winit::event::KeyEvent) -> winit::keyboard::Key {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        event.key_without_modifiers()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        event.logical_key.clone()
+    }
+}
+
 /// A key event: what the layout writes on its key, without modifiers, names
 /// that key from now on (`key_display::learn_layout`), so an AZERTY player's
 /// Q key shows A.
-#[cfg(not(target_os = "android"))]
 pub fn learn_layout(event: &winit::event::KeyEvent) {
     use winit::keyboard::{Key, PhysicalKey};
-    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
     let PhysicalKey::Code(code) = event.physical_key else {
         return;
     };
@@ -312,16 +325,12 @@ pub fn learn_layout(event: &winit::event::KeyEvent) {
         return;
     };
     let learn = horizon_client_core::key_display::learn_layout;
-    match event.key_without_modifiers() {
+    match unmodified_key(event) {
         Key::Character(text) => learn(name, &text),
         Key::Dead(Some(c)) => learn(name, c.encode_utf8(&mut [0; 4])),
         _ => {}
     }
 }
-
-// Android does not expose winit's unmodified key extension.
-#[cfg(target_os = "android")]
-pub fn learn_layout(_event: &winit::event::KeyEvent) {}
 
 /// Vanilla's name for the key the layout produced (`InputEvent.Key.getKeycode`):
 /// `layout` is the event's key without modifiers. A letter or digit names its

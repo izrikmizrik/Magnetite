@@ -459,14 +459,13 @@ impl ApplicationHandler for Game<'_> {
         };
         self.handle_window_event(event_loop, id, event, input_trace::InputOrigin::User);
         if let Some((event, modifiers)) = key {
-            use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
             let name = match event.physical_key {
                 PhysicalKey::Code(code) => horizon_client::keybinds::key_name(code),
                 PhysicalKey::Unidentified(_) => None,
             };
             let layout_key = horizon_client::keybinds::layout_key_name(
                 event.physical_key,
-                &event.key_without_modifiers(),
+                &horizon_client::keybinds::unmodified_key(&event),
             );
             let raw_code = horizon_client::keybinds::raw_key_code(event.physical_key);
             let action = match (event.state, event.repeat) {

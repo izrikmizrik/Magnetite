@@ -1,5 +1,5 @@
 [workspace]
-exclude = ["crates/horizon-telemetry-server", "launcher", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys", "tools/fixtures/paper-trace-mod"]
+exclude = ["crates/horizon-telemetry-server", "launcher", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/winit", "third_party/libmimalloc-sys", "tools/fixtures/paper-trace-mod"]
 members = [
     "crates/horizon-guest-stack",
     "crates/horizon-mod-vocab",
@@ -112,6 +112,9 @@ large_enum_variant = "allow"
 wgpu-hal = { path = "third_party/wgpu-hal" }
 # naga 30.0.1, with the fixes to its GLSL frontend that shader packs need (THIRD_PARTY_NOTICES.md).
 naga = { path = "third_party/naga" }
+# The Android port's winit 0.30.13: native content rect, pointer devices, gamepads and insets
+# (third_party/winit/PATCHES.md). Every change is behind cfg(android_platform).
+winit = { path = "third_party/winit" }
 # libmimalloc-sys 0.1.49 whose mimalloc v3 counts bits without POPCNT when MSVC builds it: the
 # game died before main on CPUs without it (Core 2, #7264; THIRD_PARTY_NOTICES.md). Drop this and
 # the folder once a libmimalloc-sys release has microsoft/mimalloc#1291's fix.
