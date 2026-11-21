@@ -81,7 +81,10 @@ fn android_main(app: AndroidApp) {
     if let Err(error) = std::fs::create_dir_all(&game_dir) {
         early(
             log::Level::Error,
-            &format!("Cannot make the game folder {}: {error}", game_dir.display()),
+            &format!(
+                "Cannot make the game folder {}: {error}",
+                game_dir.display()
+            ),
         );
         return;
     }
