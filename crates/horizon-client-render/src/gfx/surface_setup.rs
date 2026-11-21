@@ -200,7 +200,9 @@ pub(super) async fn open_adapter(
     };
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     let opened = match info.backend {
-        wgpu::Backend::Vulkan => horizon_hdr::open_vulkan_device(adapter, &desc),
+        wgpu::Backend::Vulkan if cfg!(feature = "hdr") => {
+            horizon_hdr::open_vulkan_device(adapter, &desc)
+        }
         _ => None,
     };
     #[cfg(any(target_os = "macos", target_os = "ios"))]

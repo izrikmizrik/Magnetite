@@ -189,6 +189,10 @@ const NAMES: [(Output, &str); 2] = [(Output::Pq, "pq"), (Output::ScRgb, "scrgb")
 /// The HDR output `caps` can present: HDR10 where offered, else scRGB.
 /// `HORIZON_HDR_OUTPUT=pq` or `scrgb` allows only that one.
 pub fn output(caps: &wgpu::SurfaceCapabilities) -> Option<Output> {
+    // Without the `hdr` feature (phones) nothing offers HDR output: the frame stays SDR.
+    if !cfg!(feature = "hdr") {
+        return None;
+    }
     pick(caps, std::env::var("HORIZON_HDR_OUTPUT").ok().as_deref())
 }
 fn pick(caps: &wgpu::SurfaceCapabilities, only: Option<&str>) -> Option<Output> {
@@ -201,6 +205,9 @@ fn pick(caps: &wgpu::SurfaceCapabilities, only: Option<&str>) -> Option<Output> 
 /// The HDR output an offscreen renderer (`--offscreen`) offers: it has no display to ask, so
 /// only the one `HORIZON_HDR_OUTPUT` names, for HDR screenshots without an HDR display.
 pub fn offscreen_output() -> Option<Output> {
+    if !cfg!(feature = "hdr") {
+        return None;
+    }
     named(std::env::var("HORIZON_HDR_OUTPUT").ok().as_deref())
 }
 /// What an offscreen renderer's display reports: nothing, or for a test of Auto without an

@@ -25,7 +25,7 @@ mod_api = { package = "horizon-mod-vocab", path = "../horizon-mod-vocab" }
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
-horizon-client-render = { path = "../horizon-client-render" }
+horizon-client-render = { path = "../horizon-client-render", default-features = false }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
@@ -133,7 +133,7 @@ test-residency-observer = []
 default = ["audio", "controllers", "desktop"]
 # The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "hdr"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["audio"]
 # Agent control: the control socket (control.rs) and the horizon-ctl tool. Without it the
@@ -147,6 +147,8 @@ benchmark = ["agent-control", "dep:horizon-bench"]
 telemetry-store = ["dep:horizon-telemetry"]
 # Opening a folder or a link in the desktop's own handler (desktop.rs): the "Open Folder" buttons.
 desktop-opener = []
+# HDR output (horizon-client-render's `hdr`).
+hdr = ["horizon-client-render/hdr"]
 # Dev-only: the ignored tracker-send benchmark uses the executable's allocator.
 tracker-send-bench = []
 # Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on

@@ -29,7 +29,7 @@ horizon-client-gameplay = { path = "../horizon-client-gameplay" }
 horizon-assets = { path = "../horizon-assets" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
-horizon-client-render = { path = "../horizon-client-render" }
+horizon-client-render = { path = "../horizon-client-render", default-features = false }
 horizon-command = { path = "../horizon-command" }
 horizon-items = { path = "../horizon-items" }
 horizon-core = { path = "../horizon-core" }
@@ -134,7 +134,7 @@ upstream-parallel-mobs = ["horizon-gameplay/upstream-parallel-mobs"]
 default = ["audio", "controllers", "horizon-extras", "desktop"]
 # The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods", "hdr"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["audio"]
 # Agent control: the control socket, horizon-ctl's commands and the AI Agent settings page
@@ -152,6 +152,8 @@ desktop-opener = ["horizon-client-lib/desktop-opener"]
 # The PC launcher's native mods: the holder process that keeps the launch's leases and captures its
 # output (horizon-mod-package's `runtime-process`). Phones load prebuilt mod libraries instead.
 native-mods = ["horizon-mod-package/runtime-process"]
+# HDR output; phones draw SDR only.
+hdr = ["horizon-client-lib/hdr", "horizon-client-render/hdr"]
 # Scoped trait-mod installation for a mod's own tests.
 testing = []
 # Per-level-tick state digest for determinism checks (game/state_digest.rs).

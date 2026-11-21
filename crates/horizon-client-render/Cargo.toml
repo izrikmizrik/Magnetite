@@ -77,6 +77,10 @@ wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
+default = ["hdr"]
+# HDR output (scRGB/PQ swapchains, the display's HDR metadata). Phones go without it: the
+# frame stays SDR there.
+hdr = []
 # Sound output: horizon-client's `audio` feature.
 audio = ["dep:cpal"]
 # Helpers horizon-client's tests build their fixtures with.
