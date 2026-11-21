@@ -382,8 +382,25 @@ impl Game<'_> {
 }
 
 impl ApplicationHandler for Game<'_> {
+    /// The app went to the background (phones: winit sends this on Android and iOS only). The
+    /// surface goes; the window's loss of focus already pauses the game.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.suspend_surface();
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background: the window stayed, its surface is made again.
+            if let Some(renderer) = self.renderer.as_mut().filter(|r| r.suspended) {
+                if let Err(error) = renderer.recreate_surface() {
+                    log::error!("The window's surface could not be made again: {error}");
+                } else {
+                    let size = window.inner_size();
+                    renderer.resize(size.width, size.height);
+                }
+                self.previous = Instant::now();
+            }
             return;
         }
         debug_keys::warm_debug_cpu();

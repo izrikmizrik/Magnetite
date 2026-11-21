@@ -4844,6 +4844,20 @@ impl Renderer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             self.surface.take().and_then(|s| Arc::try_unwrap(s).ok());
     }
+    /// Lets the window's surface go while the app is in the background: Android destroys the
+    /// native window then (and an IME may recreate it), and iOS stops drawing. Nothing is drawn
+    /// until [`Self::recreate_surface`] attaches the window again on resume. Desktops never
+    /// suspend.
+    pub fn suspend_surface(&mut self) {
+        self.suspended = true;
+        self.in_flight.clear();
+        let _ = self.device.poll(wgpu::PollType::Poll);
+        self.surface = None;
+        self.spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
         self.queue.wait();
