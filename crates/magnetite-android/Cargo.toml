@@ -1,0 +1,23 @@
+[package]
+name = "magnetite-android"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Magnetite Android: the NativeActivity entry point that starts the shared core on a phone"
+
+[lib]
+# libmagnetite_android.so, loaded by the stock NativeActivity (packaging/android).
+crate-type = ["cdylib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+horizon-client = { path = "../horizon-client", default-features = false, features = ["mobile"] }
+horizon-mod-host = { path = "../horizon-mod-host", default-features = false, features = ["mobile"] }
+# The workspace patches this to third_party/winit (the Android input patch).
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+android_logger = { version = "0.15", default-features = false }
+log = "0.4"
+
+[lints]
+workspace = true

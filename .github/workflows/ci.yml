@@ -57,6 +57,7 @@ jobs:
           export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
           cargo check --locked -p horizon-game --target aarch64-linux-android --no-default-features --features mobile
+          cargo check --locked -p magnetite-android --target aarch64-linux-android
 
   ios:
     name: iOS (aarch64, mobile profile)
