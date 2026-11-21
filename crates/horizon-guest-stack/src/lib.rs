@@ -130,7 +130,7 @@ const REQUIRED: usize = GUEST_STACK_BYTES + HOST_HEADROOM;
 
 /// A refusal naming what was measured. Leaked once per refusing thread: `check_current` keeps it
 /// for the thread's life.
-#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))]
 fn refuse(why: String) -> Result<(), &'static str> {
     Err(Box::leak(
         format!("GuestStackUnavailable: {why}").into_boxed_str(),
@@ -143,7 +143,7 @@ fn unmeasured(why: &str) -> Result<(), &'static str> {
     refuse(format!("{why}; needs {} KiB", REQUIRED / 1024))
 }
 
-#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))]
 fn too_small(size: usize, measured_by: &str) -> Result<(), &'static str> {
     refuse(format!(
         "the calling thread has {} KiB of stack, needs {} KiB ({measured_by})",
@@ -203,6 +203,33 @@ fn inspect_current() -> Result<(), &'static str> {
             }
         }
     }
+    // Android: android_main and every game thread are pthreads that bionic measures as Linux's
+    // workers; the platform crate starts the game on a guest-sized thread (`builder`).
+    #[cfg(target_os = "android")]
+    {
+        let mut attr = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+        // SAFETY: pthread_self is live and attr is writable. Destroy only on success.
+        unsafe {
+            if libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()) != 0 {
+                return refuse(
+                    "cannot inspect the calling thread stack: pthread_getattr_np failed".into(),
+                );
+            }
+            let mut attr = attr.assume_init();
+            let mut size = 0;
+            let result = libc::pthread_attr_getstacksize(&attr, &mut size);
+            libc::pthread_attr_destroy(&mut attr);
+            if result != 0 {
+                return refuse(
+                    "cannot inspect the calling thread stack: pthread_attr_getstacksize failed"
+                        .into(),
+                );
+            }
+            if size < REQUIRED {
+                return too_small(size, "pthread_getattr_np");
+            }
+        }
+    }
     #[cfg(target_vendor = "apple")]
     {
         // SAFETY: pthread_self names the live calling thread.
@@ -221,9 +248,9 @@ fn inspect_current() -> Result<(), &'static str> {
             return too_small(high - low, "GetCurrentThreadStackLimits");
         }
     }
-    #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows)))]
     return Err("GuestStackUnavailable: stack inspection is unsupported on this platform");
-    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))]
     Ok(())
 }
 

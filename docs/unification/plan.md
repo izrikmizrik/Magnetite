@@ -11,6 +11,9 @@
      Графика Android: **Vulkan первым везде, включая PowerVR** (Pixel 10 / Tensor G5); GLES — запасной: после вылета
      при старте рендера следующий запуск сам берёт GLES (как ПК переключается на DX12 после вылета на Vulkan), плюс
      ручной выбор Авто / Vulkan / OpenGL ES. Не «PowerVR — всегда GLES», как в форке. minSdk 28 остаётся.
+     Стек гостя (136 МиБ, `horizon-guest-stack`): на Android `android_main` запускает игру в потоке
+     `horizon_guest_stack::builder()` (стек — резерв адресов, не память). На iOS event loop обязан жить в главном
+     потоке, а он мал — решить на этапе iOS (линкерный `-stack_size` или вызовы гостя только с рабочих потоков).
    - **1. Вход как в iOS** (Microsoft device code + Ely.by, в игре) — общий для ПК, Android, iOS.
    - **2. Тач как в iOS** (редактор, ≤3 раскладки, кнопки-клавиши, свои иконки) + гироскоп/пресеты Android.
    - **3. Память и вылеты** (memory_limit, плавная дальность, crash catcher / tombstone).
