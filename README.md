@@ -15,6 +15,26 @@ own copy of Minecraft: Java Edition. Licence: GNU LGPL 3.0 or later, as Horizon 
 
 NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.
 
+## Thanks
+
+Magnetite stands on other people's work:
+
+- **[Horizon](https://github.com/horizon-rust/horizon)**, founded by [Ludovic Marie](https://lu4ovic.com) and built by
+  the Horizon Team and [its contributors](https://github.com/horizon-rust/horizon/graphs/contributors): the whole engine,
+  rewritten from scratch in Rust. Magnetite's core is Horizon's.
+- **[Horizon iOS](https://github.com/razlua/horizon-ios)** by razlua (Ferrite): the iOS port that showed the way, with
+  sign-in inside the game, the touch controls and their editor, and keyboard, mouse and controller support on iPhone
+  and iPad.
+- **[Horizon Android](https://github.com/GoyDevv/Horizon-Android)** by GoyDevv and its contributors: the Android port,
+  its launcher, touch layouts, gyro aiming and device integration.
+- **[e4mc](https://e4mc.com/)** by [Skye](https://github.com/vgskye) ([the mod](https://github.com/vgskye/e4mc-minecraft-architectury)):
+  open a world to friends from any connection with no port forwarding. Magnetite's e4mc builds use a native Rust port,
+  [e4mc-for-rust](https://github.com/izrikmizrik/e4mc-for-rust), with e4mc's relays.
+- **[Starling](https://github.com/starling-client/starling)** by Vasysik and its contributors: the touch layout Horizon
+  adapted.
+
+Code from the iOS and Android forks and from e4mc-for-rust keeps its MIT licence notices.
+
 ---
 
 *The Horizon README follows.*
