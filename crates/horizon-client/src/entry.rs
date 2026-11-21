@@ -27,17 +27,40 @@ impl Startup {
 pub fn prepare() -> Startup {
     #[cfg(feature = "native-mods")]
     horizon_mod_package::holder::enter();
+    let command = match std::env::current_exe() {
+        Ok(executable) => launch_command(executable, std::env::args_os().skip(1)),
+        Err(error) => usage_error(error),
+    };
+    prepared(&command)
+}
+
+/// Startup from explicit arguments; the process argv is not read.
+pub fn prepare_with_args(args: Vec<String>) -> Startup {
+    #[cfg(feature = "native-mods")]
+    horizon_mod_package::holder::enter();
+    let command = launch_command("horizon", args);
+    prepared(&command)
+}
+
+/// The command line a launch is read from: its program, then its arguments, exactly as given.
+fn launch_command<I, S>(program: impl AsRef<std::ffi::OsStr>, args: I) -> std::process::Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    command
+}
+
+/// The one path both entry points take: the command line, validated.
+fn prepared(command: &std::process::Command) -> Startup {
     let result: crate::Result<_> = (|| {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
-        command.args(std::env::args_os().skip(1));
-        let launch = LaunchArguments::for_command(&command)?;
+        let launch = LaunchArguments::for_command(command)?;
         let options = game::Options::validate(launch.clone())?;
         Ok((launch, options))
     })();
-    let (launch, options) = result.unwrap_or_else(|error| {
-        eprintln!("Horizon: {error}");
-        std::process::exit(game::exit_code::USAGE);
-    });
+    let (launch, options) = result.unwrap_or_else(|error| usage_error(error));
     let Some(options) = options else {
         std::process::exit(0);
     };
@@ -47,6 +70,13 @@ pub fn prepare() -> Startup {
         launch,
         options,
     }
+}
+
+/// A command line that cannot be read or validated ends the run: the caller's mistake, not a
+/// crash (exit code 2).
+fn usage_error(error: impl std::fmt::Display) -> ! {
+    eprintln!("Horizon: {error}");
+    std::process::exit(game::exit_code::USAGE);
 }
 
 /// Refuse startup if any merged copy could not be installed, before loading any mod.
@@ -467,6 +497,28 @@ fn raise_open_file_limit() {
                 Err(e) => log::warn!("Open file limit stays at {:?}: {e}", limit.current),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    /// `prepare_with_args` reads the launch `prepare` reads: its arguments after the program's
+    /// name, with no name of their own in front (a leading name would read as an option). The
+    /// path stops at `LaunchArguments`, since `Options::validate` ends the process on a refusal.
+    #[test]
+    fn explicit_arguments_read_the_launch_the_command_line_carries() {
+        let args = ["--creative", "--world", "Test", "--resources", "res"];
+        let explicit_args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        let executable = std::env::current_exe().unwrap();
+        let from_argv = LaunchArguments::for_command(&launch_command(executable, args)).unwrap();
+        let explicit = launch_command("horizon", explicit_args);
+        let explicit = LaunchArguments::for_command(&explicit).unwrap();
+        assert_eq!(from_argv.rest, explicit.rest);
+        assert_eq!(from_argv.context.game_dir, explicit.context.game_dir);
+        assert_eq!(from_argv.context.home, explicit.context.home);
+        assert_eq!(from_argv.context.dev_mods, explicit.context.dev_mods);
     }
 }
 

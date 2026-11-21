@@ -455,6 +455,28 @@ fn tap(thread: &str, level: log::Level, message: &str) {
     });
 }
 
+/// The platform's log, given once at startup.
+static PLATFORM_SINK: std::sync::OnceLock<fn(log::Level, &str, &str)> = std::sync::OnceLock::new();
+
+/// Register the platform's own log of the game (a phone's logcat), if it has one: it is told of
+/// every line the log keeps, by level, target and text. The file log, its writers and the flood
+/// limit stay as they are.
+pub fn set_platform_sink(sink: fn(log::Level, &str, &str)) {
+    let _ = PLATFORM_SINK.set(sink);
+}
+
+/// Tells the platform's log of a kept line, if one is registered.
+fn tell_platform(level: log::Level, target: &str, message: &str) {
+    if let Some(sink) = PLATFORM_SINK.get() {
+        sink(level, target, message);
+    }
+}
+
+/// The target of a line the log writes itself: the flood limit's two notices.
+const LOG_TARGET: &str = "horizon::log";
+/// The target of a line that code prints in its own console (`write_only`).
+const CONSOLE_TARGET: &str = "horizon::console";
+
 fn ours(target: &str) -> bool {
     target.starts_with("horizon")
 }
@@ -469,10 +491,11 @@ impl log::Log for Logger {
             return;
         }
         let horizon = ours(record.target());
+        let text = record.args().to_string();
         let message = if horizon {
-            record.args().to_string()
+            text.clone()
         } else {
-            format!("[{}] {}", record.target(), record.args())
+            format!("[{}] {text}", record.target())
         };
         let current = std::thread::current();
         let thread = match current.name() {
@@ -496,11 +519,15 @@ impl log::Log for Logger {
             Gate::Write { left_out } if left_out > 0 => self.write(
                 thread,
                 level,
+                LOG_TARGET,
                 &format!(
                     "{left_out} more lines like the next one were not logged in the last minute"
                 ),
             ),
             _ => {}
+        }
+        for line in text.lines() {
+            tell_platform(level, record.target(), line);
         }
         let stderr = horizon.then(|| message.clone());
         tap(thread, level, &message);
@@ -509,6 +536,7 @@ impl log::Log for Logger {
             self.write(
                 thread,
                 level,
+                LOG_TARGET,
                 &format!("{FLOOD_LINES} lines like this one in a minute: the next ones are counted, not logged"),
             );
         }
@@ -524,7 +552,12 @@ impl log::Log for Logger {
 }
 
 impl Logger {
-    fn write(&self, thread: &str, level: log::Level, message: &str) {
+    /// A line the log keeps without a `log` record behind it: the flood limit's notices, and the
+    /// consoles' own. The platform's log hears it too, under `target`.
+    fn write(&self, thread: &str, level: log::Level, target: &str, message: &str) {
+        for line in message.lines() {
+            tell_platform(level, target, line);
+        }
         self.send(thread, level, message, None);
     }
 
@@ -623,7 +656,7 @@ pub fn write_only(level: log::Level, message: &str) {
     };
     tap(thread, level, message);
     if let Some(logger) = LOGGER.get() {
-        logger.write(thread, level, message);
+        logger.write(thread, level, CONSOLE_TARGET, message);
     }
 }
 
@@ -632,7 +665,7 @@ pub fn write_only(level: log::Level, message: &str) {
 pub fn write_as(thread: &str, level: log::Level, message: &str) {
     tap(thread, level, message);
     if let Some(logger) = LOGGER.get() {
-        logger.write(thread, level, message);
+        logger.write(thread, level, CONSOLE_TARGET, message);
     }
 }
 

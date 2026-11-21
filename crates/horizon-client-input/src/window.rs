@@ -1,7 +1,10 @@
-//! Window sizing and frame pacing of 26.3: `Window.calculateScale` and
-//! `setGuiScale`, `MouseHandler`'s scaled positions, `FramerateLimitTracker`,
-//! `FramerateLimiter`, the vsync present-mode choice and the fullscreen
-//! request/state pair.
+//! Window sizing and frame pacing of 26.3: `Window.calculateScale` and `setGuiScale`,
+//! `MouseHandler`'s scaled positions, `FramerateLimitTracker`, `FramerateLimiter`, the vsync
+//! present-mode choice and the fullscreen request/state pair. Horizon's side of the window: its
+//! icon, and the event loop the game runs in.
+
+use winit::error::EventLoopError;
+use winit::event_loop::EventLoop;
 
 /// `Window.calculateScale`: the largest scale that leaves at least 320x240
 /// GUI pixels, capped by `max_scale` (0 = automatic); an odd result is bumped
@@ -712,6 +715,42 @@ pub fn with_icon(attributes: winit::window::WindowAttributes) -> winit::window::
     attributes
 }
 
+/// Makes the game's event loop where winit's own constructor cannot: a phone starts one on the
+/// activity it was handed.
+pub type EventLoopFactory = Box<dyn FnOnce() -> Result<EventLoop<()>, EventLoopError> + Send>;
+
+/// `None` until a factory is given; `Some(None)` once it was taken. winit allows one event loop
+/// per process, so the game takes a factory at most once.
+type FactorySlot = std::sync::Mutex<Option<Option<EventLoopFactory>>>;
+
+static EVENT_LOOP_FACTORY: std::sync::OnceLock<FactorySlot> = std::sync::OnceLock::new();
+
+/// Give the game its event loop's factory, before [`new_event_loop`] takes it. A second call keeps
+/// the first factory; none is taken after the loop is made.
+pub fn set_event_loop_factory(factory: EventLoopFactory) {
+    let slot = EVENT_LOOP_FACTORY.get_or_init(|| std::sync::Mutex::new(None));
+    let mut given = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if given.is_none() {
+        *given = Some(Some(factory));
+    }
+}
+
+/// The game's event loop: the factory given to [`set_event_loop_factory`], which is used once,
+/// else winit's own [`EventLoop::new`].
+pub fn new_event_loop() -> Result<EventLoop<()>, EventLoopError> {
+    match take_event_loop_factory() {
+        Some(factory) => factory(),
+        None => EventLoop::new(),
+    }
+}
+
+/// The factory, if one was given and is not used yet.
+fn take_event_loop_factory() -> Option<EventLoopFactory> {
+    let slot = EVENT_LOOP_FACTORY.get()?;
+    let mut given = slot.lock().unwrap_or_else(|e| e.into_inner());
+    given.as_mut()?.take()
+}
+
 /// The screen a window is on: its size in physical pixels, its refresh rate where the OS gives
 /// it, and its scale. For `horizon-ctl status` and the performance statistics' `system.display`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1122,5 +1161,34 @@ mod tests {
                 320.0f64, 240.0f64
             )))
         );
+    }
+
+    /// The factory is the game's once: a later registration is refused, and none comes back after
+    /// the first was taken (winit allows one event loop per process). It is the factory the test
+    /// reads, not `new_event_loop`: the test process may already hold a loop.
+    #[test]
+    fn the_event_loop_factory_is_registered_once_and_taken_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RUNS: AtomicUsize = AtomicUsize::new(0);
+        assert!(take_event_loop_factory().is_none(), "none given yet");
+        set_event_loop_factory(Box::new(|| {
+            RUNS.fetch_add(1, Ordering::Relaxed);
+            Err(EventLoopError::RecreationAttempt)
+        }));
+        // The first factory stays the game's; the second never runs.
+        set_event_loop_factory(Box::new(|| {
+            RUNS.fetch_add(10, Ordering::Relaxed);
+            Err(EventLoopError::ExitFailure(1))
+        }));
+        let taken = take_event_loop_factory().expect("the factory given")();
+        assert!(matches!(taken, Err(EventLoopError::RecreationAttempt)));
+        assert_eq!(RUNS.load(Ordering::Relaxed), 1);
+        assert!(take_event_loop_factory().is_none(), "taken once");
+        set_event_loop_factory(Box::new(|| {
+            RUNS.fetch_add(100, Ordering::Relaxed);
+            Err(EventLoopError::RecreationAttempt)
+        }));
+        assert!(take_event_loop_factory().is_none(), "not after the loop");
+        assert_eq!(RUNS.load(Ordering::Relaxed), 1);
     }
 }

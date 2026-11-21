@@ -130,7 +130,12 @@ const REQUIRED: usize = GUEST_STACK_BYTES + HOST_HEADROOM;
 
 /// A refusal naming what was measured. Leaked once per refusing thread: `check_current` keeps it
 /// for the thread's life.
-#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+))]
 fn refuse(why: String) -> Result<(), &'static str> {
     Err(Box::leak(
         format!("GuestStackUnavailable: {why}").into_boxed_str(),
@@ -143,7 +148,12 @@ fn unmeasured(why: &str) -> Result<(), &'static str> {
     refuse(format!("{why}; needs {} KiB", REQUIRED / 1024))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_vendor = "apple",
+    windows
+))]
 fn too_small(size: usize, measured_by: &str) -> Result<(), &'static str> {
     refuse(format!(
         "the calling thread has {} KiB of stack, needs {} KiB ({measured_by})",
@@ -248,9 +258,19 @@ fn inspect_current() -> Result<(), &'static str> {
             return too_small(high - low, "GetCurrentThreadStackLimits");
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows)))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        windows
+    )))]
     return Err("GuestStackUnavailable: stack inspection is unsupported on this platform");
-    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple", windows))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_vendor = "apple",
+        windows
+    ))]
     Ok(())
 }
 
