@@ -26,13 +26,19 @@ test = false
 [features]
 # horizon-client/client-lib-default: one build of the game whether or not horizon-client-lib is also named.
 default = ["audio", "controllers", "horizon-extras", "horizon-client/client-lib-default", "desktop"]
-# The desktop group: PC-only features, agent control for now; more join it later
+# The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["horizon-client/audio"]
 # Agent control: the control socket and horizon-ctl's commands (horizon-client's feature).
 agent-control = ["horizon-client/agent-control"]
+# `--benchmark SCENARIO`: the run's scenes and report (horizon-client's feature).
+benchmark = ["horizon-client/benchmark"]
+# Opt-in data collection's store (horizon-client's feature).
+telemetry-store = ["horizon-client/telemetry-store"]
+# Opening a folder or a link in the desktop's handler (horizon-client's feature).
+desktop-opener = ["horizon-client/desktop-opener"]
 audio = ["horizon-client/audio"]
 controllers = ["horizon-client/controllers"]
 horizon-extras = ["horizon-client/horizon-extras"]

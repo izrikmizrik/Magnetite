@@ -227,26 +227,30 @@ impl Game<'_> {
         if self.options.split_guest {
             return;
         }
-        let s = &self.settings;
-        let settings = horizon_telemetry::payload::Settings {
-            render_distance: s.render_distance.clamp(0, 255) as u8,
-            simulation_distance: s.simulation_distance.clamp(0, 255) as u8,
-            // 260 is the slider's "unlimited".
-            max_fps: if s.max_fps >= 260 {
-                0
-            } else {
-                s.max_fps.min(u32::from(u16::MAX)) as u16
-            },
-            vsync: s.vsync,
-            fullscreen: s.fullscreen,
-            graphics: s.graphics_preset.clone(),
-        };
-        // Again now: on Wayland the window is on a screen only once it has been shown.
-        if let Some(window) = &self.window {
-            horizon_client::telemetry::note_display(window);
+        // Without the telemetry store there is no consent to read and no summary to keep.
+        #[cfg(feature = "telemetry-store")]
+        {
+            let s = &self.settings;
+            let settings = horizon_telemetry::payload::Settings {
+                render_distance: s.render_distance.clamp(0, 255) as u8,
+                simulation_distance: s.simulation_distance.clamp(0, 255) as u8,
+                // 260 is the slider's "unlimited".
+                max_fps: if s.max_fps >= 260 {
+                    0
+                } else {
+                    s.max_fps.min(u32::from(u16::MAX)) as u16
+                },
+                vsync: s.vsync,
+                fullscreen: s.fullscreen,
+                graphics: s.graphics_preset.clone(),
+            };
+            // Again now: on Wayland the window is on a screen only once it has been shown.
+            if let Some(window) = &self.window {
+                horizon_client::telemetry::note_display(window);
+            }
+            self.perf
+                .finish(&horizon_client::logging::game_home(), settings);
         }
-        self.perf
-            .finish(&horizon_client::logging::game_home(), settings);
     }
 
     pub(super) fn save_for_exit(&mut self) -> Result<()> {

@@ -59,6 +59,7 @@ fn run(perf: &mut ClientPerf, from: u32, to: u32, per_s: u32, hitch: f32) {
     }
 }
 
+#[cfg(feature = "benchmark")]
 fn benchmark_report() -> horizon_bench::Report {
     let app = horizon_bench::App {
         name: "horizon-client".into(),
@@ -76,6 +77,7 @@ fn benchmark_report() -> horizon_bench::Report {
 }
 
 #[test]
+#[cfg(feature = "benchmark")]
 fn a_benchmark_report_given_at_stop_is_in_the_capture_verbatim() {
     let scratch = Scratch::new("bench");
     let mut perf = ClientPerf::new(SLOW_FRAME_MS);
@@ -108,6 +110,7 @@ fn a_benchmark_report_given_at_stop_is_in_the_capture_verbatim() {
 }
 
 #[test]
+#[cfg(feature = "benchmark")]
 fn a_benchmark_reports_local_paths_and_label_stay_out_of_the_capture() {
     let scratch = Scratch::new("bench-local");
     let mut perf = ClientPerf::new(SLOW_FRAME_MS);
@@ -139,6 +142,7 @@ fn a_benchmark_reports_local_paths_and_label_stay_out_of_the_capture() {
 }
 
 #[test]
+#[cfg(feature = "benchmark")]
 fn only_a_benchmark_report_can_be_embedded() {
     assert!(bench_result("{\"format\":\"something-else\"}".into()).is_err());
     assert!(bench_result("not json".into()).is_err());

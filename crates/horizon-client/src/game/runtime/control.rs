@@ -2003,6 +2003,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn a_benchmark_profile_only_goes_with_a_benchmark() {
         let parse = |args: &[&str]| {
             super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())
@@ -2021,6 +2022,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     fn a_benchmark_set_only_goes_with_the_trip() {
         let parse = |args: &[&str]| {
             super::super::Options::parse(args.iter().map(|a| a.to_string())).map(|o| o.unwrap())

@@ -202,6 +202,9 @@ pub use horizon_items::enchant;
 pub use horizon_items::item_data;
 pub use horizon_items::items;
 pub use horizon_items::random_sequences;
+/// This machine, as the crash report and the performance captures describe it
+/// (`Machine`; the game's `server_perf::system` fills a capture's `Start.machine`).
+pub use horizon_system as machine;
 
 pub mod render_geometry;
 pub mod render_slots;

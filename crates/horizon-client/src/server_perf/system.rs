@@ -1,10 +1,21 @@
 use crate::gamerules::{GameRules as Rules, vanilla};
+use crate::machine::Machine as ThisMachine;
 use horizon_perf_format::Gauges;
 use horizon_perf_format::v1::{Build, GameRules, HorizonOptions, Machine, Settings};
 
 use std::sync::OnceLock;
 
 use super::WorldCounts;
+
+/// Resident memory of the process, in bytes: its working set on Windows.
+fn process_rss_bytes(pid: u32) -> Option<u64> {
+    crate::machine::rss_bytes(pid)
+}
+
+/// CPU time the process has used, user and system, in seconds.
+fn process_cpu_seconds(pid: u32) -> Option<f64> {
+    crate::machine::cpu_seconds(pid)
+}
 
 /// The disk the game runs from, where its worlds are saved: used and total MiB.
 pub(super) fn disk_mb() -> Option<(u64, u64)> {
@@ -24,13 +35,13 @@ pub(super) struct SystemProbe {
 impl SystemProbe {
     pub(super) fn read(&mut self, t: f64, counts: WorldCounts) -> Gauges {
         let pid = std::process::id();
-        let cpu_s = horizon_bench::cpu_seconds(pid);
+        let cpu_s = process_cpu_seconds(pid);
         let stat = std::fs::read_to_string("/proc/stat")
             .ok()
             .and_then(|s| parse_cpu_stat(&s));
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
         let mut g = Gauges {
-            rss_mb: horizon_bench::rss_bytes(pid).map_or(0.0, |b| (b >> 20) as f32),
+            rss_mb: process_rss_bytes(pid).map_or(0.0, |b| (b >> 20) as f32),
             players: counts.players,
             chunks: counts.chunks,
             entities: counts.entities,
@@ -142,27 +153,32 @@ pub(super) fn parse_cgroup_memory(text: &str) -> Option<u64> {
     text.trim().parse::<u64>().ok().map(|b| b >> 20)
 }
 
-static HARDWARE: OnceLock<horizon_bench::Hardware> = OnceLock::new();
+static HARDWARE: OnceLock<ThisMachine> = OnceLock::new();
 
 /// Describes the hardware on a thread of its own: the probes run commands, which the tick must not wait for.
 pub fn warm_hardware() {
     std::thread::spawn(|| {
-        HARDWARE.get_or_init(horizon_bench::Hardware::detect);
+        HARDWARE.get_or_init(detect);
     });
 }
 
+/// The machine as the probes read it, the drive being the one under the game folder.
+fn detect() -> ThisMachine {
+    ThisMachine::detect_in(std::env::current_dir().ok().as_deref())
+}
+
 /// The hardware, described now if nothing has yet: the probes run commands, so not on a tick.
-pub fn hardware_now() -> &'static horizon_bench::Hardware {
-    HARDWARE.get_or_init(horizon_bench::Hardware::detect)
+pub fn hardware_now() -> &'static ThisMachine {
+    HARDWARE.get_or_init(detect)
 }
 
 /// The hardware, once `warm_hardware` has described it.
-pub fn hardware() -> Option<&'static horizon_bench::Hardware> {
+pub fn hardware() -> Option<&'static ThisMachine> {
     HARDWARE.get()
 }
 
 /// What the machine and its container give the process, for `Start.machine`.
-pub fn machine(hardware: Option<&horizon_bench::Hardware>) -> Machine {
+pub fn machine(hardware: Option<&ThisMachine>) -> Machine {
     let cgroup = |name: &str| std::fs::read_to_string(format!("/sys/fs/cgroup/{name}")).ok();
     let mut m = Machine {
         os: std::env::consts::OS.to_owned(),
@@ -173,10 +189,12 @@ pub fn machine(hardware: Option<&horizon_bench::Hardware>) -> Machine {
         ..Machine::default()
     };
     if let Some(h) = hardware {
-        m.os_version = h.os_version.clone().unwrap_or_default();
-        m.cpu = h.cpu.clone().unwrap_or_default();
-        m.cpu_cores = h.cpu_cores.map_or(0, u32::from);
-        m.ram_mb = h.ram_mb.unwrap_or(0);
+        m.os_version = h.os_version.clone();
+        m.cpu = h.cpu.clone();
+        m.cpu_threads = u32::from(h.threads);
+        m.cpu_cores = u32::from(h.cores);
+        // `Machine` counts MiB; the probes read whole GiB.
+        m.ram_mb = u64::from(h.ram_gb) << 10;
     }
     m
 }

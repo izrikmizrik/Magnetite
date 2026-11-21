@@ -158,6 +158,7 @@ pub fn keep_crash(home: &Path, report: &crate::crash::Report) {
 
 /// Keeps a benchmark report (`--benchmark`) for the launcher to send, if the player allows
 /// benchmark uploads: the report as docs/benchmark-report.md defines it, dated to the day.
+#[cfg(feature = "benchmark")]
 pub fn keep_benchmark(home: &Path, report: &horizon_bench::Report) {
     let Ok(data) = serde_json::to_value(report.for_upload()) else {
         return;
@@ -399,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "benchmark")]
     #[ignore = "daily"]
     fn benchmark_reports_need_their_own_consent_and_go_dated_to_the_day() {
         let home = home("benchmark");

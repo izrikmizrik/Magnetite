@@ -326,6 +326,7 @@ fn gpu_readout(
     renderer.filter(|_| wanted != GpuSwitch::Off)?.gpu_readout()
 }
 
+#[cfg(feature = "benchmark")]
 fn read_bench(path: &str) -> Result<BenchResult> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     Ok(client_perf::bench_result(text).map_err(|e| format!("{path}: {e}"))?)
@@ -449,7 +450,19 @@ impl Game<'_> {
             Request::Stop { bench } => {
                 match self.profile.stop_route(parsed.side)? {
                     StopRoute::Window => {
+                        #[cfg(feature = "benchmark")]
                         let bench = bench.map(|path| read_bench(&path)).transpose()?;
+                        // Without the benchmark feature no report can be embedded.
+                        #[cfg(not(feature = "benchmark"))]
+                        let bench: Option<BenchResult> = {
+                            if bench.is_some() {
+                                return Err(
+                                    "this build has no benchmark reports to embed (the `benchmark` feature)"
+                                        .into(),
+                                );
+                            }
+                            None
+                        };
                         self.stop_profile_with(StopReason::Normal, bench.into_iter().collect())?;
                         self.profile.reply = Some(reply.clone());
                     }

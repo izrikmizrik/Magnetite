@@ -6,9 +6,9 @@ use crate::server_perf::{
     ServerPerf, TickDetail, WorldCounts,
 };
 use horizon_perf_format::FieldSender;
-use horizon_perf_format::v1::{
-    BenchResult, Machine, Side, Start, StopReason, Trigger, WarningCode,
-};
+#[cfg(feature = "benchmark")]
+use horizon_perf_format::v1::Side;
+use horizon_perf_format::v1::{BenchResult, Machine, Start, StopReason, Trigger, WarningCode};
 use horizon_protocol::connection::Counters;
 use request::{GpuSwitch, StartOptions, Threads};
 use std::ffi::OsStr;
@@ -283,6 +283,7 @@ impl ClientPerf {
 }
 
 /// A benchmark report as the capture embeds it, minus its local-only label and paths; anything but a `horizon-benchmark-report` is refused.
+#[cfg(feature = "benchmark")]
 pub fn bench_result(report_json: String) -> Result<BenchResult, String> {
     let mut report = horizon_bench::Report::parse(&report_json)?;
     report.label = None;

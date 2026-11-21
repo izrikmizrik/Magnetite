@@ -85,8 +85,8 @@ horizon-theme = { path = "../horizon-theme" }
 horizon-system = { path = "../horizon-system" }
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md). The
 # anonymous "I'm playing" ping is the Horizon layer's (`horizon-heartbeat`, in the official executable).
-horizon-telemetry = { path = "../horizon-telemetry", default-features = false }
-horizon-bench = { path = "../horizon-bench" }
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false, optional = true }
+horizon-bench = { path = "../horizon-bench", optional = true }
 crc32fast = "1"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 # Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
@@ -132,14 +132,23 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 # Do not enable (including via --all-features); integration is tracked in arismoko/horizon#3491.
 upstream-parallel-mobs = ["horizon-gameplay/upstream-parallel-mobs"]
 default = ["audio", "controllers", "horizon-extras", "desktop"]
-# The desktop group: PC-only features, agent control for now; more join it later
+# The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["audio"]
 # Agent control: the control socket, horizon-ctl's commands and the AI Agent settings page
 # (game/runtime/control.rs, docs/agent-control.md). Without it the socket never opens.
 agent-control = ["horizon-client-lib/agent-control"]
+# `--benchmark SCENARIO`: the run's scenes and report (benchmark.rs), which need horizon-bench's
+# format. Without it the switch is refused and nothing schedules a benchmark.
+benchmark = ["horizon-client-lib/benchmark", "dep:horizon-bench"]
+# Opt-in data collection's store: the crash and session items kept for the launcher, and the
+# consent that allows them (telemetry.rs). Without it a crash report stays a local file.
+telemetry-store = ["horizon-client-lib/telemetry-store", "dep:horizon-telemetry"]
+# Opening a folder or a link in the desktop's own handler (desktop.rs): the "Open Folder"
+# buttons. Without it they do nothing.
+desktop-opener = ["horizon-client-lib/desktop-opener"]
 # Scoped trait-mod installation for a mod's own tests.
 testing = []
 # Per-level-tick state digest for determinism checks (game/state_digest.rs).

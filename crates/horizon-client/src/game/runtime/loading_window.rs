@@ -286,7 +286,8 @@ pub(super) fn start_game<'a>(
     pack_error: Option<String>,
     audio: Audio,
     vanilla_root: PathBuf,
-    started: Instant,
+    // The benchmark's clock; nothing else reads it.
+    #[cfg_attr(not(feature = "benchmark"), allow(unused_variables))] started: Instant,
     rest_loader: Option<WorldRestLoader>,
     settings: Option<Settings>,
     prepared: Option<GameCpuResources>,
@@ -345,6 +346,7 @@ pub(super) fn start_game<'a>(
     // After the mods: their templates are among the ids it lists.
     game.preload_registries();
     game.start_agent_control()?;
+    #[cfg(feature = "benchmark")]
     if let Some(scenario) = game.options.benchmark.clone() {
         let control = game
             .control
