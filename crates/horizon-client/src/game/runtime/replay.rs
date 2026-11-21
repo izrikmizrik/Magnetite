@@ -496,6 +496,7 @@ impl Game<'_> {
     }
 
     /// Control socket command handler for `studio`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn studio_control(&mut self, words: &[&str]) -> Result<Option<Value>> {
         if words.first().copied() != Some("studio") {
             return Ok(None);

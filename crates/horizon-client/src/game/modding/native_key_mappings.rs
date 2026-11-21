@@ -6,7 +6,9 @@ use super::Game;
 use super::key_codes::{gameplay_has_keyboard, glfw_modifiers};
 use horizon_client::keymapping::{KeyAction, MappingContext, ModBinding};
 use mod_api::KeyConflictContext;
-use winit::{event::MouseButton, keyboard::KeyCode};
+use winit::event::MouseButton;
+#[cfg(feature = "agent-control")]
+use winit::keyboard::KeyCode;
 
 impl Game<'_> {
     /// Binds the mods' mappings to the player's keys (`horizon-mods.txt`) or their declared
@@ -62,6 +64,7 @@ impl Game<'_> {
     }
     /// The control socket's `key KEY down|up|tap|repeat`, through `key_input` as a window key
     /// goes: a tap is a press, then a release. A script types on a QWERTY layout.
+    #[cfg(feature = "agent-control")]
     pub(super) fn socket_key_input(&mut self, key: KeyCode, action: &str) {
         let name = horizon_client::keybinds::key_name(key);
         let layout_key = match key {

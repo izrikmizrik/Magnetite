@@ -76,6 +76,7 @@ impl Pickups {
         self.live.clear();
         self.added.clear();
     }
+    #[cfg(feature = "agent-control")]
     pub fn made(&self) -> &std::collections::BTreeMap<&'static str, u64> {
         &self.made
     }

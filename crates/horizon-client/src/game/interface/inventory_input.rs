@@ -335,6 +335,7 @@ impl Game<'_> {
     /// Real events word the modifiers by their own `ModifiersChanged`; a
     /// control socket's `key` is synthesized, so it words the bit directly
     /// and every reader can ask the one live state.
+    #[cfg(feature = "agent-control")]
     pub(super) fn press_modifier_key(&mut self, key: KeyCode, down: bool) {
         horizon_client_input::modifiers::set_key(
             &mut self.modifiers,

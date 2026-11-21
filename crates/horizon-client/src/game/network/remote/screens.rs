@@ -286,6 +286,7 @@ impl Game<'_> {
         }
         self.world.day_time = r.clock_time(r.default_clock);
     }
+    #[cfg(feature = "agent-control")]
     pub(super) fn remote_status_body(&self) -> Option<serde_json::Value> {
         let r = self.remote.as_ref()?;
         Some(serde_json::json!({

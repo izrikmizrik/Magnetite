@@ -492,6 +492,7 @@ impl Game<'_> {
 
     /// The keyboard or mouse acted in play (a key or button pressed): it has control again, though
     /// only moving the mouse takes a pad out of use.
+    #[cfg(feature = "agent-control")]
     pub(super) fn input_keyboard_used(&mut self) {
         self.pad.keyboard_took_over = true;
     }
@@ -515,6 +516,7 @@ impl Game<'_> {
 
     /// The HUD starts a frame: what a device drew on the last one is gone.
     pub(super) fn input_hud_begin(&mut self) {
+        #[cfg(feature = "agent-control")]
         self.pad.guide_shown.clear();
     }
 

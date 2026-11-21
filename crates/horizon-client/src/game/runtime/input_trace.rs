@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Who caused an input event: a person at the keyboard (`user`), an agent on the
 //! control socket (`agent`), or the game itself (`game`, made-up input no one
 //! asked for). Agents read this with `input-log` and the `input` section of

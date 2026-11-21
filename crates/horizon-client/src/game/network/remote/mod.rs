@@ -997,6 +997,7 @@ impl Game<'_> {
     }
 
     // polling.rs
+    #[cfg(feature = "agent-control")]
     pub(super) fn remote_carts(&self) -> Option<Vec<serde_json::Value>> {
         self.remote_carts_body()
     }
@@ -1015,6 +1016,7 @@ impl Game<'_> {
     pub(super) fn remote_menu_id(&self) -> i32 {
         self.remote_menu_id_body()
     }
+    #[cfg(feature = "agent-control")]
     pub(super) fn remote_chat(&self, n: usize) -> Option<Vec<String>> {
         self.remote_chat_body(n)
     }
@@ -1602,6 +1604,7 @@ impl Game<'_> {
     fn remote_clock_tick(&mut self) {
         self.remote_clock_tick_body()
     }
+    #[cfg(feature = "agent-control")]
     pub(super) fn remote_status(&self) -> Option<serde_json::Value> {
         self.remote_status_body()
     }

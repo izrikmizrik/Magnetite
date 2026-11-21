@@ -919,6 +919,7 @@ impl Game<'_> {
     }
 
     /// Their kind and place, for `status`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn projectiles_status(&self) -> Vec<serde_json::Value> {
         use serde_json::json;
         let at = |p: Vec3| [p.x, p.y, p.z];

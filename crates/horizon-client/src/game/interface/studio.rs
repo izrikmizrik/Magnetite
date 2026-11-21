@@ -4,11 +4,13 @@
 
 use super::{Game, Screen, packs};
 use horizon_client::{
-    Result,
     packet_source::PacketSource,
     studio::{ReplayDriver, TimelineAction},
     text::Text,
 };
+#[cfg(feature = "agent-control")]
+use horizon_client::Result;
+#[cfg(feature = "agent-control")]
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
 
@@ -36,6 +38,7 @@ impl Studio {
     }
 }
 
+#[cfg(feature = "agent-control")]
 pub const HELP: &[&str] = &[
     "studio record start [NAME]     start recording clientbound packets into .mcpr archive",
     "studio record stop             stop recording and finalize .mcpr archive",
@@ -58,6 +61,7 @@ pub const HELP: &[&str] = &[
 /// What `Game::open_studio_screen` does over `screen` (`blocked`: an overlay,
 /// the title screen, no window or no player, the world loading): `None` opens
 /// it, `Some` answers without changing anything (true: already open).
+#[cfg(feature = "agent-control")]
 pub(super) fn studio_screen_opens(screen: Screen, blocked: bool) -> Option<bool> {
     if screen == Screen::Studio {
         return Some(true);
@@ -85,6 +89,7 @@ impl Game<'_> {
     /// `close_studio_screen`. True when open: false while another screen is,
     /// over the title screen, a book, a sign editor, a dialog or a prompt,
     /// while the world loads, and anywhere but the window's own client.
+    #[cfg(feature = "agent-control")]
     pub(super) fn open_studio_screen(&mut self) -> bool {
         // What `native_mod_screen_open` refuses over the world: the Studio
         // screen would be up with no hook to draw or click it.
@@ -113,6 +118,7 @@ impl Game<'_> {
         }
     }
     /// Whether the Studio script screen is currently open.
+    #[cfg(feature = "agent-control")]
     pub(super) fn studio_screen_open(&self) -> bool {
         self.screen == Screen::Studio
     }
@@ -442,6 +448,7 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl studio screen <open|close|status>`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn studio_screen_control(&mut self, words: &[&str]) -> Result<Option<Value>> {
         match words.get(2).copied() {
             Some("open") => {

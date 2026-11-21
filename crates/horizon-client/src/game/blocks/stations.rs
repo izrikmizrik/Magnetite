@@ -2068,6 +2068,7 @@ impl Game<'_> {
         lines
     }
     /// Menu state for the control socket.
+    #[cfg(feature = "agent-control")]
     pub(super) fn station_info(&self) -> serde_json::Value {
         let Some(s) = self.station.as_ref() else {
             return match self.container_kind() {

@@ -18,11 +18,13 @@ use horizon_client::{
     pad_glyph::{Glyph, Glyphs},
 };
 use horizon_client_input::radial;
+#[cfg(feature = "agent-control")]
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
+#[cfg(feature = "agent-control")]
 pub(super) const HELP: &[&str] = &[
     "pad BUTTON down|up|tap         a virtual controller button (south east west north lb rb lt rt select start ls rs up down left right)",
     "pad stick left|right X Y       tilt a virtual stick (-1..1, up positive); 0 0 centres it",
@@ -35,6 +37,7 @@ pub(super) const HELP: &[&str] = &[
 ];
 
 /// A pad family `pad` names; `auto` is a pad of no known maker.
+#[cfg(feature = "agent-control")]
 fn style_named(name: &str) -> Result<GlyphStyle> {
     GlyphStyle::ALL
         .into_iter()
@@ -116,6 +119,7 @@ pub(super) struct Pads {
     /// it may take over. A thumb still on the walking stick can't commit for the other.
     radial_rested: [bool; 2],
     /// The last vibration asked for, for `pad status`.
+    #[cfg(feature = "agent-control")]
     last_rumble: Option<(&'static str, gamepad::Pulse)>,
     /// The drop button, while it is held in play.
     held_drop: Option<gamepad::HeldDrop>,
@@ -127,6 +131,7 @@ pub(super) struct Pads {
     /// The gameplay guide's facts and the tick they were read in.
     guide_facts: Option<(u64, horizon_client::gameplay_guide::Facts)>,
     /// The guide's rows as last drawn.
+    #[cfg(feature = "agent-control")]
     pub(super) guide_shown: Vec<guide::Shown>,
 }
 
@@ -178,8 +183,10 @@ const DEATH_CONFIRM_WAIT: Duration = Duration::from_secs(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Connection {
     /// A controller of this glyph family connected.
+    #[cfg_attr(not(feature = "agent-control"), allow(dead_code))]
     Connected(GlyphStyle),
     /// One disconnected; `active`: it was driving this player.
+    #[cfg_attr(not(feature = "agent-control"), allow(dead_code))]
     Disconnected { active: bool },
 }
 
@@ -201,6 +208,7 @@ pub(in crate::game) enum PadEvent {
 mod hardware {
     use super::{super::Game, Pads};
     use horizon_client::gamepad::{PadState, Pulse, Rumble};
+    #[cfg(feature = "agent-control")]
     use serde_json::{Value, json};
 
     impl Pads {
@@ -261,6 +269,7 @@ mod hardware {
         pub(super) fn pad_output_frame(&mut self) {}
         pub(in crate::game) fn pad_close_output(&mut self) {}
         pub(super) fn pad_vibrate(&mut self, _: Rumble, _: Pulse) {}
+        #[cfg(feature = "agent-control")]
         pub(super) fn pad_devices_status(&self) -> Value {
             json!({ "backend": false, "controllers": [] })
         }
@@ -283,6 +292,7 @@ impl Pads {
     }
 
     /// A replay's pad button, in place of `pad`'s line.
+    #[cfg(feature = "agent-control")]
     pub(super) fn inject_button(&mut self, button: Button, down: bool) {
         self.injected.set(button, down);
     }
@@ -315,6 +325,7 @@ impl Pads {
         })
     }
     /// A replay ended: let go of everything it held.
+    #[cfg(feature = "agent-control")]
     pub(super) fn clear_injected(&mut self) {
         self.menu.armed = None;
         self.radial.cancel();
@@ -858,7 +869,10 @@ impl Game<'_> {
         let Some(pulse) = rumble.pulse() else {
             return;
         };
-        self.pad.last_rumble = Some((rumble.name(), pulse));
+        #[cfg(feature = "agent-control")]
+        {
+            self.pad.last_rumble = Some((rumble.name(), pulse));
+        }
         self.pad_vibrate(rumble, pulse);
     }
 
@@ -902,6 +916,7 @@ impl Game<'_> {
         self.split_hud.notice.raise(notice);
     }
 
+    #[cfg(feature = "agent-control")]
     pub(super) fn pad_command(&mut self, words: &[&str]) -> Result<Value> {
         let arg = |i: usize| -> Result<&str> {
             words

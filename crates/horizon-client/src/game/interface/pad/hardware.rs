@@ -982,6 +982,7 @@ impl Game<'_> {
         }
     }
 
+    #[cfg(feature = "agent-control")]
     pub(super) fn pad_devices_status(&self) -> Value {
         self.pad.devices.status()
     }

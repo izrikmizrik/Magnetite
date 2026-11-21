@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Worlds and the multiplayer server list from the control socket: what the Select World, Edit
 //! World and Multiplayer screens do, by world folder. Changing a world needs the title screen
 //! (no world open), as those screens do; deleting one needs `--confirm`.

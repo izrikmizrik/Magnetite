@@ -4,8 +4,11 @@
 //! no world is shared, the pause menu has no Friends button (`friends_shown` is false, as on
 //! another server) and `horizon-ctl friends` says it isn't there. game/friends.rs is the real one.
 use super::{Game, Screen};
-use horizon_client::{Result, hud::HudBatch};
+use horizon_client::hud::HudBatch;
+#[cfg(feature = "agent-control")]
+use horizon_client::Result;
 
+#[cfg(feature = "agent-control")]
 pub const HELP: &[&str] = &[];
 
 /// The pause menu's Friends icon is vanilla's, drawn inactive: its name for the widget tree.
@@ -33,6 +36,7 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl friends ...`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn friends_control(&mut self, words: &[&str]) -> Result<Option<serde_json::Value>> {
         if words[0] != "friends" {
             return Ok(None);

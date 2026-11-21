@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
 use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
@@ -92,6 +93,10 @@ pub struct Flight {
 }
 
 impl Game<'_> {
+    /// Whether a scripted flight (`fly`) is running.
+    pub(super) fn flight_running(&self) -> bool {
+        self.flight.is_some()
+    }
     /// Move the camera along the running flight; reply when it ends.
     pub(super) fn advance_flight(&mut self) {
         let tick_ms = self

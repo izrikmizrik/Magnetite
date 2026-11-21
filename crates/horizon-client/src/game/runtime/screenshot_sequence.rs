@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! `screenshot-sequence FRAMES STEP_MS PATH`: the running shader pack starts over, draws its
 //! first FRAMES frames on a set clock, and the last is written as `screenshot PATH` writes it
 //! (docs/agent-control.md, Repeatable screenshots). The reply comes once the PNG is written.
@@ -71,7 +72,7 @@ impl Game<'_> {
                 .remote
                 .as_ref()
                 .is_some_and(|r| r.level_load.is_active())
-            || self.flight.is_some()
+            || self.flight_running()
             || self.world.chunks.is_empty()
             || self.streaming.pending() != 0
             || !self.pending_uploads.is_empty()

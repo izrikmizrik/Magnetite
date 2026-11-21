@@ -475,6 +475,7 @@ impl Game<'_> {
         trade.offers = session.offers.clone();
     }
     /// Opens a merchant menu without a mob (horizon-ctl `trade`).
+    #[cfg(feature = "agent-control")]
     pub(super) fn open_merchant(&mut self, profession: &str, variant: &str, level: i32) {
         let profession = if profession.contains(':') {
             profession.to_owned()

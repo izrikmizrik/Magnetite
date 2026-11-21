@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Control-socket commands for menus and item components, so scripts can
 //! drive the workstation screens (`horizon-ctl click-slot 600`, ...).
 use super::{Game, Screen};

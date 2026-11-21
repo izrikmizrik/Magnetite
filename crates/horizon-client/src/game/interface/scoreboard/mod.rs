@@ -913,6 +913,7 @@ impl Game<'_> {
         team_slot.or_else(|| board.display_objective(sb::SLOT_SIDEBAR))
     }
     /// The sidebar the HUD shows: its objective and its lines, for `status`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn sidebar_status(&self) -> serde_json::Value {
         let board = &self.score.board;
         let Some(objective) = self.sidebar_objective() else {

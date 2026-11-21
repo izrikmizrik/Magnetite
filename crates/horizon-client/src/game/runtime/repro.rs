@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Repro recordings (docs/agent-control.md): a session's input, tick-stamped
 //! state and (single player) a copy of the world, so a bug report can carry a
 //! reproducible run. `record-start`/`record-stop` write it, `repro-export`

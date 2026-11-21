@@ -22,6 +22,7 @@ pub(super) enum Finish {
     /// Back to Credits & Attribution.
     Options,
     /// Back to the game (`horizon-ctl credits`).
+    #[cfg_attr(not(feature = "agent-control"), allow(dead_code))]
     Closed,
 }
 pub(super) struct Win {
@@ -48,6 +49,7 @@ impl Game<'_> {
         self.capture(false);
     }
     /// Stop the scroll `scroll` pixels in (`horizon-ctl credits ... SCROLL`).
+    #[cfg(feature = "agent-control")]
     pub(super) fn hold_win_screen(&mut self, scroll: f32) {
         if let Some(win) = self.win.as_mut() {
             win.screen.hold(scroll);

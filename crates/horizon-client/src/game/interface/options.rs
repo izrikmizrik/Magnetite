@@ -9,12 +9,14 @@ use horizon_client::{
     options_ui::{Event, Page},
     window::{FrameContext, InactivityFpsLimit, framerate_limit},
 };
+#[cfg(feature = "agent-control")]
 use serde_json::{Value, json};
 use winit::{event::MouseButton, keyboard::KeyCode, window::Fullscreen};
 
 /// `CommonLinks.ACCESSIBILITY_HELP`, the Accessibility page's footer link.
 pub(super) const ACCESSIBILITY_HELP_LINK: &str = "https://aka.ms/MinecraftJavaAccessibility";
 
+#[cfg(feature = "agent-control")]
 pub(super) const CONTROL_HELP: &[&str] = &[
     "options-get [KEY...]           options.txt values by key, with their type, range or choices",
     "options-set KEY VALUE          set an option (enums by name, keys as key.keyboard.w, lists as JSON), apply and save it",
@@ -39,6 +41,7 @@ impl Game<'_> {
         }
     }
     /// `options-get` and `options-set`; None for other commands.
+    #[cfg(feature = "agent-control")]
     pub(super) fn options_control(&mut self, words: &[&str], line: &str) -> Result<Option<Value>> {
         match words[0] {
             "options-get" => {

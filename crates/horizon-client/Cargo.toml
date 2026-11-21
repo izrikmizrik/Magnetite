@@ -131,7 +131,15 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 # Source retention only: not compiled/tested on the fork; incompatible with typed residency.
 # Do not enable (including via --all-features); integration is tracked in arismoko/horizon#3491.
 upstream-parallel-mobs = ["horizon-gameplay/upstream-parallel-mobs"]
-default = ["audio", "controllers", "horizon-extras"]
+default = ["audio", "controllers", "horizon-extras", "desktop"]
+# The desktop group: PC-only features, agent control for now; more join it later
+# (docs/unification/mobile-trim-plan.md).
+desktop = ["agent-control"]
+# The mobile group: what a phone build carries; the desktop group stays out.
+mobile = ["audio"]
+# Agent control: the control socket, horizon-ctl's commands and the AI Agent settings page
+# (game/runtime/control.rs, docs/agent-control.md). Without it the socket never opens.
+agent-control = ["horizon-client-lib/agent-control"]
 # Scoped trait-mod installation for a mod's own tests.
 testing = []
 # Per-level-tick state digest for determinism checks (game/state_digest.rs).

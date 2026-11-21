@@ -110,6 +110,7 @@ impl Game<'_> {
 
     /// Control saves acknowledge only after durable completion, while their
     /// snapshot work is spread across event-loop turns too.
+    #[cfg(feature = "agent-control")]
     pub(super) fn begin_control_save(
         &mut self,
         all: bool,

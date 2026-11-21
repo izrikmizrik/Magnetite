@@ -1980,6 +1980,7 @@ impl Game<'_> {
     }
 
     /// `pad status`: the menu mode, the focused target and every target.
+    #[cfg(feature = "agent-control")]
     pub(super) fn pad_menu_status(&self) -> serde_json::Value {
         let kind = |k: Kind| match k {
             Kind::Button => "button",

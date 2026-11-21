@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Control-socket block commands for scripted tests: `setblock`, `fill`,
 //! `getblock` and `container` (list or put items in a block entity).
 use super::Game;

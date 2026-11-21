@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Agent control as a setting (Horizon Settings > AI Agent): when the control socket is open, who
 //! is connected, and the details an agent needs. The socket opens when the game was started for
 //! an agent (`--control`, `--control-socket`: horizon-ctl launch, the launcher's MCP `play`) or

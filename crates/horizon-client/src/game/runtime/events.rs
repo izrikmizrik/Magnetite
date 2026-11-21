@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! What happened in the game, for agents (`events`, `wait-for`; docs/agent-control.md): the
 //! state is compared once per event loop turn, after the game ran, so watching never changes
 //! what the game does.

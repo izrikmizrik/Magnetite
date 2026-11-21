@@ -1396,6 +1396,7 @@ impl Game<'_> {
     }
     /// The maps the player carries, for `status`: how many of their pixels
     /// are drawn, and their decorations.
+    #[cfg(feature = "agent-control")]
     pub(super) fn maps_status(&self) -> Vec<serde_json::Value> {
         self.inventory
             .iter()

@@ -1060,6 +1060,7 @@ fn mob_equipment(
     }
 }
 
+#[cfg(feature = "agent-control")]
 pub const HELP: &[&str] = &[
     "lan open [PORT] [commands] [force]  open the world to the network (PORT 0 picks one)",
     "lan close                      stop hosting",
@@ -1116,6 +1117,7 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl lan ...`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn lan_control(&mut self, words: &[&str]) -> Result<Option<serde_json::Value>> {
         use serde_json::json;
         if words[0] != "lan" {
@@ -1157,6 +1159,7 @@ impl Game<'_> {
     }
 
     /// `horizon-ctl lan status`.
+    #[cfg(feature = "agent-control")]
     fn lan_status(&self) -> serde_json::Value {
         use serde_json::json;
         match &self.lan {

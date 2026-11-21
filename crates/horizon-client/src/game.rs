@@ -1664,11 +1664,14 @@ struct Game<'a> {
     creative_ignore_text: bool,
     control: Option<horizon_client::control::Server>,
     /// The Agent Control setting the socket was last opened or closed for (`agent_settings`).
+    #[cfg(feature = "agent-control")]
     agent_control_on: bool,
     /// When an agent's last command came.
+    #[cfg(feature = "agent-control")]
     agent_last: Option<Instant>,
     frame_stats: horizon_client::control::FrameStats,
     /// This thread's and all threads' allocation counts at the last rendered frame.
+    #[cfg(feature = "agent-control")]
     alloc_mark: Option<(
         horizon_threads::alloc_count::Counts,
         horizon_threads::alloc_count::Counts,
@@ -1681,6 +1684,7 @@ struct Game<'a> {
     screenshot_sequence: Option<screenshot_sequence::Sequence>,
     /// `render-capture DIR`: replied once the renderer wrote the scene.
     pending_render_capture: Option<std::sync::mpsc::Sender<String>>,
+    #[cfg(feature = "agent-control")]
     pending_bench: Option<(Instant, std::sync::mpsc::Sender<String>, bool)>,
     /// Recent frame times for the performance overlay.
     frame_graph: horizon_client::perf_overlay::FrameGraph,
@@ -1723,14 +1727,17 @@ struct Game<'a> {
     occlusion: entity_culling::EntityOcclusion,
     async_particle_culler: RefCell<particle_culling::ParticleAsyncState>,
     /// A scripted flight from the control socket (`fly`).
+    #[cfg(feature = "agent-control")]
     flight: Option<control::Flight>,
     /// The running agent action from the control socket (game/runtime/agent/mod.rs).
     agent: agent::Agent,
     /// Widget commands waiting for the frame after a click (game/runtime/ui_control.rs).
+    #[cfg(feature = "agent-control")]
     ui_wait: ui_control::UiWait,
     /// What happened, for `events` and `wait-for` (game/runtime/events.rs).
     events: events::Events,
     /// Who caused each input event: a person, an agent or the game (game/runtime/input_trace.rs).
+    #[cfg(feature = "agent-control")]
     input_trace: input_trace::InputTrace,
     /// A repro recording, export or replay (game/runtime/repro.rs).
     repro: repro::Repro,
@@ -10841,18 +10848,25 @@ impl<'a> Game<'a> {
             creative_screen: prepared.creative_screen,
             creative_ignore_text: false,
             control: None,
+            #[cfg(feature = "agent-control")]
             agent_control_on: false,
+            #[cfg(feature = "agent-control")]
             agent_last: None,
             frame_stats: Default::default(),
+            #[cfg(feature = "agent-control")]
             alloc_mark: None,
             perf: Default::default(),
             pending_screenshot: None,
             screenshot_sequence: None,
             pending_render_capture: None,
+            #[cfg(feature = "agent-control")]
             pending_bench: None,
+            #[cfg(feature = "agent-control")]
             flight: None,
+            #[cfg(feature = "agent-control")]
             ui_wait: Default::default(),
             events: Default::default(),
+            #[cfg(feature = "agent-control")]
             input_trace: Default::default(),
             repro: Default::default(),
             profile: profile_capture::Profile::new(slow_frame_ms),

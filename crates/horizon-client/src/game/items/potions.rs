@@ -2709,6 +2709,7 @@ impl Game<'_> {
         self.potions = PotionState::default();
         self.potions.effects = PlayerEffects::from_saved(&self.level.active_effects);
     }
+    #[cfg(feature = "agent-control")]
     pub(super) fn effects_json(&self) -> serde_json::Value {
         serde_json::json!({
             "active": self.potions.effects.list.iter().map(|e| serde_json::json!({ "id": e.id, "duration": e.duration, "amplifier": e.amplifier })).collect::<Vec<_>>(),

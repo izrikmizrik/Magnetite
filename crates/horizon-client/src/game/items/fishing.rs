@@ -1500,6 +1500,7 @@ impl Game<'_> {
 }
 impl Game<'_> {
     /// The hooks drawn here, with their owners' ids (0 for this player's own).
+    #[cfg(feature = "agent-control")]
     pub(super) fn hooks_status(&self) -> Vec<serde_json::Value> {
         let at = |p: Vec3| [p.x, p.y, p.z];
         let own = self.hook.iter().map(|h| (h.id, 0, h.position));
@@ -1599,6 +1600,7 @@ impl Game<'_> {
         }
     }
     /// The hook for `horizon-ctl status`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn hook_status(&self) -> Option<serde_json::Value> {
         let h = self.hook.as_ref()?;
         Some(serde_json::json!({

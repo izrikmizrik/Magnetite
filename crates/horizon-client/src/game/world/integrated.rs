@@ -1126,6 +1126,7 @@ impl Game<'_> {
     /// (`as_console`, as without a server thread): as the world's owner, in
     /// the owner's level, at the owner permission level. The feedback goes to
     /// the owner's chat and is returned.
+    #[cfg(feature = "agent-control")]
     pub(super) fn owner_console_command(&mut self, command: &str) -> Vec<String> {
         // Test-only, as on the dedicated console: sync the randoms on this server thread, in the owner's level.
         #[cfg(feature = "state-digest")]

@@ -1014,6 +1014,7 @@ impl Game<'_> {
             ),
         );
     }
+    #[cfg(feature = "agent-control")]
     pub(super) fn recipe_book_flags(&self) -> Option<(bool, bool)> {
         if self.native_screen_shown() {
             return self.mod_book_flags();
@@ -1022,6 +1023,7 @@ impl Game<'_> {
         Some((self.book_open(book), self.book_filtering(book)))
     }
     /// How many displays the client's book holds.
+    #[cfg(feature = "agent-control")]
     pub(super) fn recipe_book_known(&self) -> usize {
         self.recipe_ui.client.displays().len()
     }

@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! `horizon-ctl lan op`: a connected guest's operator level, which remote profiling checks.
 use super::Game;
 use horizon_client::Result;

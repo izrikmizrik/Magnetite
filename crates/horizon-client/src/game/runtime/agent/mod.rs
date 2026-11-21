@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! Control-socket commands for agents and scripts that play the game: read
 //! the world, the player, the inventory and the open screen as JSON, and act
 //! like a player (walk, look, break, place, use, click buttons). Actions that

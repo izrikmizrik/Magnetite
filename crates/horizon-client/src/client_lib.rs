@@ -62,6 +62,10 @@ pub mod command_storage;
 pub mod confirm_screen;
 pub mod container_screen;
 pub mod content_identity;
+#[cfg(feature = "agent-control")]
+pub mod control;
+#[cfg(not(feature = "agent-control"))]
+#[path = "control_off.rs"]
 pub mod control;
 pub mod crafting;
 pub mod creative;

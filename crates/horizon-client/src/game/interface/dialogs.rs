@@ -1209,6 +1209,7 @@ impl Game<'_> {
 
     /// What `state` reports: the open dialog and its values, or the waiting
     /// and warning screens.
+    #[cfg(feature = "agent-control")]
     pub(super) fn dialog_status(&self) -> serde_json::Value {
         let d = &self.dialogs;
         let screen = if d.warning {

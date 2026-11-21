@@ -25,6 +25,7 @@ use horizon_world::registry::BlockStateId;
 use mod_api::client::particles::PositionSource;
 use std::collections::HashSet;
 
+#[cfg(feature = "agent-control")]
 pub const HELP: &[&str] = &[
     "sculk                          sculk listeners, the warning level and the darkness blend",
     "sculk charge X Y Z AMOUNT      a mob dying there with that much experience (the nearest catalyst takes it)",
@@ -268,6 +269,7 @@ impl Game<'_> {
 
     /// The `sculk` control command: listeners and their vibrations, or a
     /// test charge for the nearest catalyst.
+    #[cfg(feature = "agent-control")]
     pub(super) fn sculk_command(&mut self, words: &[&str]) -> Result<serde_json::Value> {
         match words.get(1).copied() {
             Some("charge") => {
@@ -299,6 +301,7 @@ impl Game<'_> {
         }
     }
     /// The `sculk` control command's listing.
+    #[cfg(feature = "agent-control")]
     pub(super) fn sculk_status(&self) -> serde_json::Value {
         let listeners: Vec<serde_json::Value> = self
             .sculk

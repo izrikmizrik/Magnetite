@@ -5,6 +5,7 @@ use super::*;
 impl Game<'_> {
     /// The minecarts the server sent, for the control socket's `status`
     /// (their velocity is not tracked here).
+    #[cfg(feature = "agent-control")]
     pub(super) fn remote_carts_body(&self) -> Option<Vec<serde_json::Value>> {
         let r = self.remote.as_ref()?;
         let mut carts: Vec<&Tracked> = r
@@ -60,6 +61,7 @@ impl Game<'_> {
             .map_or(0, |m| m.0)
     }
     /// The server's last `n` chat lines, newest first.
+    #[cfg(feature = "agent-control")]
     pub(super) fn remote_chat_body(&self, n: usize) -> Option<Vec<String>> {
         let r = self.remote.as_ref()?;
         Some(r.chat.iter().rev().take(n).map(|l| l.0.clone()).collect())

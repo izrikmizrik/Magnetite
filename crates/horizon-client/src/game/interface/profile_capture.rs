@@ -12,7 +12,7 @@ use horizon_client::client_perf::{
     self, ClientPerf,
     request::{
         self, Failed, GpuSwitch, Marked, Opened, ProfileSide, Request, Shared, StartOptions,
-        Started, Status, Stopped, Traced,
+        Started, Status, Stopped,
     },
 };
 use horizon_client::command::{Arg, Dispatcher, PROFILER_GPU, Registries};
@@ -39,10 +39,12 @@ const ENV_DIR: &str = "HORIZON_PROFILE";
 /// The file `HORIZON_TRACE` names: a timeline-only capture written there.
 const ENV_TRACE: &str = "HORIZON_TRACE";
 
+#[cfg(feature = "agent-control")]
 const TRACE_USAGE: &str = "trace [FILE [SECONDS] | stop]";
 
 /// What the `trace` words ask for.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(feature = "agent-control")]
 enum Trace<'a> {
     Status,
     Stop,
@@ -50,6 +52,7 @@ enum Trace<'a> {
 }
 
 /// The words after `trace`; SECONDS is a whole number in 1..=`MAX_WINDOW_S`, as for `profile --seconds`.
+#[cfg(feature = "agent-control")]
 fn parse_trace<'a>(words: &[&'a str]) -> std::result::Result<Trace<'a>, &'static str> {
     match words {
         [] => Ok(Trace::Status),
@@ -419,6 +422,7 @@ fn profiler_words(literals: &[String], name: Option<&str>) -> Vec<String> {
 
 impl Game<'_> {
     /// `profile [client|server] start|stop|status|mark`; None while a `stop` waits for its file.
+    #[cfg(feature = "agent-control")]
     pub(super) fn profile_command(
         &mut self,
         words: &[&str],
@@ -500,13 +504,14 @@ impl Game<'_> {
     }
 
     /// `trace [FILE [SECONDS] | stop]`: a timeline-only capture written to FILE; None while a `stop` waits for its file.
+    #[cfg(feature = "agent-control")]
     pub(super) fn trace_command(
         &mut self,
         words: &[&str],
         reply: &Sender<String>,
     ) -> Result<Option<serde_json::Value>> {
         match parse_trace(words)? {
-            Trace::Status => json_of(&Traced {
+            Trace::Status => json_of(&request::Traced {
                 ok: true,
                 tracing: self.profile.trace_file.is_some(),
                 file: self.profile.trace_file.clone(),
@@ -529,7 +534,7 @@ impl Game<'_> {
                 };
                 self.start_profile(None, &options, Trigger::Ctl)
                     .map_err(|e| format!("trace {file}: {e}"))?;
-                json_of(&Traced {
+                json_of(&request::Traced {
                     ok: true,
                     tracing: true,
                     file: Some(file.to_owned()),
@@ -1213,6 +1218,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "agent-control")]
     fn start<'a>(
         file: &'a str,
         seconds: Option<u32>,
@@ -1221,6 +1227,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "agent-control")]
     fn trace_words() {
         assert_eq!(parse_trace(&[]), Ok(Trace::Status));
         assert_eq!(parse_trace(&["stop"]), Ok(Trace::Stop));
@@ -1234,6 +1241,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "agent-control")]
     fn trace_seconds_out_of_range_are_usage_errors() {
         for bad in ["0", "601", "99999", "-1", "1.5", "x", ""] {
             assert_eq!(

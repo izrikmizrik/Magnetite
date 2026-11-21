@@ -2,10 +2,11 @@
 //! which job, and the glyph on the button while the pad drives. A screen only declares; nothing
 //! here names one (docs/controllers.md, "Adding a screen").
 use super::{Game, Screen};
+#[cfg(feature = "agent-control")]
+use horizon_client::lang;
 use horizon_client::{
     gamepad::{Button, MenuJob},
     hud::HudBatch,
-    lang,
     pad_glyph::{self, Glyph},
     widgets::{self, Action, DeclaredAction, Kind, Target},
 };
@@ -155,6 +156,7 @@ impl Game<'_> {
 
     /// `pad status`: the glyphs drawn now and where: the part each is for, its label, its text's
     /// place, what it covers, and its sprite (none: the label on a key).
+    #[cfg(feature = "agent-control")]
     pub(super) fn pad_glyphs_status(&self) -> Vec<serde_json::Value> {
         let view = self.gui_batch().map_or((0.0, 0.0), |b| (b.width, b.height));
         let atlas = &self.gui.atlas;
@@ -173,6 +175,7 @@ impl Game<'_> {
     }
 
     /// `pad status`: what this screen declared.
+    #[cfg(feature = "agent-control")]
     pub(super) fn pad_actions_status(&self) -> Vec<serde_json::Value> {
         self.pad_actions()
             .iter()
@@ -187,6 +190,7 @@ impl Game<'_> {
     }
 
     /// `pad status`: buttons labelled Done, Back or Cancel that didn't declare their job.
+    #[cfg(feature = "agent-control")]
     pub(super) fn pad_undeclared_buttons(&self) -> Vec<String> {
         let names = [
             ("gui.done", "Done"),

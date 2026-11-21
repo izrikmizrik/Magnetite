@@ -199,6 +199,7 @@ impl Game<'_> {
     }
 
     /// The emote playing, if any (its id).
+    #[cfg(feature = "agent-control")]
     pub(in crate::game) fn emote_playing(&self) -> Option<&str> {
         let p = self.cosmetics.emotes.playing.as_ref()?;
         p.stop.is_none().then_some(p.item.id.as_str())

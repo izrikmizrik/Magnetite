@@ -8,6 +8,7 @@ use horizon_client::pad_glyph::Glyph;
 use horizon_client::text::Text;
 use horizon_client_input::radial::{self, RadialAction, Slot};
 use horizon_client_render::radial_overlay::{self, Dial, Seen, Toggles, View};
+#[cfg(feature = "agent-control")]
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
@@ -435,6 +436,7 @@ impl Game<'_> {
         self.pad_radial_cancel();
     }
 
+    #[cfg(feature = "agent-control")]
     pub(in crate::game) fn pad_radial_status(&self) -> Value {
         let menu = &self.pad.radial;
         let pages = &self.settings.controller.radial;

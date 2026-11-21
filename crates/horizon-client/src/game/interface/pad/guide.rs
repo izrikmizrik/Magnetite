@@ -14,9 +14,11 @@ use horizon_client::{
     items::ItemStack,
     mobs::{Species, equine, llama},
 };
+#[cfg(feature = "agent-control")]
 use serde_json::{Value, json};
 
 /// A row as last drawn, for `pad status`.
+#[cfg(feature = "agent-control")]
 pub(in crate::game) struct Shown {
     left: bool,
     row: Row,
@@ -247,7 +249,7 @@ impl Game<'_> {
         // The player's text background (Accessibility), as chat's: black at its opacity.
         let alpha = (self.settings.text_background(0.4) >> 24) as u8;
         let mut widest = 0.0_f32;
-        for ((row, line), place) in rows.iter().zip(&hints).zip(places) {
+        for ((_row, line), place) in rows.iter().zip(&hints).zip(places) {
             let Some(rect) = place else {
                 continue;
             };
@@ -261,9 +263,10 @@ impl Game<'_> {
             let plate = Plate::Backing { alpha };
             hint::draw_plated(batch, atlas, &line, &look, plate, [x, y, shown, h]);
             widest = widest.max(rect[2]);
+            #[cfg(feature = "agent-control")]
             self.pad.guide_shown.push(Shown {
                 left,
-                row: *row,
+                row: *_row,
                 rect,
             });
         }
@@ -271,6 +274,7 @@ impl Game<'_> {
     }
 
     /// The rows last drawn, for `pad status`.
+    #[cfg(feature = "agent-control")]
     pub(in crate::game) fn pad_guide_status(&self) -> Value {
         let pad = &self.settings.controller;
         let column = |left: bool| -> Vec<Value> {

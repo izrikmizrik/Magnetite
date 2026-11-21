@@ -924,6 +924,7 @@ impl Game<'_> {
         Some(id)
     }
     /// Default position for a summon command (3 blocks in front of the player).
+    #[cfg(feature = "agent-control")]
     pub(super) fn default_summon_position(&self) -> Result<[f64; 3]> {
         let p = self.player.as_ref().ok_or("no player yet")?;
         let d = view_vector(self.yaw, 0.0);
@@ -934,6 +935,7 @@ impl Game<'_> {
         ])
     }
     /// The `summon` command: spawn a mob in front of the player or at a position.
+    #[cfg(feature = "agent-control")]
     pub(super) fn summon_command_mob(
         &mut self,
         kind: &str,

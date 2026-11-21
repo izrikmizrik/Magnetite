@@ -476,6 +476,7 @@ impl Game<'_> {
 
     /// The boats, minecarts, armor stands, item frames and paintings in the
     /// level (a server's client: the ones it was sent), for `status`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn objects_status(&self) -> Vec<serde_json::Value> {
         use serde_json::json;
         let at = |p: Vec3| [p.x, p.y, p.z];

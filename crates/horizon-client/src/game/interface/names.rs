@@ -210,6 +210,7 @@ impl Game<'_> {
         }
     }
     /// The names the name tags show this frame (the control socket's status).
+    #[cfg(feature = "agent-control")]
     pub(in crate::game) fn shown_name_tags(&self, camera: glam::DVec3) -> Vec<String> {
         self.name_tags(camera, 1.0)
             .into_iter()
@@ -217,9 +218,11 @@ impl Game<'_> {
             .collect()
     }
     /// Each name tag this frame.
+    #[cfg(feature = "agent-control")]
     fn name_tags(&self, camera: glam::DVec3, alpha: f64) -> Vec<NameTag> {
         self.name_tags_with_hooks(camera, alpha, !mod_api::__private::mods().is_empty())
     }
+    #[cfg(feature = "agent-control")]
     fn name_tags_with_hooks(&self, camera: glam::DVec3, alpha: f64, hooks: bool) -> Vec<NameTag> {
         self.collect_name_tags(camera, alpha, hooks, None)
     }

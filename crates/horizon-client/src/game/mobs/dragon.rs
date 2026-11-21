@@ -4111,6 +4111,7 @@ impl Game<'_> {
 }
 impl Game<'_> {
     /// The dragon and fight for `horizon-ctl status`.
+    #[cfg(feature = "agent-control")]
     pub(super) fn dragon_status(&self) -> serde_json::Value {
         serde_json::json!({
             "dragon": self.dragon.as_ref().map(|d| serde_json::json!({

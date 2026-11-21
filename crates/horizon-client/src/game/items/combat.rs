@@ -211,6 +211,7 @@ impl CombatTracker {
 
     /// The newest damage of this fight for `events`: when it landed (game
     /// time), its damage type, the amount and the name of what dealt it.
+    #[cfg(feature = "agent-control")]
     pub(super) fn last_hit(&self) -> Option<(i64, String, Option<f32>, Option<String>)> {
         let e = self.entries.last()?;
         let by = e

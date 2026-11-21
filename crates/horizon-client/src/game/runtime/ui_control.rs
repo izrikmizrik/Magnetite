@@ -1,3 +1,4 @@
+// game-module-cfg: feature = "agent-control"
 //! The widget tree of the open screen for agents (`ui`, `click ID`, `set ID
 //! VALUE`; docs/agent-control.md): what the last frame drew, with ids, and
 //! clicks that go through the same window events as the mouse.
