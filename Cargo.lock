@@ -3519,6 +3519,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "magnetite-ios"
+version = "0.1.0"
+dependencies = [
+ "horizon-client",
+ "horizon-mod-host",
+]
+
+[[package]]
 name = "maybe-owned"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

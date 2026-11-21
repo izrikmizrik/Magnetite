@@ -1,0 +1,42 @@
+# Magnetite iOS's .ipa, for an iPhone or iPad: the core built for aarch64-apple-ios with the mobile
+# profile, wrapped by packaging/ios with an ad hoc signature (SideStore/AltStore re-sign it,
+# TrollStore installs it as is). Run by hand (Actions → ios-ipa → Run workflow) and for release
+# tags; a whole optimized game build takes a while.
+name: ios-ipa
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*', 'e4mc-v*']
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+
+jobs:
+  ipa:
+    name: IPA (arm64, ad hoc)
+    runs-on: macos-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust with the iOS target
+        run: |
+          rustup toolchain install stable --profile minimal --target aarch64-apple-ios
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-ipa
+      - name: Build the magnetite executable
+        run: cargo build --locked -p magnetite-ios --target aarch64-apple-ios --profile fast
+      - name: Package the .ipa
+        env:
+          MAGNETITE_IOS_VERSION: 0.1.0
+          MAGNETITE_IOS_BUILD: ${{ github.run_number }}
+        run: bash packaging/ios/package.sh target/aarch64-apple-ios/fast/magnetite dist/Magnetite-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magnetite-ios
+          path: dist/Magnetite-unsigned.ipa
+          if-no-files-found: error
