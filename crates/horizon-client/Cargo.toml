@@ -134,7 +134,7 @@ upstream-parallel-mobs = ["horizon-gameplay/upstream-parallel-mobs"]
 default = ["audio", "controllers", "horizon-extras", "desktop"]
 # The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods", "hdr"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods", "hdr", "splitscreen", "studio"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["audio"]
 # Agent control: the control socket, horizon-ctl's commands and the AI Agent settings page
@@ -154,6 +154,10 @@ desktop-opener = ["horizon-client-lib/desktop-opener"]
 native-mods = ["horizon-mod-package/runtime-process"]
 # HDR output; phones draw SDR only.
 hdr = ["horizon-client-lib/hdr", "horizon-client-render/hdr"]
+# Splitscreen (game/runtime/split/): without it a second controller never opens a player's view.
+splitscreen = []
+# Horizon Studio, the replay editor (game/interface/studio.rs); replays themselves stay.
+studio = []
 # Scoped trait-mod installation for a mod's own tests.
 testing = []
 # Per-level-tick state digest for determinism checks (game/state_digest.rs).

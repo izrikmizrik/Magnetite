@@ -733,7 +733,8 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let on = self.host.settings.extras.splitscreen || self.forced;
+        // Phones have no splitscreen (the `splitscreen` feature is in the desktop group only).
+        let on = cfg!(feature = "splitscreen") && (self.host.settings.extras.splitscreen || self.forced);
         // Only splitscreen places windows on monitors. Listing them is a round trip to the
         // window server (macOS: 0.1-0.3 ms, more on a busy machine), so not every frame.
         if (on || !self.surfaces.is_empty())

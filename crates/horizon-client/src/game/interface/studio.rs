@@ -29,7 +29,7 @@ pub(super) struct Studio {
 /// Studio's editor runs. It is a Horizon extra (docs/layers.md: the replay editor), so a build
 /// without `horizon-extras` (horizon-plain) plays replays without it: no free camera, path,
 /// timeline or top bar, and no editor commands or keys.
-pub(super) const EDITOR: bool = cfg!(feature = "horizon-extras");
+pub(super) const EDITOR: bool = cfg!(feature = "horizon-extras") && cfg!(feature = "studio");
 
 impl Studio {
     /// The free camera flies, apart from the player.

@@ -31,7 +31,7 @@ workspace = true
 default = ["audio", "controllers", "horizon-extras", "desktop"]
 # The desktop group: the PC-only features, agent control and the rest; more join it later
 # (docs/unification/mobile-trim-plan.md).
-desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods", "hdr"]
+desktop = ["agent-control", "benchmark", "telemetry-store", "desktop-opener", "native-mods", "hdr", "splitscreen", "studio"]
 # The mobile group: what a phone build carries; the desktop group stays out.
 mobile = ["horizon-client/audio"]
 # Agent control: the control socket and horizon-ctl's commands (horizon-client's feature).
@@ -44,6 +44,8 @@ telemetry-store = ["horizon-client/telemetry-store"]
 desktop-opener = ["horizon-client/desktop-opener"]
 native-mods = ["horizon-client/native-mods"]
 hdr = ["horizon-client/hdr"]
+splitscreen = ["horizon-client/splitscreen"]
+studio = ["horizon-client/studio"]
 audio = ["horizon-client/audio"]
 controllers = ["horizon-client/controllers"]
 horizon-extras = ["horizon-client/horizon-extras"]
