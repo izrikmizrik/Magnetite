@@ -1,0 +1,24 @@
+// Magnetite Android's APK around libmagnetite_android.so. The library and the assets are staged
+// by .github/workflows/android-apk.yml (or by hand) into ../../.local/android/{jni,assets}.
+plugins { id 'com.android.application' version '8.11.1' }
+
+android {
+    namespace 'dev.magnetite'
+    compileSdk 35
+    defaultConfig {
+        applicationId providers.gradleProperty('appId').getOrElse('dev.magnetite')
+        minSdk 28
+        targetSdk 35
+        versionCode providers.gradleProperty('versionCode').getOrElse('1').toInteger()
+        versionName providers.gradleProperty('versionName').getOrElse('0.1.0-dev')
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    sourceSets.main {
+        manifest.srcFile 'AndroidManifest.xml'
+        jniLibs.srcDirs = ['../../.local/android/jni']
+        assets.srcDirs = ['../../.local/android/assets']
+        res.srcDirs = ['res']
+    }
+    packaging { jniLibs { useLegacyPackaging = true } }
+}
+layout.buildDirectory = file('../../.local/android/gradle-build')
