@@ -1,8 +1,9 @@
-//! The Microsoft account the launcher signed in, handed over in a session
-//! file (docs/microsoft-account.md), and the Minecraft services call
-//! online-mode servers need: authlib's MinecraftServicesSessionService.joinServer
-//! through the services discovery document. The access token stays in this
-//! process's memory: it is never logged, printed or written anywhere.
+//! The Microsoft or Ely.by account the launcher signed in, handed over in a
+//! session file (docs/microsoft-account.md), and the join call online-mode
+//! servers need: authlib's MinecraftServicesSessionService.joinServer through
+//! the services discovery document, or Ely.by's own session service for an
+//! Ely.by account. The access token stays in this process's memory: it is never
+//! logged, printed or written anywhere.
 use std::{
     path::Path,
     sync::{Arc, Mutex, OnceLock},
@@ -11,14 +12,26 @@ use std::{
 
 /// MinecraftServicesEnvironment.PROD.
 pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";
+/// Ely.by's session service: the join call of its Yggdrasil-compatible API. Servers that accept
+/// Ely.by accounts check the join against it (authlib-injector), not against Mojang's.
+pub const ELY_JOIN_URL: &str = "https://authserver.ely.by/session/join";
+/// Ely.by's session server profile: `<this>/<undashed uuid>`, with the textures property.
+pub const ELY_PROFILE_URL: &str = "https://authserver.ely.by/session/profile";
+/// Where Ely.by keeps a skin by the account's name.
+pub const ELY_SKIN_URL: &str = "https://skinsystem.ely.by/skins";
+/// The `user_type` of a session file for an Ely.by account.
+pub const ELY_USER_TYPE: &str = "elyby";
 /// A session file older than this is refused: it can't be replayed later.
 const MAX_SESSION_FILE_AGE: Duration = Duration::from_secs(120);
 
-/// A signed-in account (vanilla's User with type msa).
+/// A signed-in account: vanilla's User with type msa, or an Ely.by one.
 pub struct AuthSession {
     pub name: String,
     pub uuid: u128,
     pub xuid: Option<String>,
+    /// An Ely.by account: it joins through Ely.by's session service, and has no Mojang services
+    /// (account status, chat keys).
+    pub ely: bool,
     access_token: String,
 }
 impl std::fmt::Debug for AuthSession {
@@ -46,14 +59,24 @@ impl AuthSession {
             name: name.to_owned(),
             uuid,
             xuid: None,
+            ely: false,
             access_token: access_token.to_owned(),
+        }
+    }
+
+    /// An Ely.by account's session.
+    pub fn new_ely(name: &str, uuid: u128, access_token: &str) -> Self {
+        Self {
+            ely: true,
+            ..Self::new(name, uuid, access_token)
         }
     }
 
     pub fn access_token(&self) -> &str {
         &self.access_token
     }
-    /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa", "xuid"}.
+    /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa" | "elyby",
+    /// "xuid"}.
     pub fn parse(text: &str) -> Result<Self, String> {
         let v: serde_json::Value =
             serde_json::from_str(text).map_err(|_| "the session is not valid JSON")?;
@@ -68,13 +91,18 @@ impl AuthSession {
         let access_token = field("access_token")
             .filter(|t| !t.is_empty())
             .ok_or("the session has no access token")?;
-        if field("user_type").is_some_and(|t| t != "msa") {
-            return Err("the session is not a Microsoft account session".into());
-        }
+        let ely = match field("user_type") {
+            None | Some("msa") => false,
+            Some(ELY_USER_TYPE) => true,
+            Some(_) => {
+                return Err("the session is not a Microsoft or Ely.by account session".into());
+            }
+        };
         Ok(Self {
             name: name.to_owned(),
             uuid,
             xuid: field("xuid").map(str::to_owned),
+            ely,
             access_token: access_token.to_owned(),
         })
     }
@@ -236,6 +264,10 @@ pub fn endpoint(doc: &serde_json::Value, service: &str, name: &str) -> Option<St
 /// to no actions, as vanilla does. Blocks: call it off the main thread.
 pub fn fetch_account_status(session: &AuthSession) -> crate::ban_notice::AccountStatus {
     use crate::ban_notice::{AccountStatus, parse_profile_actions, parse_properties};
+    if session.ely {
+        // Ely.by has no Mojang account services: nothing to restrict, nothing to show.
+        return AccountStatus::default();
+    }
     let Ok(doc) = discovery() else {
         return AccountStatus::default();
     };
@@ -306,8 +338,7 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
 }
 
 fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
-    let doc = discovery()?;
-    let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
+    let url = join_url(session)?;
     match agent()
         .post(&url)
         .set("Content-Type", "application/json; charset=utf-8")
@@ -328,6 +359,16 @@ fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), Join
             Err(JoinError::Unavailable)
         }
     }
+}
+
+/// The session service that records a join: Ely.by's own for an Ely.by account, else the
+/// discovery document's `session`/`join` endpoint.
+fn join_url(session: &AuthSession) -> Result<String, JoinError> {
+    if session.ely {
+        return Ok(ELY_JOIN_URL.to_owned());
+    }
+    let doc = discovery()?;
+    endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)
 }
 
 /// The account's chat key pair (ProfileKeyPair): the private key that signs
@@ -476,6 +517,10 @@ pub fn prepare_chat_keys(now: bool) {
 
 /// Prepare keys for this player, independently of the other local accounts.
 pub fn prepare_chat_keys_for(session: Arc<AuthSession>, now: bool) {
+    // Ely.by gives no profile keys: such an account chats unsigned.
+    if session.ely {
+        return;
+    }
     let uuid = session.uuid;
     let mut accounts = CHAT_KEYS.lock().unwrap();
     let keys = accounts.entry(uuid).or_default();
@@ -528,10 +573,55 @@ pub fn chat_keys_for(uuid: u128) -> Option<Arc<ChatKeyPair>> {
 
 const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/profile";
 
+/// An Ely.by account's own textures: its session server's profile, else the skin Ely.by keeps
+/// under the account's name (`skinsystem.ely.by/skins/<name>.png`, a 404 when there is none).
+/// Logged either way, for the log of a skin that doesn't show.
+fn ely_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+    let url = format!("{ELY_PROFILE_URL}/{:032x}?unsigned=true", session.uuid);
+    let profile = agent()
+        .get(&url)
+        .call()
+        .map_err(|e| log::warn!("Ely.by profile of {}: {e}", session.name))
+        .ok()
+        .and_then(|r| r.into_string().ok())
+        .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+    let textures = profile
+        .map(|p| crate::skins::session_profile_textures(&p))
+        .filter(|t| t.skin.is_some() || t.cape.is_some());
+    if textures.is_some() {
+        log::info!(
+            "Ely.by textures of {}: from the session server",
+            session.name
+        );
+        return textures;
+    }
+    let skin = format!("{ELY_SKIN_URL}/{}.png", session.name);
+    match agent().get(&skin).call() {
+        Ok(response) if response.status() == 200 => {
+            log::info!("Ely.by textures of {}: from {skin}", session.name);
+            Some(crate::skins::Textures {
+                skin: Some(skin),
+                ..Default::default()
+            })
+        }
+        other => {
+            log::warn!(
+                "Ely.by has no skin for {} (the session server's profile had none; {skin}: {})",
+                session.name,
+                other.map_or_else(|e| e.to_string(), |r| r.status().to_string())
+            );
+            None
+        }
+    }
+}
+
 /// The signed-in account's active skin and cape from `GET /minecraft/profile`.
 /// Single-player and integrated servers often send no `textures` property, or
 /// one without the equipped cape; the client asks the profile endpoint once.
 pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+    if session.ely {
+        return ely_textures(session);
+    }
     let response = agent()
         .get(MINECRAFT_PROFILE)
         .set("Authorization", &format!("Bearer {}", session.access_token))
@@ -768,6 +858,79 @@ mod tests {
         assert!(AuthSession::parse(r#"{"name":"A","uuid":"069a79f444e94726a5befca90e38aaf5","access_token":"t","user_type":"legacy"}"#).is_err());
         let s = AuthSession::parse(r#"{"name":"A","uuid":"069a79f444e94726a5befca90e38aaf5","access_token":"t","xuid":"25"}"#).unwrap();
         assert_eq!(s.xuid.as_deref(), Some("25"));
+    }
+
+    #[test]
+    fn an_ely_session_is_read_as_one() {
+        let text = r#"{"name":"Alt","uuid":"00000000000000000000000000000003","access_token":"tok","user_type":"elyby"}"#;
+        let session = AuthSession::parse(text).unwrap();
+        assert!(session.ely);
+        assert_eq!(session.name, "Alt");
+        let msa = text.replace("elyby", "msa");
+        assert!(!AuthSession::parse(&msa).unwrap().ely);
+        assert!(AuthSession::parse(&text.replace("elyby", "legacy")).is_err());
+        // Ely.by tokens are not JWTs: never counted as expired.
+        assert!(!session.expired());
+    }
+
+    /// An Ely.by account joins through Ely.by's session service, without asking the discovery
+    /// document (which a Microsoft account's join still uses).
+    #[test]
+    fn an_ely_session_joins_through_ely_bys_session_service() {
+        let ely = AuthSession::parse(
+            r#"{"name":"Alt","uuid":"00000000000000000000000000000003","access_token":"tok","user_type":"elyby"}"#,
+        )
+        .unwrap();
+        assert_eq!(join_url(&ely), Ok(ELY_JOIN_URL.to_owned()));
+    }
+
+    /// Ely.by's answer for a public account, kept as it came (curl, 2026-11-18).
+    const ELY_PROFILE_ANSWER: &str = r#"{"id":"ffc8fdc95824509e8a57c99b940fb996","name":"ErickSkrauch","properties":[{"name":"textures","value":"eyJ0aW1lc3RhbXAiOjE3OTQ5Nzc4NDAyODEsInByb2ZpbGVJZCI6ImZmYzhmZGM5NTgyNDUwOWU4YTU3Yzk5Yjk0MGZiOTk2IiwicHJvZmlsZU5hbWUiOiJFcmlja1NrcmF1Y2giLCJ0ZXh0dXJlcyI6eyJTS0lOIjp7InVybCI6Imh0dHA6Ly9lbHkuYnkvc3RvcmFnZS9za2lucy82OWM2NzQwZDI5OTNlNWQ2ZjZhN2ZjOTI0MjBlZmMyOS5wbmcifX19"},{"name":"ely","value":"but why are you asking?"}]}"#;
+
+    /// The session server's answer names the skin on Ely.by's own host, which the allowlist takes.
+    #[test]
+    fn ely_bys_own_profile_answer_gives_the_skin() {
+        let profile: serde_json::Value = serde_json::from_str(ELY_PROFILE_ANSWER).unwrap();
+        let textures = crate::skins::session_profile_textures(&profile);
+        assert_eq!(
+            textures.skin.as_deref(),
+            Some("http://ely.by/storage/skins/69c6740d2993e5d6f6a7fc92420efc29.png")
+        );
+        // The odd second property (`ely`) is not in the way.
+        assert!(!textures.slim);
+    }
+
+    /// Against the real Ely.by (the network, and a TLS root the build trusts):
+    /// `cargo test -- --ignored ely_account`.
+    #[test]
+    #[ignore = "needs the network"]
+    fn ely_account_textures_come_from_the_ely_session_server() {
+        let uuid = parse_uuid("ffc8fdc95824509e8a57c99b940fb996").unwrap();
+        let session = AuthSession::new_ely("ErickSkrauch", uuid, "unused");
+        let textures = own_textures(&session).expect("Ely.by answered with textures");
+        let skin = textures.skin.expect("a skin");
+        assert!(skin.starts_with("http://ely.by/storage/skins/"), "{skin}");
+        // And the skin itself is there, a PNG.
+        let png = crate::skins::http_get(&skin).expect("the skin downloads");
+        assert!(png.starts_with(b"\x89PNG"));
+    }
+
+    /// An Ely.by account has none of Mojang's services: it chats unsigned and has no account
+    /// status to fetch, so preparing its keys asks nothing at all.
+    #[test]
+    fn an_ely_session_has_no_mojang_services() {
+        let ely = Arc::new(AuthSession::new_ely("Alt", 104, "ely-token"));
+        CHAT_KEYS.lock().unwrap().remove(&ely.uuid);
+        prepare_chat_keys_for(ely.clone(), true);
+        assert!(
+            !CHAT_KEYS.lock().unwrap().contains_key(&ely.uuid),
+            "no profile key fetch is started"
+        );
+        assert!(chat_keys_for(ely.uuid).is_none(), "no profile keys");
+        assert_eq!(
+            fetch_account_status(&ely),
+            crate::ban_notice::AccountStatus::default()
+        );
     }
 
     #[test]

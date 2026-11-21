@@ -99,8 +99,8 @@ One folder per instance, and the owner's session on standard input:
 horizon-client --resources PREPARED --game-dir INSTANCE --home INSTANCE --width 1280 --height 720 --session-stdin
 ```
 
-- Write the [session JSON](launch.md#the-session-json) (`name`, `uuid`, `access_token`, `user_type: "msa"`,
-  `xuid` optional) to the game's standard input and close it. Never put a token on the command line, where other programs
+- Write the [session JSON](launch.md#the-session-json) (`name`, `uuid`, `access_token`, `user_type: "msa"` or
+  `"elyby"`, `xuid` optional) to the game's standard input and close it. Never put a token on the command line, where other programs
   can read it. `--session-file` is the alternative: the game reads the file once and deletes it.
 - `--game-dir` holds saves, `options.txt`, resource packs, mods and screenshots; `--home` holds `logs/latest.log`
   and `crash-reports/`. `--quickPlaySingleplayer WORLD` or `--quickPlayMultiplayer HOST[:PORT]` opens a world or a

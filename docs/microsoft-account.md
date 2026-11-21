@@ -247,6 +247,9 @@ machine can read it in the process list. Horizon keeps it out of argv:
   the game with `--session-file PATH`.
 - The game reads the file at start and deletes it at once; the token lives only in the game's memory.
   A file older than two minutes is refused (and deleted), so a stale file can't be replayed.
+- `"user_type": "elyby"` marks an Ely.by account's session in the same file: the game joins servers
+  through Ely.by's session service (`https://authserver.ely.by/session/join`), fetches its skin from
+  Ely.by, chats unsigned and asks no Mojang service (account status, chat keys).
 - Without a session file the game is offline as today (`--name`, offline UUID).
 - `HORIZON_SESSION_FILE` is the same as `--session-file` (development and harnesses).
 - `--session-stdin` takes the same JSON on standard input instead, so nothing touches the disk (for other
@@ -275,7 +278,9 @@ Vanilla's `ClientHandshakePacketListenerImpl.handleHello`, `Crypt` and authlib's
 4. If `should_authenticate`: `POST` the session service's `join` endpoint
    `{"accessToken", "selectedProfile" (undashed UUID), "serverId": hash}`, the URL taken from the
    services discovery document (`https://discovery.minecraftservices.com/minecraft/client`, fetched
-   once per game). Errors map like authlib's `MinecraftClientHttpException`:
+   once per game); an Ely.by account posts the same body to
+   `https://authserver.ely.by/session/join` and never asks the discovery document. Errors map like
+   authlib's `MinecraftClientHttpException`:
    `ForbiddenOperationException` or 401 → "Failed to log in: Invalid session (Try restarting your
    game and the launcher)", `InsufficientPrivilegesException` → "Multiplayer is disabled…",
    `multiplayer.access.banned` / `FORCED_USERNAME_CHANGE` → "You are banned from playing online",
@@ -322,7 +327,8 @@ To chat on such servers the game (`auth.rs`, `game/network/remote_chat.rs`, `hor
   private key, the X.509 public key, `publicKeySignatureV2`, `expiresAt` and `refreshedAfter`. Like the
   token, the pair stays in memory (vanilla's `profilekeys/` file is not written). Past `refreshedAfter` a
   new pair is fetched (checked at most hourly while playing, and on every join); a failed fetch keeps the
-  old pair and tries again an hour later;
+  old pair and tries again an hour later. An Ely.by account has no Mojang profile keys (`auth.rs` skips
+  the fetch), so it chats unsigned everywhere;
 - sends `ServerboundChatSessionUpdatePacket` (random session UUID, key expiry, public key, Mojang's
   key signature) after each login packet, and again when the pair is renewed, only when the server
   plays the account under its own profile id (`isLocalPlayer`): an offline-mode server's offline id

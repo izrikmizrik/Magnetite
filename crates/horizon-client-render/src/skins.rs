@@ -36,21 +36,35 @@ pub const TEXTURE_URIS: [&str; 2] = [
     "http://textures.minecraft.net/texture/{textureId}",
 ];
 
+/// Ely.by's texture hosts, allowed next to the services': its session server names a skin
+/// `http://ely.by/storage/skins/<hash>.png`, and servers that take Ely.by accounts (authlib-injector)
+/// send such profiles.
+pub const ELY_TEXTURE_URIS: [&str; 6] = [
+    "https://ely.by/storage/skins/{textureId}",
+    "http://ely.by/storage/skins/{textureId}",
+    "https://ely.by/storage/capes/{textureId}",
+    "http://ely.by/storage/capes/{textureId}",
+    "https://skinsystem.ely.by/{textureId}",
+    "http://skinsystem.ely.by/{textureId}",
+];
+
 /// `MinecraftServicesDiscoveryService`'s valid texture URIs: the discovery
 /// document's `profiles` / `getTexture` `validUris`, which
 /// `MinecraftServicesSessionService.isAllowedTextureDomain` checks texture URLs
 /// against. Production's document lists [`TEXTURE_URIS`], so they are used
 /// without asking it; another environment (`HORIZON_API_DISCOVERY`) is asked
 /// once per game, and keeps [`TEXTURE_URIS`] when its document lists none or
-/// can't be fetched.
+/// can't be fetched. [`ELY_TEXTURE_URIS`] are added either way.
 pub fn texture_uris() -> &'static [String] {
     static URIS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     URIS.get_or_init(|| {
-        crate::auth::discovery_overridden()
+        let mut uris = crate::auth::discovery_overridden()
             .then(|| crate::auth::discovery().ok())
             .flatten()
             .and_then(|doc| discovery_texture_uris(&doc))
-            .unwrap_or_else(|| TEXTURE_URIS.map(str::to_owned).to_vec())
+            .unwrap_or_else(|| TEXTURE_URIS.map(str::to_owned).to_vec());
+        uris.extend(ELY_TEXTURE_URIS.map(str::to_owned));
+        uris
     })
 }
 
@@ -198,6 +212,15 @@ pub fn unpack(value: &str, signature: Signature, valid_uris: &[impl AsRef<str>])
 pub fn profile_skin_url(profile: &serde_json::Value) -> Option<String> {
     let (value, signature) = parse_profile(profile).textures?;
     unpack(&value, signature, texture_uris()).skin
+}
+
+/// The textures of a session server's profile answer (`/session/profile/<id>`, as Ely.by's):
+/// the `textures` property's payload, unsigned, and only URLs under the allowed domains count.
+pub fn session_profile_textures(profile: &serde_json::Value) -> Textures {
+    match parse_profile(profile).textures {
+        Some((value, _)) => unpack(&value, Signature::Unsigned, texture_uris()),
+        None => Textures::default(),
+    }
 }
 
 /// The textures of a Minecraft services `/minecraft/profile` answer: the
@@ -1504,9 +1527,10 @@ impl SkinSlots {
     }
 }
 
-/// A GET over HTTP or HTTPS (textures.minecraft.net serves both; vanilla
-/// uses https): the body of a 2xx answer, 16 MiB at most, after redirects.
-fn http_get(url: &str) -> Option<Vec<u8>> {
+/// A GET over HTTP or HTTPS (textures.minecraft.net and Ely.by's skin hosts
+/// serve both; vanilla uses https): the body of a 2xx answer, 16 MiB at
+/// most, after redirects.
+pub(crate) fn http_get(url: &str) -> Option<Vec<u8>> {
     use std::io::Read;
     let response = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(15))
@@ -1968,6 +1992,46 @@ mod tests {
         );
         assert!(t.slim);
         assert!(!unpack(wide, Signature::Signed, &TEXTURE_URIS).slim);
+    }
+
+    /// Ely.by's session server names skins on its own host: those are allowed next to the
+    /// services' (servers that take Ely.by accounts send such profiles), other hosts are not.
+    #[test]
+    fn ely_bys_textures_are_allowed_next_to_the_services() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let payload = |kind: &str, url: &str| {
+            STANDARD.encode(format!(r#"{{"textures":{{"{kind}":{{"url":"{url}"}}}}}}"#))
+        };
+        let skin = "http://ely.by/storage/skins/69c6740d.png";
+        let t = super::unpack(
+            &payload("SKIN", skin),
+            super::Signature::Unsigned,
+            super::texture_uris(),
+        );
+        assert_eq!(t.skin.as_deref(), Some(skin));
+        let cape = "https://ely.by/storage/capes/69c6740d.png";
+        let t = super::unpack(
+            &payload("CAPE", cape),
+            super::Signature::Unsigned,
+            super::texture_uris(),
+        );
+        assert_eq!(t.cape.as_deref(), Some(cape));
+        let other = super::unpack(
+            &payload("SKIN", "http://evil.example/skin.png"),
+            super::Signature::Unsigned,
+            super::texture_uris(),
+        );
+        assert_eq!(other, super::Textures::default());
+        // A whole session profile, as Ely.by answers it.
+        let profile = serde_json::json!({
+            "id": "ffc8fdc95824509e8a57c99b940fb996",
+            "name": "ErickSkrauch",
+            "properties": [{"name": "textures", "value": payload("SKIN", skin)}],
+        });
+        assert_eq!(
+            super::session_profile_textures(&profile).skin.as_deref(),
+            Some(skin)
+        );
     }
     /// Authlib's `MinecraftServicesSessionService` rejects the whole profile in
     /// `unpackTextures` when any texture URL is outside the allowed origins.
