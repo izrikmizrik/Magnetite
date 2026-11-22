@@ -232,6 +232,11 @@ impl Game<'_> {
                 Some(CursorGrabMode::Locked)
             } else if window.set_cursor_grab(CursorGrabMode::Confined).is_ok() {
                 Some(CursorGrabMode::Confined)
+            } else if self.settings.touchscreen {
+                // A phone or tablet has no pointer to grab (winit can't, on Android and iOS):
+                // played by touch, the game holds the view all the same, with fingers turning
+                // it (interface/touch.rs), and the world's touch controls show.
+                Some(CursorGrabMode::None)
             } else {
                 None
             };

@@ -102,7 +102,8 @@ fn system_language() -> Option<String> {
     use objc2_foundation::NSLocale;
     // SAFETY: Foundation's documented class property.
     let languages = unsafe { NSLocale::preferredLanguages() };
-    let first = languages.firstObject()?.to_string();
+    // SAFETY: an NSArray of NSString, as the property returns.
+    let first = unsafe { languages.firstObject() }?.to_string();
     let code = first.replace('-', "_").to_lowercase();
     // "zh_hans_cn" style: script codes are not in the game's names; keep language and region.
     let mut parts = code.split('_').filter(|p| p.len() == 2);
