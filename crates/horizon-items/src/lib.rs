@@ -12,6 +12,8 @@ pub mod bundle;
 mod component_removal_tests;
 pub mod content_namespaces;
 pub mod cooldowns;
+#[cfg(test)]
+mod copy_components_tests;
 pub mod durability;
 pub mod enchant;
 pub mod equipment;

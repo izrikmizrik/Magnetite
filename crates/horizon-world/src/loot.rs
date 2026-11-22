@@ -180,6 +180,50 @@ pub struct LootPlace {
     pub block_entity: Option<Tag>,
     /// The level the roll is in.
     pub level: Option<LootLevel>,
+    /// `BlockEntity.collectComponents` of a mod's block entity in
+    /// `block_entity`: its saved `components` and those its mod says it holds
+    /// (`block_entity_collect_components`), for `minecraft:copy_components`.
+    /// None for a vanilla block entity: the game copies those itself, by the
+    /// vanilla tables' policy (`spill.rs`).
+    pub components: Option<horizon_core::nbt::Compound>,
+}
+
+/// `CopyComponentsFunction.run` with `"source": "block_entity"`: the
+/// components of the roll's block entity (`LootPlace::components`) that the
+/// function's `include` and `exclude` lists allow, in the block entity's
+/// order. An id without a namespace is `minecraft:`'s. Empty when the roll
+/// has no such block entity, or the source is another one.
+pub fn copied_components(f: &Value, place: Option<&LootPlace>) -> Vec<(String, Tag)> {
+    if f["source"].as_str() != Some("block_entity") {
+        return Vec::new();
+    }
+    let Some(components) = place.and_then(|p| p.components.as_ref()) else {
+        return Vec::new();
+    };
+    let ids = |key: &str| -> Option<Vec<String>> {
+        let list = f.get(key)?.as_array()?;
+        Some(
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(|id| {
+                    if id.contains(':') {
+                        id.to_owned()
+                    } else {
+                        format!("minecraft:{id}")
+                    }
+                })
+                .collect(),
+        )
+    };
+    let (include, exclude) = (ids("include"), ids("exclude").unwrap_or_default());
+    components
+        .iter()
+        .map(|(k, v)| (k.to_string_lossy(), v))
+        .filter(|(k, _)| !k.starts_with('!'))
+        .filter(|(k, _)| include.as_ref().is_none_or(|list| list.contains(k)))
+        .filter(|(k, _)| !exclude.contains(k))
+        .map(|(k, v)| (k, v.clone()))
+        .collect()
 }
 
 /// The level a loot roll is in, as a mod's own loot kinds see it.
@@ -2024,6 +2068,13 @@ impl<R: RandomSource> Context<'_, R> {
                     stack.components.push((id.clone(), tag));
                 }
             }
+            // CopyComponentsFunction: the block entity's components, set on
+            // the stack in its order (`ItemStack.applyComponents`).
+            "minecraft:copy_components" => {
+                for (id, tag) in copied_components(f, current_native_loot_place().as_deref()) {
+                    stack.components.push((id, Some(tag)));
+                }
+            }
             // A mod's own kind: the hook changes the stack.
             k if k.contains(':') && !k.starts_with("minecraft:") => {
                 let tags = self.data;
@@ -3331,6 +3382,34 @@ mod native_kinds_tests {
         let mut r6 = horizon_core::random::LegacyRandom::new(42);
         let b = modded.roll("minecraft:test", &mut r6, 0.0, None, None);
         assert_eq!(a, b, "same seed, different result");
+    }
+
+    /// `copy_components` from the block entity keeps what `include` names
+    /// (an id without a namespace is `minecraft:`'s) less what `exclude`
+    /// names; another source, or no block entity, copies nothing.
+    #[test]
+    fn copy_components_filters_the_block_entitys_components() {
+        let mut components = horizon_core::nbt::Compound::new();
+        components.insert("minecraft:custom_name".into(), Tag::String("Pot".into()));
+        components.insert("test:meal".into(), Tag::Int(2));
+        components.insert("test:heat".into(), Tag::Int(5));
+        let place = LootPlace {
+            components: Some(components),
+            ..LootPlace::default()
+        };
+        let f = serde_json::json!({"type": "minecraft:copy_components", "source": "block_entity",
+            "include": ["custom_name", "test:meal", "test:heat"], "exclude": ["test:heat"]});
+        let ids: Vec<String> = copied_components(&f, Some(&place))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["minecraft:custom_name", "test:meal"]);
+        let all =
+            serde_json::json!({"type": "minecraft:copy_components", "source": "block_entity"});
+        assert_eq!(copied_components(&all, Some(&place)).len(), 3);
+        let other = serde_json::json!({"type": "minecraft:copy_components", "source": "this"});
+        assert!(copied_components(&other, Some(&place)).is_empty());
+        assert!(copied_components(&all, None).is_empty());
     }
 
     fn place(x: f64) -> LootPlace {

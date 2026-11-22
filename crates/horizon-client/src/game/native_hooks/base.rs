@@ -1131,6 +1131,23 @@ impl Game<'_> {
     ) {
         Self::fire_block_entity_update_tag(pos, entity, tag);
     }
+    /// The item components the block entity at `pos` holds in its own data
+    /// when its `id` is yours (`BlockEntity.collectImplicitComponents`): set
+    /// `components` to them, read from `entity` alone (a pot's meal, a
+    /// cabinet's contents). Asked on the server when a loot roll copies the
+    /// broken block's components into its drop (`minecraft:copy_components`
+    /// with `"source": "block_entity"`); the roll keeps those the function's
+    /// `include` and `exclude` allow, over the block entity's own saved
+    /// `components`. `entity` is the block entity as it was before the break.
+    /// Leave it unset to add none.
+    pub(in crate::game) fn native_block_entity_collect_components(
+        &mut self,
+        pos: [i32; 3],
+        entity: &ModBlockEntity,
+        components: &mut Option<Compound>,
+    ) {
+        self.fire_block_entity_collect_components(pos, entity, components);
+    }
     /// Draw the mod block entity at `pos`, of block `block`
     /// (`mymod:machine`), on this client: once a frame while it is in view
     /// (vanilla's `BlockEntityRenderer.submit`: within its view distance, 64 blocks unless
