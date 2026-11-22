@@ -92,7 +92,9 @@ impl Game<'_> {
                 && let Ok(snapshot) = held.try_into_api()
             {
                 let click = self.block_click(hit, self.hand, snapshot.as_ref());
-                self.native_use_item_on(state, &click, &mut block_answer);
+                let mut used = mod_api::UsedStack::new(snapshot.clone());
+                self.native_use_item_on(state, &click, &mut used, &mut block_answer);
+                self.apply_used_stack(used);
             }
             let mut chains_sign = false;
             if block_answer.is_none() {

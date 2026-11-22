@@ -13,6 +13,34 @@ impl Game<'_> {
         self.stack_in_mut(self.held_slot())
     }
 
+    /// What a block's `use_item_on` Parts left of the stack the click was made with, put in the
+    /// acting hand when one changed it. A stack the game can't take (an unknown item, a count
+    /// over its stack size) leaves the hand as it is, with a line in the log.
+    pub(super) fn apply_used_stack(&mut self, used: mod_api::UsedStack) {
+        use super::api_values::TryIntoEngine;
+        let Some(stack) = used.into_changed() else {
+            return;
+        };
+        let stack = match stack.map(|s| s.try_into_engine(self.items())).transpose() {
+            Ok(stack) => stack,
+            Err(e) => {
+                log::warn!("use_item_on: the used stack a mod left was refused: {e:?}");
+                return;
+            }
+        };
+        if let Some(s) = &stack
+            && s.count > s.max_stack_size(self.items())
+        {
+            log::warn!(
+                "use_item_on: the used stack a mod left holds {} of {}, over its stack size",
+                s.count,
+                s.item
+            );
+            return;
+        }
+        *self.held_mut() = stack.filter(|s| s.count > 0 && &*s.item != "minecraft:air");
+    }
+
     /// The slot of the hand that acts: the selected one, or `OFFHAND_SLOT`.
     /// `LivingEntity.canGlide`: some worn piece, or a stack in a hand, glides
     /// there (`canGlideUsing` walks every `EquipmentSlot`: `gliding_slots`).
