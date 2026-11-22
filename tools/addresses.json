@@ -20,7 +20,8 @@
     "user.auth.xboxlive.com": "Xbox Live sign-in, as the vanilla launcher",
     "xsts.auth.xboxlive.com": "Xbox Live sign-in, as the vanilla launcher",
     "auth.xboxlive.com": "Xbox Live sign-in, as the vanilla launcher",
-    "www.microsoft.com": "Microsoft account links, as the vanilla launcher"
+    "www.microsoft.com": "Microsoft account links, as the vanilla launcher",
+    "piston-data.mojang.com": "vanilla's client jars and asset indexes, as the vanilla launcher downloads them"
   },
   "not_addresses": {
     "aternos.me": "bluemap_detect.rs: a dynamic-DNS suffix, to guess a server's own map host",
@@ -45,9 +46,19 @@
   },
   "allowed": [
     "crates/cargo-horizon-mod/src/registry.rs horizon-rust.github.io",
+    "crates/horizon-account/src/lib.rs authserver.ely.by",
+    "crates/horizon-client-render/src/auth.rs authserver.ely.by",
+    "crates/horizon-client-render/src/auth.rs skinsystem.ely.by",
     "crates/horizon-client-render/src/pack_browser.rs api.modrinth.com",
+    "crates/horizon-client-render/src/skins.rs ely.by",
+    "crates/horizon-client-render/src/skins.rs skinsystem.ely.by",
+    "crates/horizon-client/src/game_files.rs github.com",
+    "crates/horizon-client/src/game_files.rs objects.githubusercontent.com",
+    "crates/horizon-client/src/game_files.rs release-assets.githubusercontent.com",
     "crates/horizon-client/src/mod_registry.rs horizon-rust.github.io",
     "crates/horizon-client/src/mod_registry.rs playhorizon.dev",
+    "crates/horizon-mod-package/src/index.rs github.com",
+    "crates/horizon-mod-package/src/index/registry.rs github.com",
     "crates/horizon-mod-registry/src/github.rs api.github.com",
     "crates/horizon-mod-registry/src/github.rs github.com",
     "crates/horizon-mod-registry/src/github.rs uploads.github.com",
@@ -60,6 +71,9 @@
     "crates/horizon-port-pack/src/worldgen.rs maven.neoforged.net",
     "crates/horizon-server/src/service.rs github.com",
     "crates/horizon-server/src/update.rs api.github.com",
+    "crates/horizon-telemetry-server/src/github.rs api.github.com",
+    "crates/horizon-telemetry-server/src/github.rs github.com",
+    "crates/horizon-telemetry-server/src/lib.rs playhorizon.dev",
     "launcher/src/backend.rs api.github.com",
     "launcher/src/backend.rs github.com",
     "launcher/src/backend.rs playhorizon.dev",
@@ -106,11 +120,6 @@
     "launcher/src/signed.rs github.com",
     "launcher/src/tailscale.rs api.tailscale.com",
     "launcher/src/tailscale.rs login.tailscale.com",
-    "launcher/src/tailscale.rs tailscale.com",
-    "crates/horizon-mod-package/src/index.rs github.com",
-    "crates/horizon-mod-package/src/index/registry.rs github.com",
-    "crates/horizon-telemetry-server/src/github.rs api.github.com",
-    "crates/horizon-telemetry-server/src/github.rs github.com",
-    "crates/horizon-telemetry-server/src/lib.rs playhorizon.dev"
+    "launcher/src/tailscale.rs tailscale.com"
   ]
 }

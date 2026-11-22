@@ -105,13 +105,50 @@ IOS (`game/ios_setup.rs:1-9`): Java-таблицы публикуются **од
 
 AND делает то же иначе: живой `version_manifest_v2` + пины `research-lock.json` (`official_install.rs:19-20,326-342`), allowlist хостов (`:113-127`), распаковка assets/+data/ из jar (`:449-465`), затем `resource_install::extract(engine-data.zip)` (`:481`, `resource_install.rs:112`) и **`android_resources::rebuild`** (`:483`, `android_resources.rs:67-95`) — агрегация worldgen JSON чистым Rust, потому что их engine-data.zip беднее. Плюс тач-иконки (`controls_with_progress`, `android_resources.rs:134`) — этап 2, не сейчас.
 
-**Предложение для MAIN (поток):**
+**Готово в MAIN (коммит №7): `crates/horizon-client/src/game_files.rs`.** Модуль lib (не game-area), платформенно-нейтральный, без `#[cfg(target_os)]`; API:
 
-1. **CI (ПК-раннер)**: полная подготовка `horizon-prepare` из MAIN → релиз `tables-<rev>`: zip всех **не-Mojang** файлов подготовленной папки (включая worldgen-агрегации — они тогда не нужны на устройстве, `rebuild` не переносим) + `setup.json` (client/asset_index/objects/jar_files, по образцу `ios-setup.json`). Таблицы форков **не брать** (`android-entry.md:209,229` — расходятся). В git/APK/IPA — ничего Mojang (`AGENTS.md:11-13`).
-2. **Устройство**: порт `ios_setup::run` в MAIN (модуль `game/runtime/setup.rs` или отдельный `crates/horizon-setup`; зависимости уже есть в `horizon-client/Cargo.toml:69-98` — ureq/zip/sha1/sha2). Улучшения из AND: потоковая запись на диск вместо `Vec` whole-file (`ios_setup.rs:107-119` буферизует весь файл в RAM — client.jar ~30–60 МБ терпимо, но лучше стримить), allowlist хостов (`official_install.rs:113-127`), пины sha1 client jar в билде (аналог `research-lock.json` MAIN).
-3. **Вход → файлы**: `Setup::Waiting` закрывается **только Microsoft-аккаунтом**: owner-gate уже встроен в `finish_sign_in` (`microsoft.rs:345`) — успешный MS-вход = владение доказано. Ely владения не имеет (`ely.rs:1-5`) и offline тоже: до появления файлов показывать «Sign in once first» (`ios_boot.rs:557-568`). **Расхождение с IOS-кодом, которое надо исправить сознательно**: IOS запускает setup при любом `Account::Signed` (`ios_boot.rs:1261`), т.е. Ely-вход фактически тоже начинает скачивание без проверки владения; MAIN должен гейтить по `Kind::Microsoft` явно. После первого скачивания файлы общие: Ely и offline играют без MS (правило «файлы приходят с Microsoft-аккаунтом, который владеет игрой, один раз» — `ios_account.rs:6-7`).
-4. **Объёмы**: ~520 МБ загрузка (`ios_boot.rs:534`), тест IOS говорит ~600 МБ (`ios_setup.rs:356-358`); пик диска ~2× во время staging+активации; RAM при стриминге — десятки МБ; время — минуты на Wi-Fi, resume по sha1 (`ios_setup.rs:74-80`) переживает обрывы и смерть процесса. Android: staging в internal storage (кэш `getCacheDir` — потом, хук `configure_download_cache_dir`-аналог); iOS: work в `Library/Caches/horizon-setup` (`ios_boot.rs:627-630`).
-5. `engine-data.zip` в бандле (путь AND) на этапе 1 **не нужен** — один код-путь «таблицы с релиза» для обеих платформ; бандл-вариант можно добавить позже как оптимизацию первого старта.
+```rust
+pub struct InstallSpec { resources, work, tables_url, tables_sha256 }
+pub fn install(spec: &InstallSpec, progress: &InstallProgress) -> Result<(), String>;
+pub fn spec_from_build(resources, work) -> Option<InstallSpec>;   // MAGNETITE_TABLES_URL/_SHA256
+```
+
+`InstallProgress` живёт здесь (его же использует boot-цикл), `boot::installer_from_build` собирает из спеки `Installer` (`Arc<dyn Fn(&InstallProgress) -> Result<(), String> + Send + Sync>`) для `BootConfig::install`.
+
+**Формат `setup.json`** (в `tables.zip`, рядом с папкой таблиц; полное описание — doc-комментарий модуля):
+
+```json
+{
+  "minecraft": "26.3",
+  "client":      { "url": "https://piston-data.mojang.com/…/client.jar", "sha1": "<40 hex>", "size": 27123456 },
+  "asset_index": { "id": "26", "url": "https://piston-data.mojang.com/…/26.json", "sha1": "<40 hex>" },
+  "jar_files":   ["assets/", "data/", "pack.png"],
+  "tables_root": "tables"
+}
+```
+
+`jar_files`: имя с `/` на конце — все члены jar под папкой, иначе точное имя. `tables_root` — папка внутри zip (`""` — корень), по умолчанию `tables`. `minecraft` обязателен и сверяется с `horizon_core::VANILLA_VERSION`: таблицы чужой версии отвергаются, а не подмешиваются. `client.url`/`asset_index.url` — https только на хостах Mojang (`piston-data`/`piston-meta`/`resources.download`), иначе манифест не принимается.
+
+Порядок `install`: таблицы (sha256 из билда) → распаковка `tables_root` в staging → `client.jar` (sha1) → только `jar_files` → `asset-index.json` (sha1) → объекты (8 потоков, sha1 по хешу, имена по индексу `assets/…`) → наличие `horizon-resources.json` → активация: `resources` → `resources.previous`, staging → `resources`, при ошибке старая папка возвращается, при успехе — удаляется. Через диски — копия (`CrossesDevices`/errno 18 и 17).
+
+Отличия от образцов (сознательные):
+
+- **стриминг**: байты идут на диск кусками по 64 КБ (`done` растёт по ходу), файл пишется как `<имя>.part` и переименовывается только после совпадения хеша — оборванная загрузка не оставляет мусора под настоящим именем (в IOS `download` держал весь файл в `Vec`);
+- **allowlist**: `https_host` + список хостов Mojang; для таблиц разрешён ровно хост из `MAGNETITE_TABLES_URL`. Порт обязан быть дефолтным, `user@host` отвергается, http отвергается;
+- **redirects(0)**: адрес, который «переехал», возвращает ошибку с новым адресом (в таблицах его и надо вписать), а не тянет молча с чужого хоста;
+- **докачка**: `file_hash` — файл с верным хешем не качается и учитывается в прогрессе; объекты, jar, индекс и таблицы — все по этому правилу;
+- **ретраи**: 4 попытки с паузой 2/4/8 с, счётчик `done` откатывается на каждой неудаче; «нет места» (ENOSPC/StorageFull) не ретраится;
+- **zip-slip**: `inside()` отвергает `..`, `\`, абсолютные имена, `C:`; `staged_path` не выпускает за `tables_root`; symlink-члены zip и jar отвергаются;
+- **ошибки** — короткие английские строки (`"{url}: the download does not match its hash"`, `"{url}: no connection (…)"`, `"No space left on the device: <path>"`), boot показывает их через `horizon.boot.files.fetch_failed`.
+
+Загрузка абстрагирована трейтом `Fetch` (`get(url) -> Fetched{length, body}`): `Http` — ureq/rustls с таймаутами и UA, тесты подставляют `MapFetch` с локальными байтами. HTTP-тестов с сетью нет.
+
+**CI (ПК-раннер)**: полная подготовка `horizon-prepare` из MAIN → релиз `tables-<rev>` в `magnetite-tables`: zip всех **не-Mojang** файлов подготовленной папки (включая worldgen-агрегации — они тогда не нужны на устройстве, `rebuild` не переносим) + `setup.json` (client/asset_index/jar_files/tables_root). Адрес и sha256 пишутся в сборку через `MAGNETITE_TABLES_URL`/`MAGNETITE_TABLES_SHA256` (коммит №10). Таблицы форков **не брать** (`android-entry.md:209,229` — расходятся). В git/APK/IPA — ничего Mojang (`AGENTS.md:11-13`).
+
+**Устройство**: `boot::run` сам подставляет установщик из `spec_from_build(resources, work)`, если хост не дал свой; `work` теперь поле `BootConfig` (iOS — `Library/Caches/horizon-setup`, Android — `getCacheDir()`). **Повтор**: `BootConfig::install` больше не `FnOnce`, а `Arc<dyn Fn …>`; «Повторить» после ошибки зовёт установщик снова в том же запуске (ключ `horizon.boot.files.retry_restart` удалён), а докачка по хешу делает второй заход дешёвым.
+
+**Вход → файлы**: `Setup::Waiting` закрывается **только Microsoft-аккаунтом**: owner-gate уже встроен в `finish_sign_in` (`microsoft.rs:345`) — успешный MS-вход = владение доказано. Ely владения не имеет (`ely.rs:1-5`) и offline тоже: до появления файлов показывать «Sign in once first» (`ios_boot.rs:557-568`). **Расхождение с IOS-кодом, которое надо исправить сознательно**: IOS запускает setup при любом `Account::Signed` (`ios_boot.rs:1261`), т.е. Ely-вход фактически тоже начинает скачивание без проверки владения; MAIN должен гейтить по `Kind::Microsoft` явно. После первого скачивания файлы общие: Ely и offline играют без MS (правило «файлы приходят с Microsoft-аккаунтом, который владеет игрой, один раз» — `ios_account.rs:6-7`).
+
 
 ---
 
@@ -134,7 +171,7 @@ AND делает то же иначе: живой `version_manifest_v2` + пин
 | 4 | **Экран входа (статика)** | `crates/horizon-client/src/boot_screen.rs` по образцу `no_resources.rs` (layout/draw/click + тесты паритета); состояния Choose/Code/Signed/Failed/Offline; строки в `assets/horizon/lang/{en_us,ru_ru}.json`; Touch-клик (`ios_boot.rs:1240-1252`) | Средняя модель под ревью (образец с тестами есть) |
 | 5 | **Форма Ely + offline-имя + тап-OSK** | поля по образцу AND `login.rs:27-44`; тап-хиттест сетки `osk.rs`; 2FA через `NEEDS_2FA` (`ely.rs:16`) | **Аккуратно** (ввод текста на мобиле без IME — новая механика) |
 | 6 | **Boot-цикл** | `game/runtime/boot.rs`: `pub fn run(BootConfig)`; `BootConfig{game_dir, resources, secrets, work, tables_pin, open_link: fn(&str), keep_awake: fn(bool), start: Box<dyn FnOnce(Option<PathBuf>) -> Result<()>>}`; потоки входа со счётчиком attempt (`ios_boot.rs:127-135`), запись session-файла перед `start`, `app.resumed` + Poll (`ios_boot.rs:1128-1134`) | **Аккуратно** (конкурентность, один цикл на процесс, watchdog) |
-| 7 | **Установщик файлов** | порт `ios_setup.rs:169-325` (таблицы→jar→index→objects, resume, staging+rename) + стриминг на диск и allowlist из AND (`official_install.rs:113-127`); тесты: mock-сервер, zip-slip (`ios_setup.rs:367-373`), resume, битый sha1 | Средняя модель для download/extract (тесты-образцы есть); **аккуратно** — активация/откат (`official_install.rs:497-520`) |
+| 7 | **Установщик файлов** | сделано: `crates/horizon-client/src/game_files.rs` — `InstallSpec`/`install`/`spec_from_build`/`InstallProgress` (таблицы→jar→index→objects, стриминг, resume по хешу, allowlist, zip-slip, активация/откат); `boot.rs`: `Installer = Arc<dyn Fn …>` вместо `FnOnce`, поле `BootConfig::work`, `installer_from_build`, «Повторить» без перезапуска (ключ `horizon.boot.files.retry_restart` удалён). Тесты модуля: mock-`Fetch`, zip-slip, resume, битый хеш, активация/откат | сделано |
 | 8 | **magnetite-android** | `lib.rs`: вместо прямого `main_with` — `boot::run`; пути (`internal_data_path`); `open_link` через JNI Intent (+`jni` в Cargo.toml); `ExitOnReturn` остаётся | Средняя модель после #1-7 |
 | 9 | **magnetite-ios** | `main.rs`: `boot::run`; секреты — `Library/Application Support/horizon`, work — `Library/Caches`; `open_link`/`keep_awake` (objc, главный поток) | **Аккуратно** (UIKit-правила, watchdog) |
 | 10 | **CI таблиц** | workflow: ПК-подготовка MAIN → `tables-<rev>` релиз (zip + setup.json), sha256 в билд через env; `MAGNETITE_MSA_CLIENT_ID` в сборку; ничего Mojang в git | **Аккуратно** (релизный пайплайн, пины) |
@@ -155,7 +192,7 @@ AND делает то же иначе: живой `version_manifest_v2` + пин
 
 ### Верификация end-to-end
 
-- ПК: `cargo test -p horizon-account` (mock-эндпоинты уже есть, `tests.rs`), тесты sink/suspended/экрана (паритет draw/click по образцу `no_resources.rs:260-420`), `cargo check -p magnetite-android --target aarch64-linux-android` и `-p magnetite-ios --target aarch64-apple-ios` (строки в `ci.yml` уже есть для этапа 0).
+- ПК: `cargo test -p horizon-account` (mock-эндпоинты уже есть, `tests.rs`), тесты sink/suspended/экрана (паритет draw/click по образцу `no_resources.rs:260-420`), `cargo test -p horizon-client --lib game_files` (разбор `setup.json`, zip-slip, хеши, докачка, активация/откат, allowlist — без сети) и `cargo test -p horizon-client --lib boot`, `cargo check -p magnetite-android --target aarch64-linux-android` и `-p magnetite-ios --target aarch64-apple-ios` (строки в `ci.yml` уже есть для этапа 0).
 - Устройство, первый запуск: экран входа сразу (< лимита watchdog) → device code → «Getting the game files» с прогрессом → титульный экран; session-файл удалён ядром; в `account.json` нет access-токена.
 - Второй запуск: resume без кода; авиарежим → аккаунт сохранён, offline-имя играет; Ely-вход (с 2FA и без) → join Ely-сервера; свернуть/развернуть приложение на экране загрузки и в игре — без краша surface.
 - Сверка папки ресурсов с ПК-подготовкой MAIN файл-в-файл (образец — `tools/compare_prepare.py`, упомянут в `horizon-prepare/src/lib.rs:10-12`).

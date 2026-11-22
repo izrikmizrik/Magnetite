@@ -671,6 +671,7 @@ Vanilla's endpoints (engine, the same as Java Edition):
 | `pc.realms.minecraft.net`, `java.frontend.realms.minecraft-services.net` | Realms | `realms/client.rs` |
 | `aka.ms/…` | vanilla's help links (accessibility, moderation, EULA, Realms terms), opened only on a click | `game/options.rs`, `game/screens.rs`, `ban_notice.rs`, `realms.rs`, `eula.rs` |
 | `libraries.minecraft.net`, `piston-meta.mojang.com`, `resources.download.minecraft.net` | the vanilla jars, libraries and assets | `horizon-prepare`, launcher |
+| `piston-data.mojang.com`, `piston-meta.mojang.com`, `resources.download.minecraft.net` | the game files on a device without a launcher: the client jar, its asset index and the index's objects (`docs/unification/mobile-boot.md` §2) | `crates/horizon-client/src/game_files.rs` |
 
 Horizon's own and third-party addresses (Horizon layer):
 

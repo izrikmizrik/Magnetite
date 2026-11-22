@@ -797,9 +797,17 @@ impl BootScreen {
                 status: Some(if *total_bytes > 0 {
                     let done = megabytes(*done_bytes);
                     let total = megabytes(*total_bytes);
-                    lang::tr("horizon.boot.files.stage", &[step, &done, &total])
+                    // The installer names its step by key; a host that sets a plain word keeps it.
+                    let step = if lang::has(step) {
+                        lang::get(step)
+                    } else {
+                        step.clone()
+                    };
+                    lang::tr("horizon.boot.files.stage", &[&step, &done, &total])
                 } else if step.is_empty() {
                     lang::get("horizon.boot.files.waiting")
+                } else if lang::has(step) {
+                    lang::get(step)
                 } else {
                     step.clone()
                 }),

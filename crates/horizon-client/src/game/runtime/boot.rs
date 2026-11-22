@@ -22,65 +22,47 @@ use horizon_account::{
 };
 use horizon_client::boot_screen::{AccountKind, BootAction, BootScreen, BootState, ElyField};
 use horizon_client::clipboard::SystemClipboard;
+use horizon_client::game_files::{
+    InstallProgress, InstallSpec, install as install_game_files, spec_from_build,
+};
 use horizon_client::osk::Output;
 use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use winit::event::TouchPhase;
 
-/// The game files' download progress, shared with the installer's thread. `done` and `total` are
-/// byte counts (0 total until the whole size is known); `step` is the name of what is downloading
-/// now — a word, not a number, so it sits behind a short lock rather than an atomic.
-pub struct InstallProgress {
-    pub done: AtomicU64,
-    pub total: AtomicU64,
-    step: Mutex<String>,
-}
+/// The game files' installer, as the host hands it over: repeatable, so a failed download is
+/// tried again from the Retry button instead of needing a restart. It runs on a thread of the
+/// boot loop's own; the content hashes it keeps make the second call fetch only what is missing.
+pub type Installer = Arc<dyn Fn(&InstallProgress) -> std::result::Result<(), String> + Send + Sync>;
 
-impl InstallProgress {
-    pub fn new() -> Self {
-        Self {
-            done: AtomicU64::new(0),
-            total: AtomicU64::new(0),
-            step: Mutex::new(String::new()),
-        }
-    }
-
-    /// What the download is doing now (`client.jar`, `assets`, ...), drawn over the bar.
-    pub fn set_step(&self, name: &str) {
-        *self.step.lock().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
-    }
-
-    /// `(done_bytes, total_bytes, step)` for one frame.
-    pub fn snapshot(&self) -> (u64, u64, String) {
-        (
-            self.done.load(Ordering::Relaxed),
-            self.total.load(Ordering::Relaxed),
-            self.step.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        )
-    }
-}
-
-impl Default for InstallProgress {
-    fn default() -> Self {
-        Self::new()
-    }
+/// The installer a build with `MAGNETITE_TABLES_URL` and `MAGNETITE_TABLES_SHA256` names, for
+/// `BootConfig::install`: it assembles `resources` from the tables and the player's own
+/// Minecraft, keeping its downloads in `work`. `None` leaves the boot screen's "this build
+/// cannot download them", for a build that names no tables.
+pub fn installer_from_build(resources: PathBuf, work: PathBuf) -> Option<Installer> {
+    let spec: InstallSpec = spec_from_build(resources, work)?;
+    Some(Arc::new(move |progress: &InstallProgress| {
+        install_game_files(&spec, progress)
+    }))
 }
 
 /// Everything the host hands the boot loop. `start` receives the game's ready command line and
 /// starts the core (`entry::prepare_with_args` + `horizon_mod_host::main_with`); the core hands
 /// its [`App`] back through the sink instead of opening a second loop. `install` is the game
-/// files' installer (a later commit): `None` means this build cannot download them, so without
-/// files the screen explains and offline play is unavailable. It is called once, on its own
-/// thread; a failed download resumes by content hash on the next run.
+/// files' installer (`horizon_client::game_files`, or `None` when this build names no tables):
+/// without it, and without files, the screen explains and offline play is unavailable.
 pub struct BootConfig {
     /// The player's folder: saves, `options.txt`, logs (`--game-dir`).
     pub game_dir: PathBuf,
     /// The prepared game files' folder (`--resources`).
     pub resources: PathBuf,
+    /// The game files' download folder (staging and caches), kept between runs so an
+    /// interrupted download continues.
+    pub work: PathBuf,
     /// Where the fresh session file is written, beside the secrets (the core reads and deletes
     /// it; it must be under 120 s old and, on Unix, 0600).
     pub session_dir: PathBuf,
@@ -92,15 +74,14 @@ pub struct BootConfig {
     /// Keep the screen on while the files download.
     pub keep_awake: fn(bool),
     /// The game files' installer, run on a thread after any sign-in when the files are missing.
-    pub install:
-        Option<Box<dyn FnOnce(&InstallProgress) -> std::result::Result<(), String> + Send>>,
+    pub install: Option<Installer>,
     /// Start the core with these arguments; it hands its app to the sink.
     pub start: Box<dyn FnOnce(Vec<String>)>,
 }
 
 /// Run the boot loop until the game takes over (or the player leaves). One event loop per
 /// process: the host sets the factory before calling this.
-pub fn run(config: BootConfig) -> Result<()> {
+pub fn run(mut config: BootConfig) -> Result<()> {
     // The strings compiled in, in the default language: there are no prepared ones yet, and the
     // game reads the player's own settings after the hand-over.
     horizon_client::lang::set(horizon_client::lang::Language::load(
@@ -110,6 +91,11 @@ pub fn run(config: BootConfig) -> Result<()> {
     // The fonts and the icon, before the first window: the screen draws in the design system's
     // look, not the engine's neutral one. `entry::start` gives it again later; that is harmless.
     crate::entry::horizon_look::give();
+    // A host that brought no installer of its own still gets one when the build names its
+    // tables: the same code path serves every platform.
+    if config.install.is_none() {
+        config.install = installer_from_build(config.resources.clone(), config.work.clone());
+    }
     let mut boot = Boot::new(config);
     let event_loop = horizon_client::window::new_event_loop()?;
     event_loop.run_app(&mut boot)?;
@@ -290,7 +276,7 @@ enum Phase {
 enum Retry {
     /// Ask Microsoft for a new code.
     Microsoft,
-    /// Run the installer again (while this run still has it).
+    /// Run the installer again, from what the last attempt kept.
     Install,
     /// Back to the sign-in choice.
     Choose,
@@ -311,7 +297,9 @@ struct Controller {
     attempt: Arc<AtomicU64>,
     phase: Phase,
     files_ready: bool,
-    /// Whether this run still has an installer to call (it is `FnOnce`: one call per run).
+    /// Whether this build has an installer at all (`false`: the screen says the files cannot
+    /// be downloaded here). The installer itself is repeatable, so a failed attempt is retried
+    /// in place rather than needing a restart.
     has_installer: bool,
     installing: bool,
     failure: Option<Failure>,
@@ -355,11 +343,6 @@ impl Controller {
 
     fn take_forget(&mut self) -> bool {
         std::mem::take(&mut self.pending_forget)
-    }
-
-    /// The installer was called: this run has none left (it is `FnOnce`).
-    fn installer_taken(&mut self) {
-        self.has_installer = false;
     }
 
     fn fail(&mut self, message: String, retry: Retry) {
@@ -566,17 +549,11 @@ impl Controller {
                         vec![Job::Microsoft]
                     }
                     Retry::Install => {
-                        if self.files_ready {
+                        if self.files_ready || !self.has_installer {
                             Vec::new()
-                        } else if self.has_installer {
+                        } else {
                             self.installing = true;
                             vec![Job::Install]
-                        } else {
-                            self.fail(
-                                horizon_client::lang::get("horizon.boot.files.retry_restart"),
-                                Retry::Choose,
-                            );
-                            Vec::new()
                         }
                     }
                     Retry::Choose => {
@@ -689,7 +666,11 @@ impl Controller {
             }
             Event::Install(Err(error)) => {
                 self.installing = false;
-                self.fail(detail(&error), Retry::Install);
+                // The installer keeps what it fetched: Retry fetches only the rest.
+                self.fail(
+                    horizon_client::lang::tr("horizon.boot.files.fetch_failed", &[&error]),
+                    Retry::Install,
+                );
                 Vec::new()
             }
         };
@@ -710,7 +691,7 @@ struct Boot {
     tx: Sender<(u64, Event)>,
     rx: Receiver<(u64, Event)>,
     progress: Arc<InstallProgress>,
-    install: Option<Box<dyn FnOnce(&InstallProgress) -> std::result::Result<(), String> + Send>>,
+    install: Option<Installer>,
     start: Option<Box<dyn FnOnce(Vec<String>)>>,
     secrets: Box<dyn SecretStore + Send>,
     open_link: fn(&str),
@@ -868,11 +849,12 @@ impl Boot {
                 }
             }
             Job::Install => {
-                let Some(install) = self.install.take() else {
+                let Some(install) = self.install.clone() else {
                     return;
                 };
-                self.ctrl.installer_taken();
                 let progress = self.progress.clone();
+                // A new attempt starts its bar from nothing; the kept files resume by hash.
+                progress.reset();
                 if !self.try_spawn("Game files", move || {
                     let result = install(&progress);
                     let _ = tx.send((attempt, Event::Install(result)));
@@ -1196,6 +1178,7 @@ impl ApplicationHandler for Boot {
 mod tests {
     use super::*;
     use std::io;
+    use std::sync::Mutex;
 
     #[derive(Default)]
     struct MemStore(Mutex<Option<String>>);
@@ -1392,26 +1375,32 @@ mod tests {
     }
 
     #[test]
-    fn install_failure_retries_while_it_can_then_explains_a_restart() {
+    fn install_failure_retries_in_place_then_the_files_are_ready() {
         let mut c = ctrl(false, true);
         let a = attempt(&mut c);
         c.apply(a, Event::SignIn(Ok(account())));
         assert!(c.installing);
-        c.installer_taken(); // the FnOnce was called
         let a = c.current_attempt();
-        c.apply(a, Event::Install(Err("No space left on device".into())));
+        c.apply(a, Event::Install(Err("No space left on the device".into())));
         assert!(!c.installing);
         assert_eq!(c.failure.as_ref().unwrap().retry, Retry::Install);
-        // This run has no installer left: Retry explains the restart instead of looping.
-        c.action(BootAction::Retry);
-        assert_eq!(c.failure.as_ref().unwrap().retry, Retry::Choose);
+        // Retry runs the installer again in this run: nothing about a restart.
+        let jobs = c.action(BootAction::Retry);
+        assert!(matches!(jobs.as_slice(), [Job::Install]));
+        assert!(c.installing);
+        assert!(c.failure.is_none());
+        // Then the same installer succeeds and the files are ready.
+        c.apply(c.current_attempt(), Event::Install(Ok(())));
+        assert!(c.files_ready);
         assert!(!c.installing);
-        // A successful install marks the files ready.
-        let mut ok = ctrl(false, true);
-        let a = attempt(&mut ok);
-        ok.apply(a, Event::Install(Ok(())));
-        assert!(ok.files_ready);
-        assert!(!ok.installing);
+        // A build with no installer cannot retry a download at all.
+        let mut none = ctrl(false, false);
+        let a = attempt(&mut none);
+        none.apply(a, Event::SignIn(Ok(account())));
+        assert_eq!(none.failure.as_ref().unwrap().retry, Retry::Choose);
+        let jobs = none.action(BootAction::Retry);
+        assert!(jobs.is_empty());
+        assert!(!none.installing);
     }
 
     #[test]
@@ -1424,15 +1413,14 @@ mod tests {
         let mut missing = ctrl(false, true);
         let a = attempt(&mut missing);
         missing.apply(a, Event::SignIn(Ok(account())));
-        missing.installer_taken();
         missing.apply(
             missing.current_attempt(),
             Event::Install(Err("dropped".into())),
         );
-        // Continue with the files still missing and no installer left: the screen explains.
+        // Continue with the files still missing: the download starts again, in place.
         let jobs = missing.action(BootAction::Continue);
-        assert!(jobs.is_empty());
-        assert!(missing.failure.is_some());
+        assert!(matches!(jobs.as_slice(), [Job::Install]));
+        assert!(missing.installing);
     }
 
     #[test]
@@ -1526,7 +1514,7 @@ mod tests {
             "horizon.boot.ely.refused",
             "horizon.boot.service_said",
             "horizon.boot.files.no_installer",
-            "horizon.boot.files.retry_restart",
+            "horizon.boot.files.fetch_failed",
             "horizon.boot.microsoft.not_configured",
         ];
         for code in ["en_us", "ru_ru"] {
@@ -1558,7 +1546,7 @@ mod tests {
         let progress = InstallProgress::new();
         progress.done.store(10, Ordering::Relaxed);
         progress.total.store(100, Ordering::Relaxed);
-        progress.set_step("client.jar");
+        progress.set_step("horizon.boot.files.step.client");
         assert!(matches!(
             c.screen_state(&progress),
             BootState::Files {
@@ -1567,7 +1555,6 @@ mod tests {
                 ..
             }
         ));
-        c.installer_taken();
         c.apply(c.current_attempt(), Event::Install(Ok(())));
         assert!(matches!(
             c.screen_state(&progress),

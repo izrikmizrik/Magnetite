@@ -105,6 +105,9 @@ pub mod first_person;
 pub mod flatgen;
 pub mod fluid_tooltip;
 pub mod furnace;
+/// The game files on the device: the prepared folder assembled from the tables' release and
+/// the player's own Minecraft (`docs/unification/mobile-boot.md` §2).
+pub mod game_files;
 pub mod game_mode_switcher;
 pub mod game_rules_screen;
 pub mod gizmos;
