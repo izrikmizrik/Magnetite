@@ -56,6 +56,9 @@ pub mod benchmark;
 pub mod block_entity_item;
 pub mod block_pattern;
 pub mod block_transform;
+/// The screen shown before the game starts: sign-in, the device code, the
+/// Ely.by form, the game files' download (`docs/unification/mobile-boot.md` §1).
+pub mod boot_screen;
 pub mod boss_overlay;
 pub mod breathing;
 pub mod build_mismatch;
