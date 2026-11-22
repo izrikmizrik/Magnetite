@@ -12,6 +12,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Built into the game (option_env!): the Azure app for Microsoft sign-in and the tables release
+  # for the game files. Repository variables, not secrets: client IDs and release URLs are public.
+  MAGNETITE_MSA_CLIENT_ID: ${{ vars.MAGNETITE_MSA_CLIENT_ID }}
+  MAGNETITE_TABLES_URL: ${{ vars.MAGNETITE_TABLES_URL }}
+  MAGNETITE_TABLES_SHA256: ${{ vars.MAGNETITE_TABLES_SHA256 }}
   IPHONEOS_DEPLOYMENT_TARGET: '16.0'
 
 jobs:
