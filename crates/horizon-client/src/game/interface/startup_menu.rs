@@ -1573,6 +1573,7 @@ mod tests {
             title_drawn: false,
             menu: StartupMenu::default(),
             error: None,
+            touch: Default::default(),
         }
     }
 

@@ -1507,6 +1507,9 @@ impl HudAtlas {
                 let (width, height, rgba) = decode_bytes(png)?;
                 images.push((format!("horizon/jei/{name}"), width, height, rgba));
             }
+            // The touch buttons' pictures (touch_icons.rs): the player's folder over the
+            // pack's `gui/sprites/touch/`, the pack's over the built-in ones.
+            crate::touch_icons::add(&mut images);
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
             // and black quarters.

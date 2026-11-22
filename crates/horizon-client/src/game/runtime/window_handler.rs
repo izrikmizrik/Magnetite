@@ -338,6 +338,8 @@ impl Game<'_> {
             return;
         }
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
+        // A list let go mid-swipe keeps gliding (interface/touch.rs).
+        self.touch_frame(event_loop);
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
         if let Some(limit) = self.options.time_limit()
@@ -461,6 +463,27 @@ impl ApplicationHandler for Game<'_> {
         self.previous = Instant::now();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // Fingers become the pointer or the virtual pad (interface/touch.rs).
+        if let WindowEvent::Touch(touch) = event {
+            if self.window.as_ref().is_some_and(|w| w.id() == id) {
+                self.touch_event(event_loop, id, touch);
+            }
+            return;
+        }
+        // A real keyboard or mouse at this window: the touch HUD steps aside until the next
+        // touch. The events touch itself makes go through `handle_window_event`, not here.
+        if self.window.as_ref().is_some_and(|w| w.id() == id)
+            && matches!(
+                &event,
+                WindowEvent::KeyboardInput {
+                    is_synthetic: false,
+                    ..
+                } | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            )
+        {
+            self.touch.hardware = true;
+        }
         let key = if self.window.as_ref().is_some_and(|w| w.id() == id)
             && !self.scripted_run()
             && !self.unclaimed_window
@@ -497,6 +520,10 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
+        // A real mouse moved: the touch HUD steps aside until the next touch.
+        if matches!(event, DeviceEvent::MouseMotion { .. }) {
+            self.touch.hardware = true;
+        }
         // A composited view renders offscreen but its keyboard/mouse owner still
         // controls a visible native window. A headless offscreen run never does.
         if self.pending_save.is_none()

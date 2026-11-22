@@ -87,6 +87,8 @@ pub(super) struct Loading {
     pub(super) title_drawn: bool,
     pub(super) menu: startup_menu::StartupMenu,
     pub(super) error: Option<Box<dyn std::error::Error>>,
+    /// Fingers on the glass over the loading screen and the title (interface/touch.rs).
+    pub(super) touch: touch::Controls,
 }
 /// How long the handoff waits for the first title frame before building the
 /// world renderer anyway (a hidden window may never be asked to redraw).
@@ -221,6 +223,43 @@ impl Loading {
         mut event: WindowEvent,
     ) {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
+            return;
+        }
+        // A finger is the mouse of the loading screen and the title (interface/touch.rs).
+        if let WindowEvent::Touch(t) = event {
+            if !self.settings.touchscreen {
+                // The first finger turns touch on unless the player turned it off explicitly.
+                if self.settings.file.get("touchscreen").is_some() {
+                    return;
+                }
+                self.settings.touchscreen = true;
+            }
+            let size = match (&self.renderer, &self.window) {
+                (Some(r), _) => [r.config.width, r.config.height],
+                (None, Some(w)) => {
+                    let s = w.inner_size();
+                    [s.width, s.height]
+                }
+                (None, None) => return,
+            };
+            let scale = HudBatch::new(size, self.settings.gui_scale_inputs()).scale;
+            let insets = touch::safe_insets_of(self.window.as_deref(), size);
+            let layout = touch::screen_layout(size, scale, insets, None);
+            let outs = self.touch.touch(
+                t.id,
+                t.phase,
+                touch::touch_pixels(self.window.as_deref(), size, &t),
+                Instant::now(),
+                false,
+                &layout,
+            );
+            for event in outs.into_iter().filter_map(touch::Out::window_event) {
+                if let Err(error) = self.menu_event(event_loop, event) {
+                    self.error = Some(error);
+                    event_loop.exit();
+                    return;
+                }
+            }
             return;
         }
         follow_keymap(&mut event);

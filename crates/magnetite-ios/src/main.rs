@@ -16,6 +16,8 @@ fn main() {
     horizon_client::logging::set_platform_sink(|level, target, line| {
         eprintln!("[{level}] {target}: {line}");
     });
+    // UIKit's window is the screen; its inner area is the safe area, and touches come in points.
+    horizon_client::window::set_outer_is_screen(true);
     let Some(container) = std::env::var_os("HOME").map(PathBuf::from) else {
         eprintln!("Magnetite: iOS gave the app no container folder");
         return;

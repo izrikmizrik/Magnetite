@@ -293,6 +293,7 @@ pub(super) fn run_loading(
         title_drawn: false,
         menu,
         error: None,
+        touch: Default::default(),
     };
     let mut app = App::Loading(Box::new(loading));
     let result = match loading_screen::take_app_sink() {

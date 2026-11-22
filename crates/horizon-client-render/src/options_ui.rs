@@ -164,6 +164,8 @@ pub(crate) fn vanilla_control_options() -> Vec<Opt> {
         options.push(Opt::CtrlClickEmulatesRightClick);
     }
     options.push(Opt::OperatorItemsTab);
+    // Horizon's own: the touch controls (game/interface/touch.rs).
+    options.push(Opt::Touchscreen);
     options
 }
 
@@ -281,6 +283,7 @@ impl Opt {
             Opt::ToggleAttack => "key.attack",
             Opt::ToggleUse => "key.use",
             Opt::AutoJump => "options.autoJump",
+            Opt::Touchscreen => "horizon.touch.controls",
             Opt::SprintWindow => "options.sprintWindow",
             Opt::QuitShortcuts => "options.quitShortcuts",
             Opt::CtrlClickEmulatesRightClick => "options.ctrlClickEmulatesRightClick",
@@ -858,6 +861,7 @@ impl Opt {
                 "options.key.hold"
             }),
             Opt::AutoJump => on_off(s.auto_jump),
+            Opt::Touchscreen => on_off(s.touchscreen),
             Opt::QuitShortcuts => on_off(s.quit_shortcuts),
             Opt::CtrlClickEmulatesRightClick => on_off(s.ctrl_click_emulates_right_click),
             Opt::OperatorItemsTab => on_off(s.operator_items_tab),
@@ -1164,6 +1168,7 @@ impl Opt {
             Opt::ToggleAttack => s.toggle_attack = !s.toggle_attack,
             Opt::ToggleUse => s.toggle_use = !s.toggle_use,
             Opt::AutoJump => s.auto_jump = !s.auto_jump,
+            Opt::Touchscreen => s.touchscreen = !s.touchscreen,
             Opt::QuitShortcuts => s.quit_shortcuts = !s.quit_shortcuts,
             Opt::CtrlClickEmulatesRightClick => {
                 s.ctrl_click_emulates_right_click = !s.ctrl_click_emulates_right_click

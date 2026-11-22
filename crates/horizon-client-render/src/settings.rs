@@ -155,6 +155,9 @@ pub struct Settings {
     pub toggle_crouch: bool,
     pub toggle_sprint: bool,
     pub auto_jump: bool,
+    /// Touch controls (`touchscreen`): fingers play the game (game/interface/touch.rs). The
+    /// first touch turns it on while options.txt has no key; an explicit off stays off.
+    pub touchscreen: bool,
     pub language: String,
     pub force_unicode: bool,
     pub japanese_glyphs: bool,
@@ -265,6 +268,7 @@ impl Default for Settings {
             toggle_crouch: false,
             toggle_sprint: false,
             auto_jump: false,
+            touchscreen: false,
             language: "en_us".into(),
             force_unicode: false,
             japanese_glyphs: false,
@@ -573,6 +577,7 @@ impl Settings {
             shader_options: None,
             running_pack: None,
             auto_jump: f.bool("autoJump"),
+            touchscreen: f.bool("touchscreen"),
             language: f.string("lang"),
             force_unicode: f.bool("forceUnicodeFont"),
             japanese_glyphs: f.bool("japaneseGlyphVariants"),
@@ -689,6 +694,11 @@ impl Settings {
             self.ctrl_click_emulates_right_click,
         );
         put_b(&mut f, "autoJump", self.auto_jump);
+        // Absent until chosen or auto-enabled: the first touch may turn touch on only while
+        // the player has not said otherwise (game/interface/touch.rs).
+        if self.touchscreen || f.get("touchscreen").is_some() {
+            put_b(&mut f, "touchscreen", self.touchscreen);
+        }
         put_s(&mut f, "lang", &self.language);
         put_b(&mut f, "forceUnicodeFont", self.force_unicode);
         put_b(&mut f, "japaneseGlyphVariants", self.japanese_glyphs);
@@ -874,6 +884,8 @@ pub enum Opt {
     ToggleAttack,
     ToggleUse,
     AutoJump,
+    /// Horizon's touch controls (`touchscreen`, game/interface/touch.rs).
+    Touchscreen,
     SprintWindow,
     QuitShortcuts,
     CtrlClickEmulatesRightClick,

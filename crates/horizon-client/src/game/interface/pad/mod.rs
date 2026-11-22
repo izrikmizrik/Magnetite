@@ -387,7 +387,11 @@ impl Game<'_> {
 
     /// Once per loop iteration: read the pads and act on button changes.
     pub(super) fn poll_pads(&mut self, event_loop: &dyn EventLoopCtl) {
-        self.pad.virtual_input = self.pad.injected != PadState::default();
+        // The touch buttons are one more pad (interface/touch.rs): their state joins the
+        // hardware's and the agent's injected one.
+        let touch = self.touch.poll();
+        self.pad.virtual_input =
+            self.pad.injected != PadState::default() || touch != PadState::default();
         let context = self.pad_context();
         if let Some(old) = self.pad.context.filter(|old| *old != context) {
             if old.screen != context.screen {
@@ -425,6 +429,10 @@ impl Game<'_> {
         } else {
             hardware
         };
+        // A real pad drove the game: the touch HUD steps aside until the next touch.
+        if hardware.active(&self.settings.controller) {
+            self.touch.hardware = true;
+        }
         // A person's pad, for `input-log` and the repro recording; the virtual
         // pad is an agent's `pad` line and is recorded as that.
         let hardware_edges = self.pad.hardware_edges(hardware);
@@ -442,7 +450,7 @@ impl Game<'_> {
         }
         self.ui.options.pad_glyphs = Glyphs::of(&self.settings.controller, self.pad.style);
         self.ui.options.pad_driving = self.pad.in_use && self.pad_focus_mode();
-        let mut state = hardware.merge(&self.pad.injected);
+        let mut state = hardware.merge(&self.pad.injected).merge(&touch);
         let activity = self.pad.activity.observe(&state, &self.settings.controller);
         for (i, (stick, deadzone)) in [
             (&mut state.left, self.settings.controller.move_deadzone),

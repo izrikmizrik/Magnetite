@@ -1196,6 +1196,9 @@ struct Game<'a> {
     last_input: Instant,
     /// Controllers (Horizon's own).
     pad: pad::Pads,
+    /// Fingers on the glass (interface/touch.rs): the pointer in screens, one more pad and
+    /// the camera in the world.
+    touch: touch::Controls,
     frames: u64,
     /// The glint clock and options, read once per frame (game/interface/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
@@ -4670,6 +4673,8 @@ impl Game<'_> {
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_pad_over_hud(&mut batch);
+        // The touch buttons, in the screen's own pixels, over everything (interface/touch.rs).
+        self.draw_touch_controls(&mut batch);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -10581,6 +10586,7 @@ impl<'a> Game<'a> {
             previous: now,
             last_input: now,
             pad: Default::default(),
+            touch: Default::default(),
             frames: 0,
             glint_frame: Default::default(),
             kept_block_entities: Default::default(),

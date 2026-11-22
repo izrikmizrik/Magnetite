@@ -744,6 +744,21 @@ pub fn new_event_loop() -> Result<EventLoop<()>, EventLoopError> {
     }
 }
 
+static OUTER_IS_SCREEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The platform says a window's outer frame is the whole screen and its inner area the part clear
+/// of the notch and the home indicator, with touches in the outer frame's scale (iOS: UIKit's
+/// points). The touch layer then scales touches to the drawn frame and keeps its controls inside
+/// the safe area. Off elsewhere: a touch is in the window's pixels and there is no safe area.
+pub fn set_outer_is_screen(on: bool) {
+    OUTER_IS_SCREEN.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether [`set_outer_is_screen`] turned it on.
+pub fn outer_is_screen() -> bool {
+    OUTER_IS_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The factory, if one was given and is not used yet.
 fn take_event_loop_factory() -> Option<EventLoopFactory> {
     let slot = EVENT_LOOP_FACTORY.get()?;
