@@ -88,6 +88,7 @@ fn measure(label: &str, mods: Vec<ModEntry>) {
                 &mut World,
                 &mut mod_api::BlockEntityTickReply::Changed,
                 [0, 64, 0],
+                mod_api::LevelRef::new(mod_api::WorldEpoch::new(1), mod_api::DimensionKey::OVERWORLD),
                 &mut entities[0],
             );
             assert_eq!(
@@ -108,6 +109,7 @@ fn measure(label: &str, mods: Vec<ModEntry>) {
                         &mut World,
                         &mut mod_api::BlockEntityTickReply::Changed,
                         [0, 64, 0],
+                        mod_api::LevelRef::new(mod_api::WorldEpoch::new(1), mod_api::DimensionKey::OVERWORLD),
                         entity,
                     );
                 }

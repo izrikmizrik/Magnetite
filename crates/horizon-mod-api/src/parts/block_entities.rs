@@ -306,6 +306,7 @@ pub mod tests {
                 &mut NoHost,
                 &mut BlockEntityTickReply::Changed,
                 [0, 64, 0],
+                crate::LevelRef::new(crate::WorldEpoch::new(1), crate::DimensionKey::OVERWORLD),
                 &mut entity,
             );
             entity.data.len()
