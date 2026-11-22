@@ -468,6 +468,8 @@ fn android_main(app: AndroidApp) {
         set_orientation,
         share_log,
         open_folder,
+        // Android apps are signed once; nothing expires.
+        signature_expires: None,
     };
     // The platform's keyboard and clipboard for the core, as the iOS host gives them: the
     // hidden EditText the system keyboard types into, and the ClipboardManager.

@@ -34,7 +34,22 @@ features = ["std", "NSThread", "NSString", "NSURL", "NSDictionary", "NSLocale", 
 [target.'cfg(target_os = "ios")'.dependencies.objc2-ui-kit]
 version = "0.2.2"
 default-features = false
-features = ["std", "block2", "UIApplication", "UIResponder", "UIPasteboard"]
+features = [
+    "std",
+    "block2",
+    "UIApplication",
+    "UIResponder",
+    "UIPasteboard",
+    # The log's share sheet: one string in an NSArray, presented from the key window's root
+    # view controller, anchored on its view where the sheet opens as a popover (iPad).
+    "UIActivity",
+    "UIActivityViewController",
+    "UIViewController",
+    "UIView",
+    "UIWindow",
+    "UIPopoverPresentationController",
+    "UIPresentationController",
+]
 
 [lints]
 workspace = true

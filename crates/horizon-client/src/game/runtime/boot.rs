@@ -93,6 +93,9 @@ pub struct BootConfig {
     pub share_log: fn(&Path, &str),
     /// Show the game folder in the platform's file manager; false when it could not.
     pub open_folder: fn(&Path) -> bool,
+    /// iOS: when the app's signature expires (Unix seconds, from `embedded.mobileprovision`);
+    /// the launcher counts down to it. `None` where nothing expires.
+    pub signature_expires: Option<u64>,
 }
 
 /// The defaults of the hooks a host may leave out: nothing happens.
@@ -264,6 +267,24 @@ const SENSITIVITIES: [u32; 7] = [50, 75, 100, 125, 150, 175, 200];
 fn sensitivity_percent(sensitivity: f32) -> u32 {
     (sensitivity * 200.0).round() as u32
 }
+
+/// The iOS launcher's signature row for `left` seconds until the signature expires, and whether
+/// that is under a day.
+fn resign_label(left: i64) -> (String, bool) {
+    if left <= 0 {
+        return (lang::get("horizon.launcher.resign.expired"), true);
+    }
+    let (days, hours, minutes) = (left / 86_400, left % 86_400 / 3_600, left % 3_600 / 60);
+    let text = if days > 0 {
+        lang::tr("horizon.launcher.resign.days", &[&days, &hours])
+    } else {
+        lang::tr("horizon.launcher.resign.hours", &[&hours, &minutes])
+    };
+    (text, days == 0)
+}
+
+/// How far a finger moves, in physical pixels, before the launcher takes it as a scroll.
+const DRAG_PIXELS: f64 = 24.0;
 
 /// The game's version, for the launcher's profile line.
 const GAME_VERSION: &str = "26.3";
@@ -803,6 +824,12 @@ struct Boot {
     settings: Settings,
     /// The pointer in physical pixels.
     pointer: (f64, f64),
+    /// A finger's touch in the launcher: where it went down, and whether it has moved far enough
+    /// to scroll the page instead of tapping.
+    touch_from: Option<(f64, f64)>,
+    dragging: bool,
+    /// The game's languages (`lang::available` over the prepared files), once they are there.
+    languages: RefCell<Option<Vec<horizon_client::lang::LanguageInfo>>>,
     clipboard: SystemClipboard,
     awake: bool,
     /// The field the platform's keyboard was shown for (`sync_system_keyboard`); `None` when it
@@ -816,6 +843,7 @@ struct Boot {
     set_orientation: fn(&Window, bool),
     share_log: fn(&Path, &str),
     open_folder: fn(&Path) -> bool,
+    signature_expires: Option<u64>,
     /// A short note at the launcher's foot and when it goes.
     notice: Option<(String, Instant)>,
     /// The kept accounts (`SecretStore`), the one that plays among them.
@@ -887,6 +915,9 @@ impl Boot {
             },
             settings,
             pointer: (0.0, 0.0),
+            touch_from: None,
+            dragging: false,
+            languages: RefCell::new(None),
             clipboard: SystemClipboard::default(),
             awake: false,
             keyboard_for: None,
@@ -898,6 +929,7 @@ impl Boot {
             set_orientation: config.set_orientation,
             share_log: config.share_log,
             open_folder: config.open_folder,
+            signature_expires: config.signature_expires,
             notice: None,
             keyring: Keyring::default(),
             signing_in: false,
@@ -1240,7 +1272,12 @@ impl Boot {
             account_kind,
             profile: self.profile_name(self.profiles.current),
             profile_detail: lang::tr("horizon.launcher.profile.detail", &[&GAME_VERSION]),
-            resign: None,
+            resign: self.signature_expires.map(|at| {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                resign_label(at as i64 - now as i64)
+            }),
             values: vec![
                 (
                     Setting::Accounts,
@@ -1253,7 +1290,7 @@ impl Boot {
                 (Setting::Sensitivity, self.chosen_label(Setting::Sensitivity)),
                 (Setting::Vibration, soon.clone()),
                 (Setting::Cutout, soon.clone()),
-                (Setting::Language, soon.clone()),
+                (Setting::Language, self.chosen_label(Setting::Language)),
                 (Setting::Updates, soon.clone()),
                 (Setting::Data, soon),
                 (Setting::About, env!("CARGO_PKG_VERSION").to_owned()),
@@ -1308,6 +1345,15 @@ impl Boot {
                     .collect(),
                 FPS_LIMITS.iter().position(|&f| f == self.settings.max_fps),
             ),
+            Setting::Language => {
+                let languages = self.languages();
+                (
+                    languages.iter().map(|l| l.label()).collect(),
+                    languages
+                        .iter()
+                        .position(|l| l.code == self.settings.language),
+                )
+            }
             Setting::Sensitivity => (
                 SENSITIVITIES.iter().map(|&p| percent(p)).collect(),
                 SENSITIVITIES
@@ -1330,9 +1376,22 @@ impl Boot {
                 Setting::Sensitivity => {
                     format!("{} %", sensitivity_percent(self.settings.sensitivity))
                 }
+                Setting::Language => self.settings.language.clone(),
                 _ => String::new(),
             },
         }
+    }
+
+    /// The game's languages, read from the prepared files once they are there (English alone
+    /// before).
+    fn languages(&self) -> Vec<horizon_client::lang::LanguageInfo> {
+        if !self.ctrl.files_ready {
+            return horizon_client::lang::available(&[]);
+        }
+        self.languages
+            .borrow_mut()
+            .get_or_insert_with(|| horizon_client::lang::available(&[&self.resources]))
+            .clone()
     }
 
     /// Keep the value at `i` of `setting`'s pick page in the profile's settings.
@@ -1353,6 +1412,14 @@ impl Boot {
                 if let Some(&p) = SENSITIVITIES.get(i) {
                     self.settings.sensitivity = p as f32 / 200.0;
                 }
+            }
+            Setting::Language => {
+                let Some(code) = self.languages().get(i).map(|l| l.code.clone()) else {
+                    return;
+                };
+                // The launcher speaks it at once (its own strings); the game reads the rest.
+                horizon_client::lang::set(horizon_client::lang::Language::load(&[], &code));
+                self.settings.language = code;
             }
             _ => return,
         }
@@ -1578,7 +1645,10 @@ impl Boot {
             }
             Action::Setting(Setting::About) => note(self, "horizon.launcher.about.note"),
             Action::Setting(
-                setting @ (Setting::Resolution | Setting::FpsLimit | Setting::Sensitivity),
+                setting @ (Setting::Resolution
+                | Setting::FpsLimit
+                | Setting::Sensitivity
+                | Setting::Language),
             ) => page(self, Page::Pick(setting)),
             Action::Choose(i) => {
                 if let Some(Page::Pick(setting)) = self.launcher.as_ref().map(LauncherScreen::page) {
@@ -1885,10 +1955,38 @@ impl ApplicationHandler for Boot {
                 ..
             } => self.click(event_loop),
             WindowEvent::Touch(touch) => {
-                self.pointer = (touch.location.x, touch.location.y);
+                let at = (touch.location.x, touch.location.y);
+                let last = std::mem::replace(&mut self.pointer, at);
                 window.request_redraw();
-                if touch.phase == TouchPhase::Ended {
-                    self.click(event_loop);
+                match touch.phase {
+                    TouchPhase::Started => {
+                        self.touch_from = Some(at);
+                        self.dragging = false;
+                    }
+                    // A finger that travels scrolls the launcher's page, and is no tap.
+                    TouchPhase::Moved if self.launcher_active() => {
+                        if let Some(from) = self.touch_from
+                            && (at.1 - from.1).abs() > DRAG_PIXELS
+                        {
+                            self.dragging = true;
+                        }
+                        if self.dragging
+                            && let Some(launcher) = &self.launcher
+                        {
+                            launcher.scroll_by((at.1 - last.1) as f32);
+                        }
+                    }
+                    TouchPhase::Ended => {
+                        if !std::mem::take(&mut self.dragging) {
+                            self.click(event_loop);
+                        }
+                        self.touch_from = None;
+                    }
+                    TouchPhase::Cancelled => {
+                        self.dragging = false;
+                        self.touch_from = None;
+                    }
+                    TouchPhase::Moved => {}
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -2227,6 +2325,16 @@ mod tests {
         c.action(BootAction::SignOut);
         assert!(matches!(c.phase, Phase::Choose));
         assert!(c.take_forget());
+    }
+
+    #[test]
+    fn the_signature_row_counts_down_and_warns_under_a_day() {
+        let (_, soon) = resign_label(5 * 86_400 + 3 * 3_600);
+        assert!(!soon);
+        let (_, soon) = resign_label(2 * 3_600);
+        assert!(soon);
+        let (_, soon) = resign_label(-1);
+        assert!(soon);
     }
 
     #[test]

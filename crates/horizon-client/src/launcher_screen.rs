@@ -8,7 +8,7 @@
 use crate::boot_screen::{BootAction, Content, ElyField, Rect, wrap};
 use crate::lang;
 use crate::ui_theme::{Face, Ui, color};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// The column the launcher lays out for, in dp: a phone held upright, as its own apps are drawn.
 const COLUMN_DP: f32 = 420.0;
@@ -19,6 +19,9 @@ const GAP: f32 = 8.0;
 const ROW: f32 = 56.0;
 /// The status bar and the notch at the top (the window draws under them on a phone).
 const TOP: f32 = 36.0;
+/// Where a page's bar (back arrow, title, rule) ends, and where its content starts unscrolled.
+const BAR_BOTTOM: f32 = TOP + 57.0;
+const CONTENT_TOP: f32 = TOP + 72.0;
 
 /// The launcher's pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,8 +173,8 @@ pub struct View {
     /// The profile's name and its line under it ("26.3 · 3 mods").
     pub profile: String,
     pub profile_detail: String,
-    /// iOS: how long until the app must be signed again, already worded ("5 d 3 h"), and whether
-    /// that is under a day. `None` where nothing expires (Android, TrollStore).
+    /// iOS: the signature row, already worded ("Re-sign in 5 d 3 h"), and whether that is under
+    /// a day. `None` where nothing expires (Android, TrollStore).
     pub resign: Option<(String, bool)>,
     /// Each setting's value as shown; a setting left out is not listed (gyro only on Android,
     /// JIT only on iOS).
@@ -221,6 +224,9 @@ pub struct LauncherScreen {
     /// A sign-in page over the pages, while the boot loop has one.
     flow: Option<Flow>,
     frame: RefCell<Layout>,
+    /// How far the page is scrolled, in dp, and how far it can be (from the last draw).
+    scroll: Cell<f32>,
+    max_scroll: Cell<f32>,
 }
 
 impl LauncherScreen {
@@ -231,13 +237,33 @@ impl LauncherScreen {
             notice: None,
             flow: None,
             frame: RefCell::new(Layout::default()),
+            scroll: Cell::new(0.0),
+            max_scroll: Cell::new(0.0),
         }
     }
     pub fn page(&self) -> Page {
         self.page
     }
     pub fn set_page(&mut self, page: Page) {
+        if page != self.page {
+            self.scroll.set(0.0);
+        }
         self.page = page;
+    }
+
+    /// Scrolls the page by a finger's move of `dy` physical pixels (down: toward the top).
+    pub fn scroll_by(&self, dy: f32) {
+        let density = self.frame.borrow().density;
+        if density <= 0.0 {
+            return;
+        }
+        let to = (self.scroll.get() - dy / density).clamp(0.0, self.max_scroll.get());
+        self.scroll.set(to);
+    }
+
+    /// Where a scrolled page's content starts.
+    fn content_top(&self) -> f32 {
+        CONTENT_TOP - self.scroll.get()
     }
     pub fn set_view(&mut self, view: View) {
         self.view = view;
@@ -276,14 +302,60 @@ impl LauncherScreen {
     pub fn draw(&self, ui: &mut Ui) {
         let mut targets = Vec::new();
         ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::bg());
-        match (&self.flow, self.page) {
-            (Some(flow), _) => draw_flow(ui, flow, &mut targets),
-            (None, Page::Home) => self.draw_home(ui, &mut targets),
-            (None, Page::Settings) => self.draw_settings(ui, &mut targets),
-            (None, Page::Accounts) => self.draw_accounts(ui, &mut targets),
-            (None, Page::Profiles) => self.draw_profiles(ui, &mut targets),
-            (None, Page::EditProfile) => self.draw_edit_profile(ui, &mut targets),
-            (None, Page::Pick(setting)) => self.draw_pick(ui, setting, &mut targets),
+        // A page with a bar scrolls under it: its content first, then the bar over it, whose
+        // targets come first so a row scrolled under the bar never takes its taps.
+        let bar = match (&self.flow, self.page) {
+            (Some(flow), _) => {
+                draw_flow(ui, flow, &mut targets);
+                None
+            }
+            (None, Page::Home) => {
+                self.draw_home(ui, &mut targets);
+                None
+            }
+            (None, Page::Settings) => {
+                self.draw_settings(ui, &mut targets);
+                Some(("horizon.launcher.settings", Action::Back))
+            }
+            (None, Page::Accounts) => {
+                self.draw_accounts(ui, &mut targets);
+                Some(("horizon.launcher.accounts", Action::Back))
+            }
+            (None, Page::Profiles) => {
+                self.draw_profiles(ui, &mut targets);
+                Some(("horizon.launcher.profiles", Action::Back))
+            }
+            (None, Page::EditProfile) => {
+                self.draw_edit_profile(ui, &mut targets);
+                Some(("horizon.launcher.profile.edit", Action::Back))
+            }
+            (None, Page::Pick(setting)) => {
+                self.draw_pick(ui, &mut targets);
+                // The settings page, not home, is where its back arrow goes.
+                Some((setting.label_key(), Action::Open(Page::Settings)))
+            }
+        };
+        if let Some((title, back)) = bar {
+            let bottom = targets
+                .iter()
+                .map(|(_, r)| r.y + r.h)
+                .fold(0.0f32, f32::max)
+                + self.scroll.get();
+            self.max_scroll.set((bottom + MARGIN - ui.h).max(0.0));
+            if self.scroll.get() > self.max_scroll.get() {
+                self.scroll.set(self.max_scroll.get());
+            }
+            let content = std::mem::take(&mut targets);
+            ui.rounded(0.0, 0.0, ui.w, BAR_BOTTOM, 0.0, color::bg());
+            let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+            top_bar(ui, col, &lang::get(title), true, &mut targets);
+            if let Some(last) = targets.last_mut() {
+                last.0 = back;
+            }
+            targets.extend(content.into_iter().filter(|(_, r)| r.y + r.h > BAR_BOTTOM));
+        } else {
+            self.max_scroll.set(0.0);
+            self.scroll.set(0.0);
         }
         if let Some(note) = &self.notice {
             let nw = ui.measure(Face::Regular, 13.0, note) + 32.0;
@@ -387,8 +459,7 @@ impl LauncherScreen {
         // iOS: the time left on the app's signature.
         if let Some((left, soon)) = &self.view.resign {
             let rect = Rect::new(col.x, y, col.w, ROW);
-            let label = lang::tr("horizon.launcher.resign", &[left]);
-            row(ui, rect, "launcher/clock", &label, None, false);
+            row(ui, rect, "launcher/clock", left, None, false);
             if *soon {
                 ui.border(rect.x, rect.y, rect.w, rect.h, 10.0, color::text());
             }
@@ -464,13 +535,7 @@ impl LauncherScreen {
     fn draw_accounts(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
         let w = ui.w;
         let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
-        let mut y = top_bar(
-            ui,
-            col,
-            &lang::get("horizon.launcher.accounts"),
-            true,
-            targets,
-        );
+        let mut y = self.content_top();
         let row_h = 60.0;
         for (i, (name, kind)) in self.view.accounts.iter().enumerate() {
             let rect = Rect::new(col.x, y, col.w, row_h);
@@ -560,13 +625,7 @@ impl LauncherScreen {
 
     fn draw_profiles(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
         let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
-        let mut y = top_bar(
-            ui,
-            col,
-            &lang::get("horizon.launcher.profiles"),
-            true,
-            targets,
-        );
+        let mut y = self.content_top();
         for (i, name) in self.view.profiles.iter().enumerate() {
             let rect = Rect::new(col.x, y, col.w, ROW);
             row(ui, rect, "launcher/profile", name, None, false);
@@ -595,13 +654,9 @@ impl LauncherScreen {
         targets.push((Action::NewProfile, add));
     }
 
-    fn draw_pick(&self, ui: &mut Ui, setting: Setting, targets: &mut Vec<(Action, Rect)>) {
+    fn draw_pick(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
         let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
-        let mut y = top_bar(ui, col, &lang::get(setting.label_key()), true, targets);
-        // The settings page, not home, is where its back arrow goes.
-        if let Some(last) = targets.last_mut() {
-            last.0 = Action::Open(Page::Settings);
-        }
+        let mut y = self.content_top();
         let row_h = 48.0;
         let n = self.view.choices.len();
         if n > 0 {
@@ -643,13 +698,7 @@ impl LauncherScreen {
 
     fn draw_edit_profile(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
         let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
-        let mut y = top_bar(
-            ui,
-            col,
-            &lang::get("horizon.launcher.profile.edit"),
-            true,
-            targets,
-        );
+        let mut y = self.content_top();
         ui.text(
             Face::Regular,
             12.0,
@@ -730,25 +779,7 @@ impl LauncherScreen {
     fn draw_settings(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
         let w = ui.w;
         let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
-        let back = Rect::new(col.x - 4.0, col.y + 6.0, 44.0, 44.0);
-        ui.icon(
-            "launcher/back",
-            back.x + 12.0,
-            back.y + 12.0,
-            20.0,
-            color::text(),
-        );
-        targets.push((Action::Back, back));
-        ui.text(
-            Face::SemiBold,
-            17.0,
-            col.x + 48.0,
-            col.y + 16.0,
-            color::text(),
-            &lang::get("horizon.launcher.settings"),
-        );
-        let mut y = col.y + 64.0;
-        ui.rounded(0.0, y - 8.0, w, 1.0, 0.0, color::border());
+        let mut y = self.content_top() - 8.0;
         let row_h = 48.0;
         for (section, settings) in SECTIONS {
             let listed: Vec<_> = settings
