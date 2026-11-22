@@ -44,3 +44,6 @@
 
 # Visual Studio editor state.
 .vs/
+
+# Gradle's own state from a local APK build (packaging/android).
+/packaging/android/.gradle/
