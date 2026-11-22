@@ -31,6 +31,8 @@ pub enum Page {
     Profiles,
     /// The current profile: its name, removing it.
     EditProfile,
+    /// A setting's values, the chosen one checked.
+    Pick(Setting),
 }
 
 /// A setting the settings page lists, by what it changes.
@@ -154,6 +156,8 @@ pub enum Action {
     /// Remove the current profile (asked twice).
     RemoveProfile,
     Setting(Setting),
+    /// The value at this index on the pick page.
+    Choose(usize),
 }
 
 /// What the launcher shows: the boot loop fills it from the account, the profile and the game's
@@ -188,6 +192,9 @@ pub struct View {
     pub renaming: bool,
     pub profile_removable: bool,
     pub confirm_remove_profile: bool,
+    /// The pick page's values as shown, and the chosen one.
+    pub choices: Vec<String>,
+    pub chosen: Option<usize>,
 }
 
 /// A sign-in page (the boot screen's content), drawn in the launcher's look.
@@ -276,6 +283,7 @@ impl LauncherScreen {
             (None, Page::Accounts) => self.draw_accounts(ui, &mut targets),
             (None, Page::Profiles) => self.draw_profiles(ui, &mut targets),
             (None, Page::EditProfile) => self.draw_edit_profile(ui, &mut targets),
+            (None, Page::Pick(setting)) => self.draw_pick(ui, setting, &mut targets),
         }
         if let Some(note) = &self.notice {
             let nw = ui.measure(Face::Regular, 13.0, note) + 32.0;
@@ -585,6 +593,52 @@ impl LauncherScreen {
             false,
         );
         targets.push((Action::NewProfile, add));
+    }
+
+    fn draw_pick(&self, ui: &mut Ui, setting: Setting, targets: &mut Vec<(Action, Rect)>) {
+        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let mut y = top_bar(ui, col, &lang::get(setting.label_key()), true, targets);
+        // The settings page, not home, is where its back arrow goes.
+        if let Some(last) = targets.last_mut() {
+            last.0 = Action::Open(Page::Settings);
+        }
+        let row_h = 48.0;
+        let n = self.view.choices.len();
+        if n > 0 {
+            ui.rounded(col.x, y, col.w, row_h * n as f32, 10.0, color::raised());
+        }
+        for (i, label) in self.view.choices.iter().enumerate() {
+            let rect = Rect::new(col.x, y, col.w, row_h);
+            if i > 0 {
+                ui.rounded(
+                    rect.x + 12.0,
+                    rect.y,
+                    rect.w - 24.0,
+                    1.0,
+                    0.0,
+                    color::border(),
+                );
+            }
+            ui.text(
+                Face::Regular,
+                15.0,
+                rect.x + 16.0,
+                rect.y + 13.0,
+                color::text(),
+                label,
+            );
+            if self.view.chosen == Some(i) {
+                ui.icon(
+                    "launcher/check",
+                    rect.x + rect.w - 36.0,
+                    rect.y + 14.0,
+                    20.0,
+                    color::text(),
+                );
+            }
+            targets.push((Action::Choose(i), rect));
+            y += row_h;
+        }
     }
 
     fn draw_edit_profile(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {

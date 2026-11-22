@@ -91,11 +91,16 @@ pub struct BootConfig {
     pub set_orientation: fn(&Window, bool),
     /// Hand the game's log to the platform's share sheet: the file, then its text.
     pub share_log: fn(&Path, &str),
+    /// Show the game folder in the platform's file manager; false when it could not.
+    pub open_folder: fn(&Path) -> bool,
 }
 
 /// The defaults of the hooks a host may leave out: nothing happens.
 pub fn no_orientation(_window: &Window, _upright: bool) {}
 pub fn no_share(_path: &Path, _text: &str) {}
+pub fn no_folder(_path: &Path) -> bool {
+    false
+}
 
 /// Run the boot loop until the game takes over (or the player leaves). One event loop per
 /// process: the host sets the factory before calling this.
@@ -245,6 +250,19 @@ fn game_language(system: &str) -> Option<String> {
     [system.clone(), format!("{language}_{language}")]
         .into_iter()
         .find(|code| has(code))
+}
+
+/// The launcher's values for the world's resolution (`resolution_scale`, % of the window's), the
+/// frame rate limit (`maxFps`; 260 is vanilla's unlimited) and the camera's sensitivity (as
+/// vanilla shows it: `sensitivity` 0.5 is 100 %).
+const RESOLUTIONS: [u32; 6] = [50, 60, 70, 80, 90, 100];
+const UNLIMITED_FPS: u32 = 260;
+const FPS_LIMITS: [u32; 6] = [30, 45, 60, 90, 120, UNLIMITED_FPS];
+const SENSITIVITIES: [u32; 7] = [50, 75, 100, 125, 150, 175, 200];
+
+/// `sensitivity` (0..1) as vanilla's percent, rounded.
+fn sensitivity_percent(sensitivity: f32) -> u32 {
+    (sensitivity * 200.0).round() as u32
 }
 
 /// The game's version, for the launcher's profile line.
@@ -797,6 +815,7 @@ struct Boot {
     upright: Option<bool>,
     set_orientation: fn(&Window, bool),
     share_log: fn(&Path, &str),
+    open_folder: fn(&Path) -> bool,
     /// A short note at the launcher's foot and when it goes.
     notice: Option<(String, Instant)>,
     /// The kept accounts (`SecretStore`), the one that plays among them.
@@ -878,6 +897,7 @@ impl Boot {
             upright: None,
             set_orientation: config.set_orientation,
             share_log: config.share_log,
+            open_folder: config.open_folder,
             notice: None,
             keyring: Keyring::default(),
             signing_in: false,
@@ -1211,6 +1231,10 @@ impl Boot {
             horizon_client::graphics::GraphicsApi::Dx12 => "horizon.launcher.api.dx12",
             horizon_client::graphics::GraphicsApi::Auto => "horizon.launcher.api.auto",
         };
+        let (choices, chosen) = match self.launcher.as_ref().map(LauncherScreen::page) {
+            Some(launcher_screen::Page::Pick(setting)) => self.choices(setting),
+            _ => (Vec::new(), None),
+        };
         View {
             name,
             account_kind,
@@ -1223,10 +1247,10 @@ impl Boot {
                     self.keyring.accounts.len().to_string(),
                 ),
                 (Setting::GraphicsApi, lang::get(api)),
-                (Setting::Resolution, soon.clone()),
-                (Setting::FpsLimit, soon.clone()),
+                (Setting::Resolution, self.chosen_label(Setting::Resolution)),
+                (Setting::FpsLimit, self.chosen_label(Setting::FpsLimit)),
                 (Setting::Memory, soon.clone()),
-                (Setting::Sensitivity, soon.clone()),
+                (Setting::Sensitivity, self.chosen_label(Setting::Sensitivity)),
                 (Setting::Vibration, soon.clone()),
                 (Setting::Cutout, soon.clone()),
                 (Setting::Language, soon.clone()),
@@ -1254,7 +1278,85 @@ impl Boot {
             renaming: self.renaming.is_some(),
             profile_removable: !self.profiles.current().is_main(),
             confirm_remove_profile: self.confirm_remove_profile,
+            choices,
+            chosen,
         }
+    }
+
+    /// A setting's values as the pick page lists them, and the one the settings have (`None`:
+    /// a value set elsewhere, between two of these).
+    fn choices(&self, setting: launcher_screen::Setting) -> (Vec<String>, Option<usize>) {
+        use launcher_screen::Setting;
+        let percent = |p: u32| format!("{p} %");
+        match setting {
+            Setting::Resolution => (
+                RESOLUTIONS.iter().map(|&p| percent(p)).collect(),
+                RESOLUTIONS
+                    .iter()
+                    .position(|&p| p == self.settings.horizon.resolution_scale),
+            ),
+            Setting::FpsLimit => (
+                FPS_LIMITS
+                    .iter()
+                    .map(|&f| {
+                        if f >= UNLIMITED_FPS {
+                            lang::get("horizon.launcher.fps.unlimited")
+                        } else {
+                            f.to_string()
+                        }
+                    })
+                    .collect(),
+                FPS_LIMITS.iter().position(|&f| f == self.settings.max_fps),
+            ),
+            Setting::Sensitivity => (
+                SENSITIVITIES.iter().map(|&p| percent(p)).collect(),
+                SENSITIVITIES
+                    .iter()
+                    .position(|&p| sensitivity_percent(self.settings.sensitivity) == p),
+            ),
+            _ => (Vec::new(), None),
+        }
+    }
+
+    /// The settings page's value for `setting`: the chosen value, or the settings' own.
+    fn chosen_label(&self, setting: launcher_screen::Setting) -> String {
+        use launcher_screen::Setting;
+        let (labels, chosen) = self.choices(setting);
+        match chosen {
+            Some(i) => labels[i].clone(),
+            None => match setting {
+                Setting::Resolution => format!("{} %", self.settings.horizon.resolution_scale),
+                Setting::FpsLimit => self.settings.max_fps.to_string(),
+                Setting::Sensitivity => {
+                    format!("{} %", sensitivity_percent(self.settings.sensitivity))
+                }
+                _ => String::new(),
+            },
+        }
+    }
+
+    /// Keep the value at `i` of `setting`'s pick page in the profile's settings.
+    fn choose(&mut self, setting: launcher_screen::Setting, i: usize) {
+        use launcher_screen::Setting;
+        match setting {
+            Setting::Resolution => {
+                if let Some(&p) = RESOLUTIONS.get(i) {
+                    self.settings.horizon.resolution_scale = p;
+                }
+            }
+            Setting::FpsLimit => {
+                if let Some(&f) = FPS_LIMITS.get(i) {
+                    self.settings.max_fps = f;
+                }
+            }
+            Setting::Sensitivity => {
+                if let Some(&p) = SENSITIVITIES.get(i) {
+                    self.settings.sensitivity = p as f32 / 200.0;
+                }
+            }
+            _ => return,
+        }
+        self.settings.save(&self.options_path());
     }
 
     /// The profile at `i`'s name as shown: the player's, else the main one's own.
@@ -1475,7 +1577,21 @@ impl Boot {
                 self.settings.save(&options);
             }
             Action::Setting(Setting::About) => note(self, "horizon.launcher.about.note"),
-            Action::Mods | Action::Controls | Action::OpenFolder | Action::Setting(_) => {
+            Action::Setting(
+                setting @ (Setting::Resolution | Setting::FpsLimit | Setting::Sensitivity),
+            ) => page(self, Page::Pick(setting)),
+            Action::Choose(i) => {
+                if let Some(Page::Pick(setting)) = self.launcher.as_ref().map(LauncherScreen::page) {
+                    self.choose(setting, i);
+                    page(self, Page::Settings);
+                }
+            }
+            Action::OpenFolder => {
+                if !(self.open_folder)(&self.game_dir) {
+                    note(self, "horizon.launcher.open_folder.failed");
+                }
+            }
+            Action::Mods | Action::Controls | Action::Setting(_) => {
                 note(self, "horizon.launcher.soon.note")
             }
         }

@@ -247,6 +247,119 @@ fn share_log(_path: &std::path::Path, text: &str) {
     }
 }
 
+/// The game folder in the system's Files app: a `VIEW` of this app's documents root, through the
+/// Storage Access Framework provider the APK registers (`MagnetiteDocumentsProvider`). The path
+/// is not used: the provider always shows `getFilesDir()/game`, whatever the boot loop calls the
+/// folder. A Files app that takes no root view gets the root document itself.
+fn open_folder(_path: &std::path::Path) -> bool {
+    let Some(app) = ACTIVITY.get() else {
+        early(
+            log::Level::Warn,
+            "Android has no activity to open a folder from",
+        );
+        return false;
+    };
+    // SAFETY: `AndroidApp` keeps the VM and the activity alive for this call.
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }) else {
+        early(log::Level::Warn, "Android gave no JVM to open a folder");
+        return false;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        early(log::Level::Warn, "Android: cannot attach to open a folder");
+        return false;
+    };
+    let opened = env.with_local_frame(32, |env| -> jni::errors::Result<()> {
+        use jni::objects::{JObject, JString, JValue};
+        // SAFETY: the activity `AndroidApp` holds alive, used for these calls only.
+        let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+        let package = env
+            .call_method(&activity, "getPackageName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let package: String = env.get_string(&JString::from(package))?.into();
+        // The provider's authority is the app's package name plus ".documents" (AndroidManifest).
+        let authority = JObject::from(env.new_string(format!("{package}.documents"))?);
+        let root_id = JObject::from(env.new_string("magnetite")?);
+        let root_uri = env
+            .call_static_method(
+                "android/provider/DocumentsContract",
+                "buildRootUri",
+                "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&authority), JValue::Object(&root_id)],
+            )?
+            .l()?;
+        let action = JObject::from(env.new_string("android.intent.action.VIEW")?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        // The root first: a Files app that lists roots opens the folder there.
+        let root_type = JObject::from(env.new_string("vnd.android.document/root")?);
+        env.call_method(
+            &intent,
+            "setDataAndType",
+            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&root_uri), JValue::Object(&root_type)],
+        )?;
+        // Read and write: the Files app may copy files in and out of the folder.
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(1 | 2)],
+        )?;
+        let took_root = env
+            .call_method(
+                &activity,
+                "startActivity",
+                "(Landroid/content/Intent;)V",
+                &[JValue::Object(&intent)],
+            )
+            .is_ok();
+        if took_root {
+            return Ok(());
+        }
+        // No app took the root; the root document itself may still open. The failed start left an
+        // exception pending, which would hide the second attempt's own failure.
+        let _ = env.exception_clear();
+        let empty = JObject::from(env.new_string("")?);
+        let document_uri = env
+            .call_static_method(
+                "android/provider/DocumentsContract",
+                "buildDocumentUri",
+                "(Ljava/lang/String;Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&authority), JValue::Object(&empty)],
+            )?
+            .l()?;
+        let directory_type = JObject::from(env.new_string("vnd.android.document/directory")?);
+        env.call_method(
+            &intent,
+            "setDataAndType",
+            "(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;",
+            &[
+                JValue::Object(&document_uri),
+                JValue::Object(&directory_type),
+            ],
+        )?;
+        env.call_method(
+            &activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )?;
+        Ok(())
+    });
+    if let Err(error) = opened {
+        let _ = env.exception_clear();
+        early(
+            log::Level::Warn,
+            &format!("Android would not open the game folder: {error}"),
+        );
+        return false;
+    }
+    true
+}
+
 /// Ends the process when the game returns. winit allows one event loop per process and Android
 /// keeps a finished activity's process for the next start, which would then fail to make its
 /// loop; a fresh process starts clean.
@@ -354,6 +467,7 @@ fn android_main(app: AndroidApp) {
         launcher: true,
         set_orientation,
         share_log,
+        open_folder,
     };
     // The platform's keyboard and clipboard for the core, as the iOS host gives them: the
     // hidden EditText the system keyboard types into, and the ClipboardManager.

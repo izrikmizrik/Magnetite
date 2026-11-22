@@ -179,6 +179,7 @@ class PublicationTests(unittest.TestCase):
                      "fixtures/26.3/horizon-data.bin"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
         for path in ["tools/lab.py", "crates/horizon-core/src/lib.rs", "Cargo.lock", "docs/analysis.md",
+                     "packaging/android/java/dev/magnetite/MagnetiteDocumentsProvider.java",
                      "mods/horizon/src/main/java/dev/horizonlab/HorizonLab.java",
                      "mods/horizon-lab/src/main/java/dev/horizonlab/HorizonLab.java"]:
             self.assertFalse(check_public_tree.prohibited(path), path)

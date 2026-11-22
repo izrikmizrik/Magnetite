@@ -65,10 +65,20 @@ fn main() {
         set_orientation,
         // The share sheet comes with the launcher's next round (UIActivityViewController).
         share_log: horizon_client::boot::no_share,
+        open_folder,
     };
     if let Err(error) = horizon_client::boot::run(config) {
         eprintln!("Magnetite: the boot loop stopped: {error}");
     }
+}
+
+/// The game folder in the Files app: `shareddocuments://` opens a folder of an app that shares its
+/// documents (`UIFileSharingEnabled`), as the Files app's own links do.
+#[cfg(target_os = "ios")]
+fn open_folder(path: &std::path::Path) -> bool {
+    let path = path.to_string_lossy().replace(' ', "%20");
+    open_link(&format!("shareddocuments://{path}"));
+    true
 }
 
 /// Opens `url` in Safari (`UIApplication.openURL:options:completionHandler:`). Called on the boot

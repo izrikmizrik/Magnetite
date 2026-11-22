@@ -18,6 +18,9 @@ ORIGINAL_JDK_TOOLS = {
     # Original generator of the Java character tables: calls only the public Character API and prints ranges; no JDK implementation source.
     "tools/JavaCharacterTables.java",
     "tests/java/JfrFixture.java",
+    # Original Android Java: the Storage Access Framework provider that shows the game's folder to
+    # the system Files app (packaging/android); none of the game's Java.
+    "packaging/android/java/dev/magnetite/MagnetiteDocumentsProvider.java",
     # HISTORY-ONLY: this original comparison driver is no longer in the current tree.
     # Keep its old path allowed so --history/--pre-push accept its legitimate historical addition.
     "tools/refactors/api-pr3/JsonNbtOracle.java",
@@ -37,7 +40,8 @@ FINGERPRINT_RES = [re.compile(pattern) for pattern in TABLE_FINGERPRINTS]
 
 def prohibited(path):
     parsed = PurePosixPath(path)
-    # Original JDK-only tools are an exact allowlist; recovered game Java stays private.
+    # Original Java of our own (JDK-only tools, the Android documents provider) is an exact
+    # allowlist; recovered game Java stays private.
     if path in ORIGINAL_JDK_TOOLS:
         return False
     # Original Horizon mod sources may also be tracked.
