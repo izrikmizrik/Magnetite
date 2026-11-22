@@ -290,6 +290,7 @@ fn install_with(
 
     progress.set_step("horizon.boot.files.step.assets");
     download_objects(fetch, &objects, &staging, progress)?;
+    copy_records(&jar, &manifest.copies, &staging)?;
 
     if !staging.join(MARKER).is_file() {
         return Err(format!("the tables have no {MARKER}"));
@@ -462,6 +463,18 @@ struct Manifest {
     jar_files: Vec<String>,
     /// The folder inside the zip (empty: its root).
     tables_root: String,
+    /// Mojang's records the prepared folder keeps under another path, copied on the device.
+    copies: Vec<Copy>,
+}
+
+/// One of Mojang's records under another path in the prepared folder (the world generation
+/// bundle's structure templates): never published, copied here from the player's own files.
+#[derive(Debug, PartialEq)]
+enum Copy {
+    /// A member of the client jar.
+    Jar { member: String, to: String },
+    /// An object of the asset index, by its name there.
+    Object { name: String, to: String },
 }
 
 #[derive(Debug)]
@@ -519,11 +532,31 @@ impl Manifest {
             .unwrap_or("tables")
             .trim_matches('/')
             .to_owned();
+        let mut copies = Vec::new();
+        for copy in json["copies"].as_array().into_iter().flatten() {
+            let to = text_of(copy, "to")?.to_owned();
+            copies.push(match (copy["jar"].as_str(), copy["object"].as_str()) {
+                (Some(member), None) => Copy::Jar {
+                    member: member.to_owned(),
+                    to,
+                },
+                (None, Some(name)) => Copy::Object {
+                    name: name.to_owned(),
+                    to,
+                },
+                _ => {
+                    return Err(format!(
+                        "{MANIFEST}: a copy names neither one jar member nor one object"
+                    ));
+                }
+            });
+        }
         Ok(Self {
             client,
             asset_index,
             jar_files,
             tables_root,
+            copies,
         })
     }
 }
@@ -652,6 +685,38 @@ fn extract_jar(jar: &Path, wanted: &[String], staging: &Path) -> Result<(), Stri
             let path = inside(staging, member)?;
             let mut out = create(&path)?;
             io::copy(&mut entry, &mut out).map_err(|e| disk(&path, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// The prepared folder's copies of Mojang's records under other paths: each from the player's
+/// own client jar, or from an object this install has just written.
+fn copy_records(jar: &Path, copies: &[Copy], staging: &Path) -> Result<(), String> {
+    if copies.is_empty() {
+        return Ok(());
+    }
+    let file = File::open(jar).map_err(|e| at(jar, e))?;
+    let mut zip = zip::ZipArchive::new(io::BufReader::new(file)).map_err(|e| at(jar, e))?;
+    for copy in copies {
+        match copy {
+            Copy::Jar { member, to } => {
+                let mut entry = zip
+                    .by_name(member)
+                    .map_err(|e| format!("the client jar has no {member}: {e}"))?;
+                if entry.is_dir() || entry.is_symlink() || entry.size() > MAX_JAR_FILE {
+                    return Err(format!("{member}: not a file to copy"));
+                }
+                let path = inside(staging, to)?;
+                let mut out = create(&path)?;
+                io::copy(&mut entry, &mut out).map_err(|e| disk(&path, e))?;
+            }
+            Copy::Object { name, to } => {
+                let from = inside(&staging.join("assets"), name)?;
+                let path = inside(staging, to)?;
+                make_parent(&path)?;
+                fs::copy(&from, &path).map_err(|e| at(&path, e))?;
+            }
         }
     }
     Ok(())
@@ -1127,7 +1192,9 @@ mod tests {
                 "{{\"minecraft\": \"{}\", \"client\": {{\"url\": \"{client}\", \"sha1\": \"{}\", \
                  \"size\": {}}}, \"asset_index\": {{\"id\": \"26\", \"url\": \"{asset_index}\", \
                  \"sha1\": \"{}\"}}, \"jar_files\": [\"data/\", \"assets/\"], \
-                 \"tables_root\": \"tables\"}}",
+                 \"tables_root\": \"tables\", \"copies\": [\
+                 {{\"jar\": \"data/minecraft/example.json\", \"to\": \"worldgen/structure/a.nbt\"}}, \
+                 {{\"object\": \"minecraft/sounds/a.ogg\", \"to\": \"copied/a.ogg\"}}]}}",
                 horizon_core::VANILLA_VERSION,
                 sha1_of(&jar),
                 jar.len(),
@@ -1178,6 +1245,15 @@ mod tests {
         install_with(&fixture.spec, &progress, &fixture.fetch).unwrap();
         let resources = &fixture.spec.resources;
         assert!(resources.join(MARKER).exists(), "the game's marker");
+        // setup.json's copies: Mojang's records under other paths, from the jar and an object.
+        assert_eq!(
+            fs::read(resources.join("worldgen/structure/a.nbt")).unwrap(),
+            fixture.jar_member
+        );
+        assert_eq!(
+            fs::read(resources.join("copied/a.ogg")).unwrap(),
+            fixture.object
+        );
         assert_eq!(
             fs::read(resources.join("data/horizon/table.json")).unwrap(),
             fixture.table_file,
