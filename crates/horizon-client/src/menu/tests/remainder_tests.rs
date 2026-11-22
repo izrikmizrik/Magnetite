@@ -249,3 +249,27 @@ fn registered_kind_pickup_uses_opened_menu_shape_not_occupied_bounds() {
         });
     }
 }
+
+/// A registered kind's remainder takes the place of the cell it used up, in the inventory's
+/// 2x2 grid and the crafting table's 3x3 (dough from a water bucket gives the bucket back).
+#[test]
+fn registered_kind_remainder_refills_the_used_up_cell_in_both_grids() {
+    crate::crafting::mod_kinds::tests::with_recipe(2, |recipes, calls| {
+        bare_env(|base| {
+            let env = Env {
+                recipes: &recipes,
+                ..*base
+            };
+            for kind in [Kind::Inventory, Kind::Crafting] {
+                calls.lock().unwrap().clear();
+                let mut menu = Menu::new(kind);
+                menu.set_slot(&env, 1, Some(ItemStack::new("test:input", 1)));
+                menu.click(&env, 0, 0, Input::Pickup).unwrap();
+                assert_eq!(menu.carried, Some(ItemStack::new("test:output", 3)));
+                assert_eq!(menu.slot(1), Some(&ItemStack::new("test:rest", 1)));
+                assert_eq!(calls.lock().unwrap().len(), 1);
+                assert!(menu.dropped.is_empty());
+            }
+        });
+    });
+}

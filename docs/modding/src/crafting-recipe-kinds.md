@@ -67,3 +67,19 @@ receive serializer-written content; vanilla clients receive no custom kind.
 each file's serializer to its reported type for filtering and replacement, including
 all serializers producing the same type. An empty registered crafting serializer still participates in sync
 so removing its last recipe clears stale client data.
+
+## A grid recipe with a remainder (dough from a water bucket)
+
+A kind that consumes a container and gives it back implements `remaining_items`:
+one entry per cell, `Some(stack)` for the cell's remainder, `None` for the
+default (the item's own crafting remainder). The callback sees the grid before
+anything is consumed; the remainder refills the cell its input used up, merges
+into a cell that still holds the same item, or else goes to the inventory or is
+dropped, exactly as vanilla's `CraftingRecipe.getRemainingItems`. The inventory's
+2x2 grid and the crafting table's 3x3 call the same callbacks with the menu's own
+untrimmed square, and a shift-click asks once per take.
+
+The callbacks get no level. Vanilla passes one to `matches` and `assemble` for its
+registry access; a kind reads the registries it needs when it decodes its value.
+Kept pure, the same callbacks answer on the server and in a client's prediction
+and give the same result on every platform.
