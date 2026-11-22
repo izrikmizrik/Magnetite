@@ -9,10 +9,13 @@
 //! phone and a PC without a launcher. Every visible string is a `horizon.boot.*`
 //! key of `assets/horizon/lang`.
 //!
-//! Stage 1 of the plan draws only the screen: the sign-in threads, the
-//! download and the on-screen keyboard are later commits. The Ely.by form
-//! therefore keeps its bottom clear (`KEYBOARD`) for the keyboard to come.
+//! Stage 1 of the plan draws the screen and the Ely.by form's keyboard: the
+//! sign-in threads, the download and the values the form holds are later
+//! commits. The form's keys live in the band it keeps clear at the bottom
+//! (`KEYBOARD`), and a tap there answers a [`BootAction::Typed`] — the screen
+//! itself never edits a field.
 use crate::lang;
+use crate::osk::{Keyboard, Keys, Output};
 use crate::ui_theme::{self, Face, Ui, color};
 use std::cell::RefCell;
 
@@ -23,8 +26,8 @@ const MARGIN: f32 = 24.0;
 /// Between a title and its text, and between the blocks, in dp.
 const GAP: f32 = 12.0;
 /// The share of the screen the on-screen keyboard takes on the Ely.by form, and
-/// its cap in dp (`docs/unification/mobile-boot.md`: the keyboard comes next, the
-/// form keeps out of its way already).
+/// its cap in dp (`docs/unification/mobile-boot.md` §1.4, "Ввод текста"): the
+/// form keeps out of this band, and the keys fill it.
 const KEYBOARD: f32 = 0.42;
 const KEYBOARD_MAX: f32 = 300.0;
 /// Types and controls never shrink below this: a screen that small cannot be read.
@@ -49,7 +52,7 @@ pub enum ElyField {
 }
 
 /// What a tap on the screen asks the boot loop for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootAction {
     /// Start Microsoft's device-code sign-in.
     SignInMicrosoft,
@@ -63,7 +66,8 @@ pub enum BootAction {
     CopyCode,
     /// Leave the code or the form.
     Cancel,
-    /// Send the Ely.by form.
+    /// Send the Ely.by form (the keyboard's Done key sends it too, without a
+    /// second tap).
     Submit,
     /// The previous page.
     Back,
@@ -75,6 +79,9 @@ pub enum BootAction {
     Retry,
     /// Put the cursor in a field of the Ely.by form.
     FocusField(ElyField),
+    /// A key of the form's on-screen keyboard was tapped: the value goes to
+    /// the field that has focus. The screen never edits a field itself.
+    Typed(Output),
 }
 
 /// What the screen shows. The boot loop owns the values; the screen only draws
@@ -162,6 +169,8 @@ pub struct Layout {
     pub status: Option<Rect>,
     /// In the order they are drawn.
     pub buttons: Vec<(BootAction, Rect)>,
+    /// The Ely.by form's keys: the band at the bottom, and the board fill it.
+    pub keyboard: Option<(Rect, Keys)>,
     /// What the screen needs vertically; more than the screen only when even the
     /// smallest type does not fit.
     needed: f32,
@@ -169,14 +178,16 @@ pub struct Layout {
 
 impl Layout {
     /// The action a tap at `pos` asks for, `pos` in physical pixels as the window
-    /// reports them: a button's, or a field's focus. None outside them.
+    /// reports them: a button's, or a field's focus. None outside them (the
+    /// form's keys are read by [`BootScreen::click`], which needs the keyboard's
+    /// state to press one).
     pub fn at(&self, pos: (f32, f32)) -> Option<BootAction> {
         if self.scale <= 0.0 {
             return None;
         }
         let at = (pos.0 / self.scale, pos.1 / self.scale);
         if let Some((action, _)) = self.buttons.iter().find(|(_, rect)| rect.contains(at)) {
-            return Some(*action);
+            return Some(action.clone());
         }
         self.fields
             .iter()
@@ -190,6 +201,9 @@ impl Layout {
 /// [`BootScreen::click`] answers nothing.
 pub struct BootScreen {
     state: BootState,
+    /// The Ely.by form's keys: one line, no suggestions. The layout tells it
+    /// where it sits; a tap on the keys moves its focus and shift state.
+    typing: RefCell<Keyboard>,
     frame: RefCell<Option<Layout>>,
 }
 
@@ -197,6 +211,7 @@ impl BootScreen {
     pub fn new(state: BootState) -> Self {
         Self {
             state,
+            typing: RefCell::new(Keyboard::new(false, false)),
             frame: RefCell::new(None),
         }
     }
@@ -222,9 +237,32 @@ impl BootScreen {
         self.fitted(&content, size, scale, &estimate_lines)
     }
 
-    /// The button or field at `pos` (physical pixels), from the last layout.
+    /// The button, field or key at `pos` (physical pixels), from the last layout.
     pub fn click(&self, pos: (f32, f32)) -> Option<BootAction> {
-        self.frame.borrow().as_ref().and_then(|l| l.at(pos))
+        let layout = self.frame.borrow();
+        let layout = layout.as_ref()?;
+        if layout.scale <= 0.0 {
+            return None;
+        }
+        let at = (pos.0 / layout.scale, pos.1 / layout.scale);
+        if let Some(action) = layout.at(pos) {
+            return Some(action);
+        }
+        // The form's keys take what the page does not: a key under the finger
+        // is pressed where it is drawn, and its output goes to the field. Done
+        // is the form's Submit, so a thumb needs no second button for it; the
+        // grid has no Close key (that is the pad's B), so no other output is
+        // given a page action here.
+        let (_, keys) = layout.keyboard?;
+        let (x, y) = at;
+        if x < keys.x || x >= keys.x + keys.w || y < keys.y || y >= keys.y + keys.h {
+            return None;
+        }
+        let out = self.typing.borrow_mut().tap([x, y], keys)?;
+        Some(match out {
+            Output::Done => BootAction::Submit,
+            other => BootAction::Typed(other),
+        })
     }
 
     pub fn draw(&self, ui: &mut Ui) {
@@ -373,7 +411,7 @@ impl BootScreen {
         }
         for ((label, _), (action, rect)) in content.buttons.iter().zip(&layout.buttons) {
             let hovered = rect.contains(ui.cursor);
-            let (plate, ink) = if primary(*action) {
+            let (plate, ink) = if primary(action) {
                 let alpha = if hovered { 0.85 } else { 1.0 };
                 (
                     color::with_alpha(color::accent(), alpha),
@@ -397,6 +435,11 @@ impl BootScreen {
                 ink,
                 label,
             );
+        }
+        // The form's keys over the band the page left clear: drawn by the grid
+        // the last tap read, so a key never moves under the finger that pressed it.
+        if let Some((_, keys)) = layout.keyboard {
+            self.typing.borrow().draw_touch(ui, keys);
         }
     }
 
@@ -560,7 +603,8 @@ impl BootScreen {
         let mut buttons = vec![(BootAction::Cancel, Rect::default()); content.buttons.len()];
         for i in (0..content.buttons.len()).rev() {
             low -= m.control;
-            buttons[i] = (content.buttons[i].1, Rect::new(x, low, column_w, m.control));
+            let action = content.buttons[i].1.clone();
+            buttons[i] = (action, Rect::new(x, low, column_w, m.control));
             low -= m.gap;
         }
         if !content.buttons.is_empty() {
@@ -609,8 +653,22 @@ impl BootScreen {
             progress,
             status,
             buttons,
+            keyboard: self.keys_band(w, h),
             needed,
         }
+    }
+
+    /// The Ely.by form's band at the bottom of the `w` by `h` dp screen, with the keys scaled to
+    /// it; no band on a page a finger does not type into. The page keeps out of the band
+    /// ([`BootScreen::keyboard_room`]), so the keys never cover a field or a button.
+    fn keys_band(&self, w: f32, h: f32) -> Option<(Rect, Keys)> {
+        let room = self.keyboard_room(h);
+        if room <= 0.0 {
+            return None;
+        }
+        let band = Rect::new(0.0, (h - room).max(0.0), w.max(1.0), room);
+        let area = [band.x, band.y, band.w, band.h];
+        Some((band, Keys::within(area)))
     }
 
     /// What the state says, in the current language.
@@ -812,7 +870,7 @@ impl Metrics {
 }
 
 /// Which button the page wants pressed: the one that goes on with what it is for.
-fn primary(action: BootAction) -> bool {
+fn primary(action: &BootAction) -> bool {
     matches!(
         action,
         BootAction::SignInMicrosoft
@@ -1016,14 +1074,19 @@ mod tests {
             let screen = BootScreen::new(state.clone());
             for (size, scale) in WINDOWS {
                 let layout = screen.layout(size, scale);
-                let actions: Vec<BootAction> = layout.buttons.iter().map(|(a, _)| *a).collect();
+                let actions: Vec<BootAction> =
+                    layout.buttons.iter().map(|(a, _)| a.clone()).collect();
                 assert_eq!(actions, expected(&state), "{state:?} at {size:?}");
                 for (action, rect) in &layout.buttons {
                     let centre = (
                         (rect.x + rect.w / 2.0) * scale,
                         (rect.y + rect.h / 2.0) * scale,
                     );
-                    assert_eq!(screen.click(centre), Some(*action), "{state:?} at {size:?}");
+                    assert_eq!(
+                        screen.click(centre),
+                        Some(action.clone()),
+                        "{state:?} at {size:?}"
+                    );
                 }
                 // The window's corners are nobody's button.
                 assert_eq!(screen.click((0.0, 0.0)), None, "{state:?} at {size:?}");
@@ -1049,6 +1112,10 @@ mod tests {
                 rects.extend(layout.status);
                 rects.extend(layout.fields.iter().map(|(_, rect)| *rect));
                 rects.extend(layout.buttons.iter().map(|(_, rect)| *rect));
+                if let Some((band, keys)) = layout.keyboard {
+                    rects.push(band);
+                    rects.push(Rect::new(keys.x, keys.y, keys.w, keys.h));
+                }
                 for rect in rects {
                     assert!(
                         rect.x >= -0.5 && rect.y >= -0.5,
@@ -1094,6 +1161,180 @@ mod tests {
         });
         let layout = no_otp.layout([2400.0, 1080.0], 3.0);
         assert_eq!(layout.fields.len(), 2);
+    }
+
+    /// Every key of the form's keyboard belongs to the keyboard: a typing one answers a
+    /// `Typed`, Shift and the symbols key change the keys, and Done sends the form.
+    #[test]
+    fn the_form_s_keyboard_types_into_the_focused_field() {
+        let screen = BootScreen::new(BootState::Ely {
+            login: "me@example.org".into(),
+            password_len: 7,
+            otp: None,
+            focus: ElyField::Login,
+            error: None,
+        });
+        let keyboard = Keyboard::new(false, false);
+        let layout = screen.layout([2400.0, 1080.0], 3.0);
+        let (band, keys) = layout.keyboard.expect("the form has keys");
+        assert!(band.y >= 0.0 && band.y + band.h <= 360.0, "{band:?}");
+        // The key the grid opens on types its letter.
+        let [x, y, w, h] = keyboard.key_rect(1, 0, keys).expect("q");
+        let centre = ((x + w / 2.0) * 3.0, (y + h / 2.0) * 3.0);
+        assert_eq!(
+            screen.click(centre),
+            Some(BootAction::Typed(Output::Text("q".into())))
+        );
+        // Every key of the grid belongs to the keyboard: a typing key answers a Typed,
+        // Shift and the layer key only change the keys, Done is the form's Submit.
+        // None of them ever answers a field or a button's action.
+        let mut seen = 0;
+        let mut done = false;
+        for row in 0..5 {
+            for col in 0..10 {
+                let Some([x, y, w, h]) = keyboard.key_rect(row, col, keys) else {
+                    continue;
+                };
+                let centre = ((x + w / 2.0) * 3.0, (y + h / 2.0) * 3.0);
+                let before = screen.typing.borrow().clone();
+                match screen.click(centre) {
+                    Some(BootAction::Typed(_)) => {}
+                    Some(BootAction::Submit) => done = true,
+                    None => assert_ne!(
+                        *screen.typing.borrow(),
+                        before,
+                        "row {row} col {col}: the tap neither typed nor changed the keys"
+                    ),
+                    other => panic!("row {row} col {col} reached the page: {other:?}"),
+                }
+                seen += 1;
+            }
+        }
+        // 45 of the 50 cells are keys: the grid has five rows of ten, its last
+        // row five keys wide (Shift, symbols, Space, Delete, Done).
+        assert_eq!(seen, 45, "every key of the one-line grid");
+        assert!(done, "the Done key submits the form");
+        // A tap beside the keys asks nothing of the page.
+        let beside = ((keys.x + keys.w + 40.0) * 3.0, (keys.y + 10.0) * 3.0);
+        assert_eq!(screen.click(beside), None);
+        // The keys sit under a field, never over it.
+        for (_, rect) in &layout.fields {
+            assert!(rect.y + rect.h <= band.y + 0.5, "{rect:?} over the keys");
+        }
+    }
+
+    #[test]
+    fn taps_on_keys_type_and_the_buttons_and_fields_still_answer() {
+        let screen = BootScreen::new(BootState::Ely {
+            login: String::new(),
+            password_len: 0,
+            otp: None,
+            focus: ElyField::Login,
+            error: None,
+        });
+        let keyboard = Keyboard::new(false, false);
+        for (size, scale) in [([854.0, 480.0], 3.0), ([2400.0, 1080.0], 3.0)] {
+            // The keys as the form opens them, letters and no shift, for each window: the
+            // taps below change the grid.
+            *screen.typing.borrow_mut() = Keyboard::new(false, false);
+            let layout = screen.layout(size, scale);
+            let (band, keys) = layout.keyboard.expect("the form has keys");
+            let (w, h) = (size[0] / scale, size[1] / scale);
+            assert!(keys.y >= 0.0 && keys.y + keys.h <= h, "{keys:?} past {h}");
+            assert!(keys.x >= 0.0 && keys.x + keys.w <= w, "{keys:?} past {w}");
+            // Nothing on the page is in the band the keys take.
+            let mut rects: Vec<Rect> = layout.fields.iter().map(|(_, r)| *r).collect();
+            rects.extend(layout.buttons.iter().map(|(_, r)| *r));
+            for rect in rects {
+                assert!(
+                    rect.y + rect.h <= band.y + 0.5,
+                    "{size:?}: {rect:?} over the keys at {band:?}"
+                );
+            }
+            // A letter, tapped where it is drawn, types that letter.
+            let [x, y, w, h] = keyboard.key_rect(1, 0, keys).expect("q");
+            let centre = ((x + w / 2.0) * scale, (y + h / 2.0) * scale);
+            assert_eq!(
+                screen.click(centre),
+                Some(BootAction::Typed(Output::Text("q".into()))),
+                "{size:?}"
+            );
+            // The fields and the buttons answer their own actions.
+            for (field, rect) in &layout.fields {
+                let centre = (
+                    (rect.x + rect.w / 2.0) * scale,
+                    (rect.y + rect.h / 2.0) * scale,
+                );
+                assert_eq!(screen.click(centre), Some(BootAction::FocusField(*field)));
+            }
+            for (action, rect) in &layout.buttons {
+                let centre = (
+                    (rect.x + rect.w / 2.0) * scale,
+                    (rect.y + rect.h / 2.0) * scale,
+                );
+                assert_eq!(screen.click(centre), Some(action.clone()));
+            }
+        }
+    }
+
+    #[test]
+    fn the_done_key_sends_the_form_rather_than_typing() {
+        let screen = BootScreen::new(BootState::Ely {
+            login: "me".into(),
+            password_len: 1,
+            otp: None,
+            focus: ElyField::Password,
+            error: None,
+        });
+        let keyboard = Keyboard::new(false, false);
+        let layout = screen.layout([1040.0, 700.0], 1.0);
+        let (_, keys) = layout.keyboard.expect("the form has keys");
+        // The last key of the last row is Done.
+        let last = 4;
+        let [x, y, w, h] = keyboard.key_rect(4, last, keys).expect("Done");
+        let centre = (x + w / 2.0, y + h / 2.0);
+        assert_eq!(screen.click(centre), Some(BootAction::Submit));
+        // A letter is still typed, not submitted.
+        let [x, y, w, h] = keyboard.key_rect(1, 0, keys).expect("q");
+        assert_eq!(
+            screen.click((x + w / 2.0, y + h / 2.0)),
+            Some(BootAction::Typed(Output::Text("q".into())))
+        );
+    }
+
+    #[test]
+    fn the_form_s_keys_leave_the_fields_and_buttons_their_own_taps() {
+        let screen = BootScreen::new(BootState::Ely {
+            login: "me".into(),
+            password_len: 1,
+            otp: Some("123456".into()),
+            focus: ElyField::Login,
+            error: Some("Wrong password".into()),
+        });
+        let layout = screen.layout([1040.0, 700.0], 1.0);
+        let (band, _) = layout.keyboard.expect("the form has keys");
+        // Every field and button is above the band, so its own tap still answers
+        // what it always did.
+        for (field, rect) in &layout.fields {
+            assert!(rect.y + rect.h <= band.y, "{rect:?} reaches into the keys");
+            let centre = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            assert_eq!(screen.click(centre), Some(BootAction::FocusField(*field)));
+        }
+        for (action, rect) in &layout.buttons {
+            assert!(rect.y + rect.h <= band.y, "{rect:?} reaches into the keys");
+            let centre = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+            assert_eq!(screen.click(centre), Some(action.clone()));
+        }
+    }
+
+    #[test]
+    fn only_the_ely_form_has_keys() {
+        for state in states() {
+            let screen = BootScreen::new(state.clone());
+            let layout = screen.layout([2400.0, 1080.0], 3.0);
+            let form = matches!(state, BootState::Ely { .. });
+            assert_eq!(layout.keyboard.is_some(), form, "{state:?}");
+        }
     }
 
     #[test]
@@ -1206,6 +1447,33 @@ mod tests {
         }
     }
 
+    /// The keys band draws on the boot atlas too, at the pad's size and shrunk, with the
+    /// symbols a tap turns on: nothing in it reads a game file.
+    #[test]
+    fn the_keys_draw_on_the_boot_atlas() {
+        use crate::gamepad::Button;
+        let atlas = HudAtlas::boot();
+        let screen = BootScreen::new(BootState::Ely {
+            login: "me@example.org".into(),
+            password_len: 7,
+            otp: None,
+            focus: ElyField::Login,
+            error: None,
+        });
+        for (size, scale) in [([854.0, 480.0], 3.0), ([2400.0, 1080.0], 3.0)] {
+            let (_, keys) = screen.layout(size, scale).keyboard.expect("keys");
+            // The symbols grid, Shift lit, draws the same way.
+            screen.typing.borrow_mut().button(Button::RightBumper);
+            screen.typing.borrow_mut().button(Button::LeftTrigger);
+            let mut batch = HudBatch::scratch([size[0] as u32, size[1] as u32]);
+            let mut ui = Ui::new(&atlas, &mut batch, (10.0, 10.0));
+            screen.typing.borrow().draw_touch(&mut ui, keys);
+            ui.finish();
+            assert!(!batch.vertices.is_empty(), "{size:?}");
+            screen.typing.borrow_mut().button(Button::RightBumper);
+        }
+    }
+
     #[test]
     fn a_small_screen_loses_a_sentence_before_it_loses_its_buttons() {
         // A desktop window shows the whole page at its full size.
@@ -1265,7 +1533,7 @@ mod tests {
         let (_, rect) = layout
             .buttons
             .iter()
-            .find(|(action, _)| *action == BootAction::PlayOffline)
+            .find(|(action, _)| action == &BootAction::PlayOffline)
             .expect("the offline button");
         let centre = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
         assert_eq!(screen.click(centre), Some(BootAction::PlayOffline));

@@ -7,6 +7,10 @@
 //! the next) and the right stick moves through the suggestions.
 //! It only produces [`Output`]s; the game feeds them to the focused field
 //! the way typed keys reach it.
+//!
+//! The same grid takes a finger ([`Keyboard::tap`]) where the screen has no
+//! pad, as the boot screen's sign-in form does: a tap presses the key under
+//! it, and [`Keyboard::draw_touch`] draws the keys without the pad's hints.
 use crate::gamepad::{Button, MenuJob};
 use crate::hud_kit::hint::HintRow;
 use crate::pad_glyph::{Glyph, Glyphs};
@@ -18,7 +22,7 @@ fn tr(key: &str, english: &str) -> String {
 }
 
 /// What a key press does to the focused field.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Output {
     Text(String),
     Backspace,
@@ -183,6 +187,54 @@ const HINT_LINE: f32 = 1.6;
 /// Between two hints on a line.
 const HINT_SEP: &str = "   ";
 
+/// The keys' board, in dp: one key unit wide, the gap beside it, a key's height, a row's width
+/// (ten units and nine gaps) and the five rows' height. Drawing and tapping both read these,
+/// so a key is never drawn where a finger cannot press it.
+const UNIT: f32 = 50.0;
+const GAP: f32 = 6.0;
+const KEY_H: f32 = 38.0;
+const BOARD_W: f32 = 10.0 * UNIT + 9.0 * GAP;
+const BOARD_H: f32 = 5.0 * KEY_H + 4.0 * GAP;
+/// The clear space a key keeps at either side of its label.
+const LABEL_PAD: f32 = 4.0;
+/// How far the pad keeps its panel from the screen's edge.
+const EDGE: f32 = 16.0;
+
+/// The box the keys fill, in dp: what [`Keyboard::draw_touch`] paints and
+/// [`Keyboard::tap`] reads, so the picture and the finger never disagree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Keys {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// How much the board is shrunk (1 at the pad's own size).
+    scale: f32,
+}
+
+impl Keys {
+    /// The board that fits `area` ([x, y, width, height] in dp), its panel's padding kept
+    /// clear: shrunk as one where the room is smaller than the pad's board, never larger.
+    pub fn within(area: [f32; 4]) -> Self {
+        let [x, y, w, h] = area;
+        let inner_w = (w - 2.0 * PANEL_PAD).max(1.0);
+        let inner_h = (h - 2.0 * PANEL_PAD).max(1.0);
+        let scale = (inner_w / BOARD_W).min(inner_h / BOARD_H).min(1.0);
+        let (kw, kh) = (BOARD_W * scale, BOARD_H * scale);
+        Self {
+            x: x + ((w - kw) / 2.0).round(),
+            y: y + ((h - kh) / 2.0).round(),
+            w: kw,
+            h: kh,
+            scale,
+        }
+    }
+    /// A key unit, the gap beside it, and a key's height at this box's scale.
+    fn pitch(&self) -> (f32, f32, f32) {
+        (UNIT * self.scale, GAP * self.scale, KEY_H * self.scale)
+    }
+}
+
 /// `items` on as few lines as fit `width` (as `measure` measures a line), in order. An item wider
 /// than `width` breaks at its spaces onto lines of its own, its button's print kept with the
 /// first word ("B Close"); a line still wider than `width` (one long word) is drawn smaller.
@@ -308,6 +360,43 @@ impl Keyboard {
     fn span(row: Row, col: usize) -> (f32, f32) {
         let left: f32 = row[..col].iter().map(|k| k.1).sum();
         (left, row[col].1)
+    }
+    /// A key's rectangle in dp, `[x, y, width, height]`: the grid's row and column on the board
+    /// `at`, which [`Keyboard::tap`] reads as the drawing paints it.
+    pub fn key_rect(&self, row: usize, col: usize, at: Keys) -> Option<[f32; 4]> {
+        let line = *self.rows().get(row)?;
+        if col >= line.len() {
+            return None;
+        }
+        let (left, units) = Self::span(line, col);
+        let (unit, gap, key_h) = at.pitch();
+        let x = at.x + left * (unit + gap);
+        let y = at.y + row as f32 * (key_h + gap);
+        let w = units * unit + (units - 1.0) * gap;
+        Some([x, y, w, key_h])
+    }
+    /// A tap at `pos` (dp, the screen `at` was laid out in): the key under the finger is
+    /// pressed exactly as [`Keyboard::press`] presses the focused one, so a tap types, shifts,
+    /// changes the grid, deletes, spaces or finishes. `None` between the keys and outside them.
+    pub fn tap(&mut self, pos: [f32; 2], at: Keys) -> Option<Output> {
+        let (row, col) = self.key_at(pos, at)?;
+        self.row = row;
+        self.col = col;
+        self.press()
+    }
+    /// Which key of the grid is under `pos`, if any.
+    fn key_at(&self, [px, py]: [f32; 2], at: Keys) -> Option<(usize, usize)> {
+        for (row, line) in self.rows().iter().enumerate() {
+            for col in 0..line.len() {
+                let Some([x, y, w, h]) = self.key_rect(row, col, at) else {
+                    continue;
+                };
+                if px >= x && px < x + w && py >= y && py < y + h {
+                    return Some((row, col));
+                }
+            }
+        }
+        None
     }
     fn key(&self) -> Key {
         self.rows()[self.row][self.col].0
@@ -436,21 +525,22 @@ impl Keyboard {
     /// Draw the keyboard across the bottom of the screen, or the top when
     /// the field it types into is in the lower half.
     pub fn draw(&self, ui: &mut Ui, at_top: bool, glyphs: Glyphs) {
-        const UNIT: f32 = 50.0;
-        const GAP: f32 = 6.0;
-        const KEY_H: f32 = 38.0;
-        const LABEL_PAD: f32 = 4.0;
-        let width = 10.0 * UNIT + 9.0 * GAP;
-        let hints = self.hint_lines(ui, glyphs, width);
+        let hints = self.hint_lines(ui, glyphs, BOARD_W);
         let line_h = HINT_LINE * ui_theme::small();
-        let keys_h = 5.0 * KEY_H + 4.0 * GAP;
-        let height = PANEL_PAD + keys_h + HINT_GAP + hints.len() as f32 * line_h + PANEL_PAD;
-        let x0 = ((ui.w - width) / 2.0).round();
-        let y0 = if at_top { 16.0 } else { ui.h - height - 16.0 };
+        let height = PANEL_PAD + BOARD_H + HINT_GAP + hints.len() as f32 * line_h + PANEL_PAD;
+        let x0 = ((ui.w - BOARD_W) / 2.0).round();
+        let y0 = if at_top { EDGE } else { ui.h - height - EDGE };
+        let keys = Keys {
+            x: x0,
+            y: y0,
+            w: BOARD_W,
+            h: BOARD_H,
+            scale: 1.0,
+        };
         ui.rounded(
             x0 - PANEL_PAD,
             y0 - PANEL_PAD,
-            width + 2.0 * PANEL_PAD,
+            BOARD_W + 2.0 * PANEL_PAD,
             height,
             ui_theme::radius_plate(),
             color::with_alpha(color::bg(), 0.94),
@@ -458,18 +548,60 @@ impl Keyboard {
         ui.border(
             x0 - PANEL_PAD,
             y0 - PANEL_PAD,
-            width + 2.0 * PANEL_PAD,
+            BOARD_W + 2.0 * PANEL_PAD,
             height,
             ui_theme::radius_plate(),
             color::border(),
         );
+        self.draw_keys(ui, keys, true);
+        let top = y0 + BOARD_H + HINT_GAP;
+        for (i, line) in hints.iter().enumerate() {
+            // Only a line of one word wider than the panel is still too wide: smaller, to fit.
+            let size = ui.fit(Face::Regular, ui_theme::small(), line, BOARD_W);
+            ui.text_centered(
+                Face::Regular,
+                size,
+                x0 + BOARD_W / 2.0,
+                top + i as f32 * line_h,
+                color::muted(),
+                line,
+            );
+        }
+    }
+
+    /// Draw the keys alone across `at`, with no pad hints and no focused key: the keyboard of a
+    /// screen a finger works, as the boot screen's sign-in form is. `at` is exactly what
+    /// [`Keyboard::tap`] reads, so a key is never painted where a tap misses it.
+    pub fn draw_touch(&self, ui: &mut Ui, at: Keys) {
+        ui.rounded(
+            at.x - PANEL_PAD,
+            at.y - PANEL_PAD,
+            at.w + 2.0 * PANEL_PAD,
+            at.h + 2.0 * PANEL_PAD,
+            ui_theme::radius_plate(),
+            color::with_alpha(color::bg(), 0.94),
+        );
+        ui.border(
+            at.x - PANEL_PAD,
+            at.y - PANEL_PAD,
+            at.w + 2.0 * PANEL_PAD,
+            at.h + 2.0 * PANEL_PAD,
+            ui_theme::radius_plate(),
+            color::border(),
+        );
+        self.draw_keys(ui, at, false);
+    }
+
+    /// The keys of the current grid on the board `at`; `highlight` puts the pad's focus ring on
+    /// the key A would press (a finger has no focus to show).
+    fn draw_keys(&self, ui: &mut Ui, at: Keys, highlight: bool) {
+        let (_, _, key_h) = at.pitch();
         for (r, row) in self.rows().iter().enumerate() {
-            let y = y0 + r as f32 * (KEY_H + GAP);
-            for (i, (key, units)) in row.iter().enumerate() {
-                let (left, _) = Self::span(row, i);
-                let x = x0 + left * (UNIT + GAP);
-                let w = units * UNIT + (units - 1.0) * GAP;
-                let focused = r == self.row && i == self.col;
+            for (i, (key, _)) in row.iter().enumerate() {
+                let Some([x, y, w, h]) = self.key_rect(r, i, at) else {
+                    continue;
+                };
+                let focused = highlight && r == self.row && i == self.col;
                 let lit = matches!(key, Key::Shift) && (self.shift || self.caps)
                     || matches!(key, Key::Layer) && self.symbols;
                 let (plate, ink) = if focused {
@@ -479,7 +611,9 @@ impl Keyboard {
                 } else {
                     (color::raised(), color::text())
                 };
-                ui.rounded(x, y, w, KEY_H, ui_theme::radius(), plate);
+                // The pad's corner, shrunk with the board and never rounder than half a key.
+                let radius = ui_theme::radius().min(KEY_H / 2.0) * at.scale;
+                ui.rounded(x, y, w, h, radius, plate);
                 let label = match key {
                     Key::Char(ch) => self.letter(*ch),
                     Key::Shift if self.caps => "CAPS".into(),
@@ -492,32 +626,19 @@ impl Keyboard {
                     Key::Done => tr("gui.done", "Done"),
                 };
                 // Smaller when the label is wider than its key (a long translation).
-                let room = w - 2.0 * LABEL_PAD;
-                let size = ui.fit(Face::Medium, ui_theme::body(), &label, room);
+                let room = w - 2.0 * LABEL_PAD * at.scale;
+                let size = ui.fit(Face::Medium, ui_theme::body() * at.scale, &label, room);
                 let lw = ui.measure(Face::Medium, size, &label);
                 ui.text_line(
                     Face::Medium,
                     size,
-                    KEY_H,
+                    key_h,
                     x + ((w - lw) / 2.0).round(),
                     y,
                     ink,
                     &label,
                 );
             }
-        }
-        let top = y0 + keys_h + HINT_GAP;
-        for (i, line) in hints.iter().enumerate() {
-            // Only a line of one word wider than the panel is still too wide: smaller, to fit.
-            let size = ui.fit(Face::Regular, ui_theme::small(), line, width);
-            ui.text_centered(
-                Face::Regular,
-                size,
-                x0 + width / 2.0,
-                top + i as f32 * line_h,
-                color::muted(),
-                line,
-            );
         }
     }
 }
@@ -650,5 +771,138 @@ mod tests {
         assert_eq!(k.stick(0.4), None, "not yet back at rest");
         assert_eq!(k.stick(0.1), None);
         assert_eq!(k.stick(-0.9), Some(Output::Next));
+    }
+
+    /// A board at its own size, well inside a screen.
+    fn board() -> Keys {
+        Keys::within([40.0, 300.0, 640.0, 300.0])
+    }
+
+    /// The grid combinations a keyboard can show: single line or many, and with or
+    /// without suggestions (the grid itself is the same either way).
+    const GRIDS: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
+
+    #[test]
+    fn the_board_fits_the_room_it_is_given() {
+        // A room bigger than the pad's board keeps the pad's size, centred in it.
+        let at = board();
+        assert!((at.w - BOARD_W).abs() < 0.01, "{at:?}");
+        assert!((at.h - BOARD_H).abs() < 0.01, "{at:?}");
+        assert!(at.x >= 40.0 && at.x + at.w <= 680.0, "{at:?}");
+        assert!(at.y >= 300.0 && at.y + at.h <= 600.0, "{at:?}");
+        // A room smaller than it shrinks the whole board, never past the room.
+        let small = Keys::within([0.0, 0.0, 300.0, 150.0]);
+        assert!(small.w <= 300.0 && small.h <= 150.0, "{small:?}");
+        assert!(small.scale < 1.0, "{small:?}");
+        assert!(small.x >= 0.0 && small.y >= 0.0, "{small:?}");
+        // The keys stay on the board, and no two of them share a point.
+        let k = Keyboard::default();
+        let mut rects = Vec::new();
+        for (row, line) in k.rows().iter().enumerate() {
+            for col in 0..line.len() {
+                let [x, y, w, h] = k.key_rect(row, col, small).expect("a key");
+                assert!(
+                    x >= small.x - 0.01 && x + w <= small.x + small.w + 0.01,
+                    "{x} {w}"
+                );
+                assert!(
+                    y >= small.y - 0.01 && y + h <= small.y + small.h + 0.01,
+                    "{y} {h}"
+                );
+                rects.push([x, y, w, h]);
+            }
+        }
+        for (i, [ax, ay, aw, ah]) in rects.iter().enumerate() {
+            for [bx, by, bw, bh] in &rects[i + 1..] {
+                let apart = ax + aw <= bx + 0.01
+                    || bx + bw <= ax + 0.01
+                    || ay + ah <= by + 0.01
+                    || by + bh <= ay + 0.01;
+                assert!(apart, "keys {i} and {rects:?} overlap");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_on_every_key_types_what_choosing_it_and_pressing_does() {
+        for (lines, suggests) in GRIDS {
+            for symbols in [false, true] {
+                // The grid's own keys, in the order they are drawn.
+                let mut probe = Keyboard::new(lines, suggests);
+                probe.symbols = symbols;
+                let rows: Vec<Vec<usize>> = probe
+                    .rows()
+                    .iter()
+                    .map(|r| (0..r.len()).collect())
+                    .collect();
+                for (row, cols) in rows.iter().enumerate() {
+                    for &col in cols {
+                        // What the pad does: focus the key, press it.
+                        let mut pad = Keyboard::new(lines, suggests);
+                        pad.symbols = symbols;
+                        pad.row = row;
+                        pad.col = col;
+                        let by_pad = pad.press();
+                        // What a finger does: tap its centre on the board.
+                        let mut touch = Keyboard::new(lines, suggests);
+                        touch.symbols = symbols;
+                        let [x, y, w, h] = probe.key_rect(row, col, board()).expect("a key");
+                        let tap = (x + w / 2.0, y + h / 2.0);
+                        assert_eq!(
+                            touch.tap([tap.0, tap.1], board()),
+                            by_pad,
+                            "row {row} col {col}"
+                        );
+                        // And the pad's state after the press is the state after the tap.
+                        assert_eq!(touch, pad, "row {row} col {col}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_tap_between_the_keys_or_outside_them_does_nothing() {
+        let at = board();
+        let mut k = Keyboard::default();
+        let before = k.clone();
+        // Above and below the board, and beside it.
+        assert_eq!(k.tap([at.x + 1.0, at.y - 20.0], at), None);
+        assert_eq!(k.tap([at.x + 1.0, at.y + at.h + 5.0], at), None);
+        assert_eq!(k.tap([at.x - 5.0, at.y + 10.0], at), None);
+        assert_eq!(k.tap([at.x + at.w + 5.0, at.y + 10.0], at), None);
+        // The gap between two keys: `q` and `w` of the second row.
+        let [x, _, w, _] = k.key_rect(1, 0, at).expect("q");
+        let gap_x = x + w + GAP / 2.0;
+        let [_, y, _, h] = k.key_rect(1, 0, at).expect("q");
+        assert_eq!(k.tap([gap_x, y + h / 2.0], at), None);
+        // A tap that hits nothing changes nothing.
+        assert_eq!(k, before);
+    }
+
+    #[test]
+    fn taps_shift_switch_and_finish_like_the_pad() {
+        let at = board();
+        let mut k = Keyboard::new(false, false);
+        let centre = |k: &Keyboard, row: usize, col: usize| {
+            let [x, y, w, h] = k.key_rect(row, col, at).expect("a key");
+            [x + w / 2.0, y + h / 2.0]
+        };
+        // Shift, then a letter: upper case, and the shift lets go.
+        assert_eq!(k.tap(centre(&k, 4, 0), at), None);
+        assert_eq!(k.tap(centre(&k, 1, 0), at), Some(Output::Text("Q".into())));
+        assert_eq!(k.tap(centre(&k, 1, 0), at), Some(Output::Text("q".into())));
+        // The layer key shows the symbols, where q's own key is `/`.
+        assert_eq!(k.tap(centre(&k, 4, 1), at), None);
+        assert_eq!(k.tap(centre(&k, 1, 0), at), Some(Output::Text("/".into())));
+        // Backspace and Done are keys like any other (the last row is Shift,
+        // symbols, Space, Delete, Done).
+        assert_eq!(k.tap(centre(&k, 4, 3), at), Some(Output::Backspace));
+        assert_eq!(k.tap(centre(&k, 4, 4), at), Some(Output::Done));
+        // On a field of many lines the row is Shift, symbols, Space, New Line, Delete,
+        // Done, and Done still finishes.
+        let mut lines = Keyboard::new(true, false);
+        assert_eq!(lines.tap(centre(&lines, 4, 3), at), Some(Output::Enter));
+        assert_eq!(lines.tap(centre(&lines, 4, 5), at), Some(Output::Done));
     }
 }
