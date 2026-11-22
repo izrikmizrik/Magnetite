@@ -917,6 +917,91 @@ fn server_completion_reads_published_data_without_world_access_on_first_open() {
     });
 }
 
+/// A machine's table built from the game's recipes follows `/reload` on a server with nobody
+/// online: `tags_updated` fires after the new tables are in, without a player to sync, and
+/// `recipes_of_type` reads the reloaded recipe there.
+#[test]
+#[ignore = "daily"]
+fn reload_with_nobody_online_rebuilds_tables_from_the_new_recipes() {
+    use mod_api::{
+        DataPackFilesEvent, HostSide, ServerHost, TagsUpdateCause, TagsUpdatedEvent,
+    };
+    struct Station {
+        loads: Arc<std::sync::atomic::AtomicUsize>,
+        table: Arc<Mutex<Vec<(TagsUpdateCause, Vec<String>)>>>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Station {
+        fn data_pack_files(&self, _: &mut dyn ServerHost, event: &mut DataPackFilesEvent<'_>) {
+            // The first load roasts to bread, every later one to a baked potato.
+            let result = if self.loads.fetch_add(1, Ordering::SeqCst) == 0 {
+                "minecraft:bread"
+            } else {
+                "minecraft:baked_potato"
+            };
+            event.files.push((
+                "recipe/station_test:roast".into(),
+                format!(
+                    r#"{{"type":"minecraft:smelting","ingredient":"minecraft:wheat",
+                        "result":{{"id":"{result}"}},"cookingtime":100,"experience":0.1}}"#
+                )
+                .into_bytes(),
+            ));
+        }
+        fn tags_updated(&self, host: HostSide<'_>, event: &mut TagsUpdatedEvent) {
+            let HostSide::Server(host) = host else {
+                return;
+            };
+            let name = |key| {
+                ["minecraft:bread", "minecraft:baked_potato"]
+                    .into_iter()
+                    .find(|id| host.item_key(&Identifier::parse(id).unwrap()) == Some(key))
+                    .unwrap_or("other")
+                    .to_owned()
+            };
+            let roasts: Vec<String> = host
+                .recipes_of_type("minecraft:smelting")
+                .iter()
+                .filter(|recipe| recipe.id == "station_test:roast")
+                .flat_map(|recipe| recipe.results.iter().map(|stack| name(stack.item())))
+                .collect();
+            self.table.lock().unwrap().push((event.cause, roasts));
+        }
+    }
+    let table = Arc::new(Mutex::new(Vec::new()));
+    let station = || Station {
+        loads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        table: table.clone(),
+    };
+    mod_platform::testing::with_mods(
+        vec![ModEntry::new("station_test", Box::new(station()))].into(),
+        || {
+            with_game(|game| {
+                let root =
+                    std::env::temp_dir().join(format!("reload-nobody-{}", std::process::id()));
+                game.load_world(request(&root)).unwrap();
+                assert!(game.lan.is_none(), "nobody is online");
+                assert!(game.run_command("reload"));
+                let seen = table.lock().unwrap().clone();
+                assert_eq!(
+                    seen,
+                    [
+                        (
+                            TagsUpdateCause::ServerDataLoad { reload: false },
+                            vec!["minecraft:bread".to_owned()]
+                        ),
+                        (
+                            TagsUpdateCause::ServerDataLoad { reload: true },
+                            vec!["minecraft:baked_potato".to_owned()]
+                        ),
+                    ]
+                );
+                let _ = std::fs::remove_dir_all(root);
+            });
+        },
+    );
+}
+
 /// `DataMapsUpdatedEvent`: once for each registry with a type on a world's
 /// first open and after every `/reload`, with the reloaded values readable
 /// through the handles: a newer file's override, a tag's members, a removal

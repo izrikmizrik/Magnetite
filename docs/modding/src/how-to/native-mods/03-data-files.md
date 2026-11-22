@@ -23,6 +23,25 @@ a world's datapacks and a mod's own root data all apply. The answer is the winni
 or for parsing at reload time; a single read does not reload packs. Directory-pack
 symlinks follow vanilla pack behavior: linked resource files are read through the pack.
 
+## Tables built from the game's recipes
+
+A machine whose recipes the game parses (`host.recipes_of_type("mymod:cooking")`, ingredients and
+results already resolved, the world's packs merged and load conditions held) builds its table
+from the game's recipe table, not from the files. A reload listener can't do that: its prepare
+sees the new files, and the game's new recipe table is built after the listeners' applies. Build
+it in `tags_updated` on `TagsUpdateCause::ServerDataLoad { .. }`: it fires once the server's
+new tables are in, on a world's first open (`reload: false`) and after every `/reload`
+(`reload: true`), whether or not anyone is online, and `recipes_of_type` reads the new table
+there. A refused `/reload` keeps the old tables and does not fire it, so the machine's table
+never runs ahead of the game's.
+
+`datapack_sync` is the wrong place for this: it is asked once per player, and not at all on a
+`/reload` with nobody online, so a table rebuilt there stays stale until someone joins. Keep
+`datapack_sync` for what it is for: naming the recipe types a player's client needs.
+
+Parse the machine's own files in a reload listener when the game doesn't read them (a type it
+has no serializer for): prepare parses, apply publishes, and a refused reload keeps the old.
+
 ## Embedded data
 
 Generate code-only tables as Rust source before packaging and include them under `src/`.
