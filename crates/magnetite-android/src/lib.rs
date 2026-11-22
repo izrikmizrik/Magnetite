@@ -110,7 +110,7 @@ fn open_link(url: &str) {
     });
     if let Err(error) = opened {
         // A device without a browser must not leave a pending Java exception.
-        env.exception_clear();
+        let _ = env.exception_clear();
         early(
             log::Level::Warn,
             &format!("Android would not open {url}: {error}"),

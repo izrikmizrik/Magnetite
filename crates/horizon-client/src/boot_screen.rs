@@ -30,6 +30,9 @@ const GAP: f32 = 12.0;
 /// form keeps out of this band, and the keys fill it.
 const KEYBOARD: f32 = 0.42;
 const KEYBOARD_MAX: f32 = 300.0;
+/// The share of the screen's height kept clear for the platform's own keyboard
+/// (`system_keyboard`), which comes up over the bottom of the screen.
+const SYSTEM_KEYBOARD: f32 = 0.55;
 /// Types and controls never shrink below this: a screen that small cannot be read.
 const MIN_FIT: f32 = 0.15;
 /// How far the type shrinks before a paragraph is dropped instead: smaller than
@@ -457,9 +460,15 @@ impl BootScreen {
 
     /// The room the on-screen keyboard will take, which the form keeps out of.
     fn keyboard_room(&self, h: f32) -> f32 {
-        // The platform's own keyboard types instead (`system_keyboard`): no keys drawn here.
+        let typing = matches!(
+            self.state,
+            BootState::Ely { .. } | BootState::OfflineName { .. }
+        );
+        // The platform's own keyboard types instead (`system_keyboard`): no keys drawn here, but
+        // the form keeps above where it comes up. A phone's keyboard takes about half the height
+        // in landscape; the host does not report its exact top yet.
         if crate::system_keyboard::platform_keyboard() {
-            return 0.0;
+            return if typing { h * SYSTEM_KEYBOARD } else { 0.0 };
         }
         if matches!(
             self.state,
@@ -681,6 +690,9 @@ impl BootScreen {
     /// it; no band on a page a finger does not type into. The page keeps out of the band
     /// ([`BootScreen::keyboard_room`]), so the keys never cover a field or a button.
     fn keys_band(&self, w: f32, h: f32) -> Option<(Rect, Keys)> {
+        if crate::system_keyboard::platform_keyboard() {
+            return None;
+        }
         let room = self.keyboard_room(h);
         if room <= 0.0 {
             return None;

@@ -52,7 +52,17 @@ jobs:
             target/aarch64-linux-android/fast/libmagnetite_android.so
           cp LICENSE THIRD_PARTY_NOTICES.md .local/android/assets/
       - name: Package the APK
-        run: gradle -p packaging/android -PversionName="0.1.0-dev.${GITHUB_RUN_NUMBER}" -PversionCode="${GITHUB_RUN_NUMBER}" assembleDebug
+        env:
+          # The kept test-build key (packaging/android/build.gradle): each APK installs over the
+          # last. Absent in a fork's run, which then signs with Gradle's own debug key.
+          MAGNETITE_DEBUG_KEYSTORE: ${{ secrets.MAGNETITE_DEBUG_KEYSTORE }}
+          MAGNETITE_DEBUG_KEYSTORE_PASSWORD: ${{ secrets.MAGNETITE_DEBUG_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$MAGNETITE_DEBUG_KEYSTORE" ]; then
+            export MAGNETITE_DEBUG_KEYSTORE_FILE="$RUNNER_TEMP/magnetite-test.p12"
+            printf '%s' "$MAGNETITE_DEBUG_KEYSTORE" | base64 -d > "$MAGNETITE_DEBUG_KEYSTORE_FILE"
+          fi
+          gradle -p packaging/android -PversionName="0.1.0-dev.${GITHUB_RUN_NUMBER}" -PversionCode="${GITHUB_RUN_NUMBER}" assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: magnetite-android-arm64

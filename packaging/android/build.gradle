@@ -20,5 +20,21 @@ android {
         res.srcDirs = ['res']
     }
     packaging { jniLibs { useLegacyPackaging = true } }
+    // One kept key for test builds (MAGNETITE_DEBUG_KEYSTORE, a PKCS12 file, and its password in
+    // MAGNETITE_DEBUG_KEYSTORE_PASSWORD), so each build installs over the last and the player's
+    // files and sign-in stay. Without it Gradle's own debug key signs, which differs per machine.
+    def keystore = System.getenv('MAGNETITE_DEBUG_KEYSTORE_FILE')
+    if (keystore) {
+        signingConfigs {
+            magnetiteTest {
+                storeFile file(keystore)
+                storeType 'pkcs12'
+                storePassword System.getenv('MAGNETITE_DEBUG_KEYSTORE_PASSWORD')
+                keyAlias 'magnetite'
+                keyPassword System.getenv('MAGNETITE_DEBUG_KEYSTORE_PASSWORD')
+            }
+        }
+        buildTypes.debug.signingConfig signingConfigs.magnetiteTest
+    }
 }
 layout.buildDirectory = file('../../.local/android/gradle-build')
