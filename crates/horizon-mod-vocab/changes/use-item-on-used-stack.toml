@@ -1,0 +1,3 @@
+ids = ["hook:use_item_on", "type:UseItemOnEvent.used", "type:UsedStack"]
+why = "UseItemOnEvent gains `used`, the stack the click was made with. A block's Part changes it (`replace`, `set_count`, `stack_mut` for components) and the game puts it in the hand that clicked once the call returns, so a skillet flips its food or a bucket fills without the Part writing the player's hand itself."
+migrate = "Rebuild listeners against hook version 2. Change the used stack through `event.used` instead of `LivingRef::set_hand_item`; `event.click.stack` stays the read-only stack from before the action."

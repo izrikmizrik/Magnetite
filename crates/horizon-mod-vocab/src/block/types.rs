@@ -439,6 +439,64 @@ pub struct BlockClick<'a> {
     pub player_entity_id: i32,
 }
 
+/// The stack a block's `use_item_on` was used with, to change after the block's action: when
+/// the call returns, the hand that clicked gets what this holds, if it was changed. It starts as
+/// that hand's stack. Change it here rather than through the player: the game writes it once,
+/// to the hand that clicked, after every Part has answered.
+#[derive(Clone, Debug, Default, PartialEq, horizon_mod_api_macros::Wire)]
+#[wire(internal_field_layouts)]
+// exhaustive: its fields are private, so mods change it through its methods
+pub struct UsedStack {
+    pub(crate) stack: Option<ItemStack>,
+    pub(crate) changed: bool,
+}
+
+impl UsedStack {
+    /// The hand's stack before the action, unchanged.
+    // hidden: the game makes it; mods get it in the event
+    #[doc(hidden)]
+    pub fn new(stack: Option<ItemStack>) -> Self {
+        Self {
+            stack,
+            changed: false,
+        }
+    }
+    /// The stack as it stands: the hand's, or what a Part left.
+    pub fn stack(&self) -> Option<&ItemStack> {
+        self.stack.as_ref()
+    }
+    /// The stack to change in place (its count, damage or components); the hand gets it after.
+    pub fn stack_mut(&mut self) -> Option<&mut ItemStack> {
+        self.changed = true;
+        self.stack.as_mut()
+    }
+    /// Put `stack` in the hand instead (None empties it): a filled bucket for an empty one, the
+    /// skillet with its food flipped.
+    pub fn replace(&mut self, stack: Option<ItemStack>) {
+        self.stack = stack;
+        self.changed = true;
+    }
+    /// Set the count; 0 empties the hand.
+    pub fn set_count(&mut self, count: u32) {
+        self.changed = true;
+        if count == 0 {
+            self.stack = None;
+        } else if let Some(stack) = &mut self.stack {
+            let _ = stack.set_count(count);
+        }
+    }
+    /// Whether a Part changed it.
+    pub fn is_changed(&self) -> bool {
+        self.changed
+    }
+    /// The stack for the hand when a Part changed it.
+    // hidden: the game applies it
+    #[doc(hidden)]
+    pub fn into_changed(self) -> Option<Option<ItemStack>> {
+        self.changed.then_some(self.stack)
+    }
+}
+
 impl FallOnEvent<'_> {
     /// Ask for a write at the block the entity landed on. It is applied once the entity's
     /// batch has ticked, in the order asked, if the block is still the state it landed on.
