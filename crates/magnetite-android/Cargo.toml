@@ -14,9 +14,14 @@ crate-type = ["cdylib"]
 [target.'cfg(target_os = "android")'.dependencies]
 horizon-client = { path = "../horizon-client", default-features = false, features = ["mobile"] }
 horizon-mod-host = { path = "../horizon-mod-host", default-features = false, features = ["mobile"] }
+# The refresh-secret store the boot loop keeps (a private file in the app's own folder).
+horizon-account = { path = "../horizon-account" }
 # The workspace patches this to third_party/winit (the Android input patch).
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 android_logger = { version = "0.15", default-features = false }
+# The device-code page in the system browser: an ACTION_VIEW intent from the activity. The same
+# version android-activity and cpal already carry in the tree.
+jni = "0.21"
 log = "0.4"
 
 [lints]

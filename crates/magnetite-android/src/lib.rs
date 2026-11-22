@@ -1,17 +1,17 @@
 //! Magnetite Android: the stock NativeActivity loads this library and android-activity calls
-//! [`android_main`] on its own thread. It starts the shared core the way the desktop executable
-//! does, with the activity's event loop and paths instead of argv and a working directory.
+//! [`android_main`] on its own thread. It starts the boot loop with the activity's event loop and
+//! the app's private folders instead of argv and a working directory
+//! (`docs/unification/mobile-boot.md` §1.4).
 //!
-//! Stage 0 of the port (docs/unification/android-entry.md): the game starts and draws; signing
-//! in, the game's prepared files, touch controls and the in-game launcher come in later stages.
-//! Without prepared files the core shows its "no resources" window, which is the smoke test here.
+//! Stage 1 of the port (docs/unification/android-entry.md): the screen runs at once — signing in,
+//! the game files, then the game itself, handed the session file and the prepared resources. Touch
+//! controls and the in-game launcher come in later stages.
 #![cfg(target_os = "android")]
 
-use std::path::Path;
 use std::sync::OnceLock;
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
-use winit::platform::android::activity::AndroidApp;
+use winit::platform::android::activity::{AndroidApp, WindowManagerFlags};
 
 /// The logcat sink. The core's own logger stays the process logger (its log file and crash
 /// reports); every line it keeps is also written here (`logging::set_platform_sink`).
@@ -44,17 +44,94 @@ fn early(level: log::Level, line: &str) {
     to_logcat(level, "magnetite_android", line);
 }
 
-/// The arguments the desktop launcher would pass: the game folder, the prepared files and an
-/// offline name until signing in arrives.
-fn arguments(game_dir: &Path, resources: &Path) -> Vec<String> {
-    vec![
-        "--game-dir".into(),
-        game_dir.to_string_lossy().into_owned(),
-        "--resources".into(),
-        resources.to_string_lossy().into_owned(),
-        "--name".into(),
-        "Player".into(),
-    ]
+/// The activity, kept for the boot loop's two plain `fn` hooks (`open_link`, `keep_awake`): they
+/// take no context, and `AndroidApp` is reference counted, cheap and safe to keep.
+static ACTIVITY: OnceLock<AndroidApp> = OnceLock::new();
+
+/// Opens `url` in the system's browser: an `android.intent.action.VIEW` intent started from the
+/// activity, as the game's own link opener does. Called on the boot loop's thread, which is the
+/// activity's thread here.
+fn open_link(url: &str) {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return;
+    }
+    let Some(app) = ACTIVITY.get() else {
+        early(
+            log::Level::Warn,
+            "Android has no activity to open a link from",
+        );
+        return;
+    };
+    // SAFETY: `AndroidApp` keeps the VM and the activity alive for this call; this thread holds
+    // the JVM only for the attach, and the activity for this call.
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }) else {
+        early(log::Level::Warn, "Android gave no JVM to open a link with");
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        early(
+            log::Level::Warn,
+            &format!("Android: cannot attach for {url}"),
+        );
+        return;
+    };
+    let opened = env.with_local_frame(16, |env| -> jni::errors::Result<()> {
+        let address = jni::objects::JObject::from(env.new_string(url)?);
+        let uri = env
+            .call_static_method(
+                "android/net/Uri",
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[jni::objects::JValue::Object(&address)],
+            )?
+            .l()?;
+        let action = jni::objects::JObject::from(env.new_string("android.intent.action.VIEW")?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[
+                jni::objects::JValue::Object(&action),
+                jni::objects::JValue::Object(&uri),
+            ],
+        )?;
+        // SAFETY: the pointer is the activity `AndroidApp` holds alive; it is used for this call
+        // only and not deleted with the local frame.
+        let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+        env.call_method(
+            &activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[jni::objects::JValue::Object(&intent)],
+        )?;
+        Ok(())
+    });
+    if let Err(error) = opened {
+        // A device without a browser must not leave a pending Java exception.
+        env.exception_clear();
+        early(
+            log::Level::Warn,
+            &format!("Android would not open {url}: {error}"),
+        );
+    }
+}
+
+/// Keeps the screen on while the files download (`Window`'s flag, the boot loop's switch).
+fn keep_awake(on: bool) {
+    let Some(app) = ACTIVITY.get() else {
+        return;
+    };
+    let (add, remove) = if on {
+        (
+            WindowManagerFlags::KEEP_SCREEN_ON,
+            WindowManagerFlags::empty(),
+        )
+    } else {
+        (
+            WindowManagerFlags::empty(),
+            WindowManagerFlags::KEEP_SCREEN_ON,
+        )
+    };
+    app.set_window_flags(add, remove);
 }
 
 /// Ends the process when the game returns. winit allows one event loop per process and Android
@@ -76,30 +153,55 @@ fn android_main(app: AndroidApp) {
         early(log::Level::Error, "Android gave the app no data folder");
         return;
     };
+    // The game folder is the player's (`--game-dir`): saves, options.txt, logs. The prepared game
+    // files sit beside it; the account and the session file share their own private folder, and
+    // the download's staging is kept between runs so an interrupted fetch continues.
     let game_dir = home.join("game");
     let resources = home.join("resources");
-    if let Err(error) = std::fs::create_dir_all(&game_dir) {
-        early(
-            log::Level::Error,
-            &format!(
-                "Cannot make the game folder {}: {error}",
-                game_dir.display()
-            ),
-        );
-        return;
+    let horizon = home.join("horizon");
+    let work = home.join("setup-work");
+    for dir in [game_dir.as_path(), horizon.as_path(), work.as_path()] {
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            early(
+                log::Level::Error,
+                &format!("Cannot make {}: {error}", dir.display()),
+            );
+            return;
+        }
     }
     early(
         log::Level::Info,
         &format!("Starting Magnetite in {}", game_dir.display()),
     );
+    let _ = ACTIVITY.set(app.clone());
     let activity = app.clone();
     horizon_client::window::set_event_loop_factory(Box::new(move || {
         EventLoop::builder().with_android_app(activity).build()
     }));
     let _exit = ExitOnReturn;
-    // Not horizon_game::main: there is no compiler child or main-thread stack to prepare on
-    // Android, and the arguments come from here, not argv. The game's guest calls run on the
-    // core's own guest-sized threads; this thread's stack is android-activity's.
-    let startup = horizon_client::entry::prepare_with_args(arguments(&game_dir, &resources));
-    horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
+    let config = horizon_client::boot::BootConfig {
+        game_dir,
+        resources: resources.clone(),
+        work: work.clone(),
+        session_dir: horizon.clone(),
+        secrets: Box::new(horizon_account::FileStore::new(
+            horizon.join("account.json"),
+        )),
+        open_link,
+        keep_awake,
+        install: horizon_client::boot::installer_from_build(resources, work),
+        // Not horizon_game::main: there is no compiler child or main-thread stack to prepare on
+        // Android, and the arguments come from the boot loop, not argv. The game's guest calls run
+        // on the core's own guest-sized threads; this thread's stack is android-activity's.
+        start: Box::new(|args: Vec<String>| {
+            let startup = horizon_client::entry::prepare_with_args(args);
+            horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
+        }),
+    };
+    if let Err(error) = horizon_client::boot::run(config) {
+        early(
+            log::Level::Error,
+            &format!("The boot loop stopped: {error}"),
+        );
+    }
 }

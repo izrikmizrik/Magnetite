@@ -3524,8 +3524,10 @@ name = "magnetite-android"
 version = "0.1.0"
 dependencies = [
  "android_logger",
+ "horizon-account",
  "horizon-client",
  "horizon-mod-host",
+ "jni 0.21.1",
  "log",
  "winit",
 ]
@@ -3534,8 +3536,12 @@ dependencies = [
 name = "magnetite-ios"
 version = "0.1.0"
 dependencies = [
+ "horizon-account",
  "horizon-client",
  "horizon-mod-host",
+ "objc2 0.5.3",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
 ]
 
 [[package]]
