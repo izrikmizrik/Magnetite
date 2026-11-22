@@ -215,14 +215,16 @@ def classify(prepared, jar, index_objects):
                 )
             kind = "index"
         elif rel.startswith(ASSETS + "/"):
-            # The preparation writes `assets/` from the index alone: `extract_client_resources`
-            # copies the jar's members, and an index object of the same name then overwrites
-            # them (`Assets::imported` keeps the object, `copy_indexed` writes it), and
-            # `--complete` copies the rest. So a file here is that index object, and anything
-            # else is a file the install would not write.
+            # `assets/` is the jar's members (`extract_client_resources`: models, blockstates,
+            # atlases, textures), with an index object of the same name written over one
+            # (`copy_indexed`; `--complete` adds the sounds). The install does the same in that
+            # order: the jar's members first, then the index's objects. So a file here is the
+            # index object of its name, else the jar's member of its name, else unreproducible.
             entry = index_objects["by_key"].get(rel[len(ASSETS) + 1:])
             if entry is not None and entry["hash"] == sha1 and entry["size"] == size:
                 kind = "object"
+            elif entry is None and rel in jar and copies_from_jar(rel) and jar[rel] == sha1:
+                kind = "jar"
             else:
                 irreproducible.append(
                     (rel, "the phone writes assets/ only from the jar and the index")
