@@ -2594,6 +2594,13 @@ impl<R: RandomSource> LootContext<'_, R> {
                     stack.tidy();
                 }
                 "minecraft:set_components" => apply_components(stack, &f["components"]),
+                // CopyComponentsFunction: the broken block entity's components
+                // the lists allow (`ItemStack.applyComponents`).
+                "minecraft:copy_components" => {
+                    let place = horizon_world::loot::current_native_loot_place();
+                    let copied = horizon_world::loot::copied_components(f, place.as_deref());
+                    apply_component_tags(stack, copied);
+                }
                 // A mod's own kind: the function hook changes the stack, as it
                 // does in the main loot engine.
                 k if k.contains(':') && !k.starts_with("minecraft:") => {
@@ -2608,6 +2615,25 @@ impl<R: RandomSource> LootContext<'_, R> {
             }
         }
     }
+}
+
+/// `ItemStack.applyComponents` with components already decoded, read back
+/// as a saved stack's components are (see [`apply_components`]).
+fn apply_component_tags(stack: &mut ItemStack, components: Vec<(String, horizon_core::nbt::Tag)>) {
+    use horizon_core::nbt::Tag;
+    if components.is_empty() {
+        return;
+    }
+    let mut saved = match crate::item_data::encode_components(stack) {
+        Some(Tag::Compound(c)) => c,
+        _ => Default::default(),
+    };
+    for (id, value) in components {
+        saved.remove(&format!("!{id}").as_str().into());
+        saved.insert(id.as_str().into(), value);
+    }
+    (stack.damage, stack.extra) = crate::item_data::decode_components(Some(&Tag::Compound(saved)));
+    stack.tidy();
 }
 
 /// `SetComponentsFunction.run`: `ItemStack.applyComponents` with the patch

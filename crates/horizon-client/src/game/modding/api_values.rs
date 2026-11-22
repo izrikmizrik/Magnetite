@@ -1012,6 +1012,33 @@ mod brewed_boundary_tests {
 }
 
 impl super::Game<'_> {
+    /// `BlockEntity.collectComponents` of a mod's block entity saved as
+    /// `saved` (`saveWithFullMetadata`): its own saved `components`, then
+    /// those its mod says it holds (`block_entity_collect_components`). None
+    /// for a vanilla block entity, whose components the game copies itself.
+    pub(in crate::game) fn mod_block_entity_components(
+        &mut self,
+        saved: &horizon_core::nbt::Tag,
+    ) -> Option<horizon_core::nbt::Compound> {
+        use horizon_core::nbt::{Compound, Tag};
+        let (pos, crate::containers::BlockEntity::Mod(entity)) =
+            horizon_client::save::decode_block_entity(saved)?
+        else {
+            return None;
+        };
+        let mut components = match saved.get("components") {
+            Some(Tag::Compound(c)) => c.clone(),
+            _ => Compound::new(),
+        };
+        if mod_api::__private::has_part_hook(mod_api::HookId::BlockEntityCollectComponents)
+            && let Ok(api) = entity.try_into_api()
+        {
+            let mut implicit = None;
+            self.native_block_entity_collect_components([pos.0, pos.1, pos.2], &api, &mut implicit);
+            components.extend(implicit.unwrap_or_default());
+        }
+        Some(components)
+    }
     pub(in crate::game) fn api_block_entity_update_tag(
         pos: [i32; 3],
         entity: &crate::containers::ModBlockEntity,

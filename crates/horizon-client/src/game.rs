@@ -2513,7 +2513,7 @@ impl Game<'_> {
     /// `isThundering`: thunder above 0.9; neither where `canHaveWeather` is
     /// false: a level with a ceiling or no sky light, or the End).
     fn loot_place_at(
-        &self,
+        &mut self,
         origin: [f64; 3],
         block_entity: Option<horizon_core::nbt::Tag>,
     ) -> horizon_world::loot::LootPlace {
@@ -2521,8 +2521,12 @@ impl Game<'_> {
         // Level.canHaveWeather: sky light, no ceiling and not the End.
         let weather =
             self.world.shape.sky_light && !self.world.shape.has_ceiling && self.dim != Dim::End;
+        let components = block_entity
+            .as_ref()
+            .and_then(|saved| self.mod_block_entity_components(saved));
         horizon_world::loot::LootPlace {
             origin: Some(origin),
+            components,
             block_entity,
             level: Some(horizon_world::loot::LootLevel {
                 dimension: self.dim.id().to_owned(),
