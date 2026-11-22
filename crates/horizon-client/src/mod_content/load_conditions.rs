@@ -204,6 +204,7 @@ pub fn build_with_conditions(
     // reference to one only when no data pack supplies it.
     let mut left_out_carvers: BTreeSet<String> = BTreeSet::new();
     let mut modifiers = Vec::new();
+    let mut deferred_modifiers: Vec<[String; 3]> = Vec::new();
     let mut structure_modifiers = Vec::new();
     let mut namespaces: std::collections::BTreeSet<String> = mods
         .iter()
@@ -283,6 +284,10 @@ pub fn build_with_conditions(
                         )?);
                     } else if biomes::is_modifier(&file) {
                         let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+                        if !biomes::read_at_build(&text) {
+                            deferred_modifiers.push([m.id.to_string(), file.clone(), text]);
+                            continue;
+                        }
                         modifiers.extend(biomes::Modifier::read(
                             &m.id,
                             &file,
@@ -415,6 +420,7 @@ pub fn build_with_conditions(
             base,
             &overlay,
             &modifiers,
+            deferred_modifiers,
             inventory.server_ids().map(str::to_owned).collect(),
             biome_doc,
             biome_tag_doc,

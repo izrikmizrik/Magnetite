@@ -1,0 +1,2 @@
+A mod's load-time transform of one kind of data files (biome modifiers, recipes).
+The game calls it with an owned DataFiles and takes back the one it returns.

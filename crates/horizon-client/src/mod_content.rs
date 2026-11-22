@@ -2486,6 +2486,7 @@ fn place_in_biomes(
     base: &Path,
     overlay: &Overlay<'_>,
     modifiers: &[biomes::Modifier],
+    deferred: Vec<[String; 3]>,
     enabled_mods: Vec<String>,
     biome_doc: Option<J>,
     biome_tags: Option<J>,
@@ -2537,6 +2538,7 @@ fn place_in_biomes(
         feature_tags,
         entity_categories,
         entity_tags,
+        deferred,
     };
     let before = doc.clone();
     for (id, text) in saved.apply(&mut doc, modifiers, &biome_tags, &placed, warnings)? {
@@ -2638,6 +2640,10 @@ struct SavedModifiers {
     carver_ids: BTreeSet<String>,
     #[serde(default)]
     carver_tags: BTreeMap<String, String>,
+    /// Modifiers of a type the content build doesn't read (`biomes::read_at_build`), each its
+    /// mod, file and text: the world open hands them to the mods' load-time transforms first.
+    #[serde(default)]
+    deferred: Vec<[String; 3]>,
 }
 
 impl SavedModifiers {
@@ -2684,7 +2690,8 @@ pub fn biome_modifiers_over_packs(
     packs: &horizon_world::worldgen::overrides::WorldgenOverrides,
     declared: &[[String; 3]],
 ) -> Result<Option<horizon_world::worldgen::overrides::WorldgenOverrides>> {
-    let Some(bytes) = biomes::saved_bytes(root, packs, declared) else {
+    let transforms = mod_api::__private::has_data_transforms(mod_api::DataFiles::BIOME_MODIFIER);
+    let Some(bytes) = biomes::saved_bytes(root, packs, declared, transforms) else {
         return Ok(None);
     };
     let mut saved: SavedModifiers =
@@ -2696,10 +2703,6 @@ pub fn biome_modifiers_over_packs(
         }
     };
     let mut warnings = Vec::new();
-    let mut modifiers = Vec::new();
-    for [m, file, text] in saved.modifiers.iter().chain(declared) {
-        modifiers.extend(biomes::Modifier::read(m, file, text, &mut warnings)?);
-    }
     // What the generator reads without the modifiers over the packs.
     let packed = packs.apply("biomes", read(BIOMES)?);
     let mut start = packed.clone();
@@ -2739,6 +2742,22 @@ pub fn biome_modifiers_over_packs(
         .apply("placed_features", read(PLACED_FEATURES)?)
         .into_keys()
         .collect();
+    let sources: Vec<[String; 3]> = saved
+        .modifiers
+        .iter()
+        .chain(&saved.deferred)
+        .chain(declared)
+        .cloned()
+        .collect();
+    let sources = if transforms {
+        transformed_modifiers(sources, &doc, &biome_tags)
+    } else {
+        sources
+    };
+    let mut modifiers = Vec::new();
+    for [m, file, text] in &sources {
+        modifiers.extend(biomes::Modifier::read(m, file, text, &mut warnings)?);
+    }
     carver_registry::refresh(&mut saved, packs)?;
     saved.apply(&mut doc, &modifiers, &biome_tags, &placed, &mut warnings)?;
     for warning in warnings {
@@ -2755,6 +2774,57 @@ pub fn biome_modifiers_over_packs(
         }
     }
     Ok(Some(out))
+}
+
+/// The mods' load-time transforms of the biome modifiers (`DataFiles::BIOME_MODIFIER`) over
+/// `sources` (mod, file, text), with the biomes of `doc` and the tags `biome_tags` as context.
+/// Modifiers keep their order; ones a transform adds follow, in id order, as files of their
+/// namespace.
+fn transformed_modifiers(
+    sources: Vec<[String; 3]>,
+    doc: &J,
+    biome_tags: &BTreeMap<String, String>,
+) -> Vec<[String; 3]> {
+    let biomes: Vec<(String, String)> = match doc {
+        J::Obj(entries) => entries
+            .iter()
+            .filter_map(|(id, text)| match text {
+                J::Str(text) => Some((id.clone(), text.clone())),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let ids: BTreeSet<String> = biomes.iter().map(|(id, _)| id.clone()).collect();
+    let ids_of: Vec<String> = sources
+        .iter()
+        .map(|[_, file, _]| biomes::modifier_id(file))
+        .collect();
+    let mut data = mod_api::DataFiles::new(
+        mod_api::DataFiles::BIOME_MODIFIER,
+        ids_of
+            .iter()
+            .zip(&sources)
+            .map(|(id, [_, _, text])| (id.clone(), text.clone()))
+            .collect(),
+    );
+    data.biome_tags = biomes::resolved_tags(&ids, biome_tags);
+    data.biomes = biomes;
+    let mut out: BTreeMap<String, String> = mod_api::__private::run_data_transforms(data)
+        .files
+        .into_iter()
+        .collect();
+    let mut kept: Vec<[String; 3]> = ids_of
+        .iter()
+        .zip(sources)
+        .filter_map(|(id, [m, file, _])| Some([m, file, out.remove(id)?]))
+        .collect();
+    kept.extend(out.into_iter().map(|(id, text)| {
+        let (ns, path) = id.split_once(':').unwrap_or(("minecraft", &id));
+        let file = format!("data/{ns}/neoforge/biome_modifier/{path}.json");
+        [ns.to_owned(), file, text]
+    }));
+    kept
 }
 
 #[path = "mod_content_carvers.rs"]
@@ -3442,3 +3512,7 @@ fn stamp(
 #[cfg(test)]
 #[path = "mod_content_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mod_content_data_transform_tests.rs"]
+mod data_transform_tests;

@@ -59,3 +59,4 @@
 - [Container loot](reference/container-loot.md)
 
 - [Crafting recipe kinds](crafting-recipe-kinds.md)
+- [Load-time data transforms](data-transforms.md)

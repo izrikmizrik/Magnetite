@@ -107,6 +107,8 @@ pub struct Parts {
     /// Serializer IDs, their produced recipe types and retained owners.
     pub(crate) recipe_serializers:
         HashMap<Box<str>, (usize, String, Arc<dyn crate::CraftingRecipeHandler>)>,
+    /// Load-time data transforms: owner index, owner id, kind, transform, in registration order.
+    pub(crate) data_transforms: Vec<(usize, &'static str, String, Arc<dyn crate::DataTransform>)>,
     /// Entity selector tokens the mods registered, by name, in registration order.
     pub(crate) entity_selectors: Vec<EntitySelectorInfo>,
     /// Frozen raw payload declarations and their sole receiving owners.

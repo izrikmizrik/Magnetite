@@ -458,6 +458,69 @@ impl Modifier {
     }
 }
 
+/// Whether the content build reads a modifier of `text`'s type itself. One it doesn't (a
+/// mod's own serializer) waits for the world open, where a mod's load-time transform
+/// (`DataFiles::BIOME_MODIFIER`) may rewrite it into types it reads; only one still unread
+/// there is reported.
+pub(super) fn read_at_build(text: &str) -> bool {
+    let Ok(doc) = serde_json::from_str::<Value>(text) else {
+        return true;
+    };
+    let Some(kind) = doc["type"].as_str() else {
+        return true;
+    };
+    let kind = kind
+        .strip_prefix("neoforge:")
+        .or_else(|| kind.strip_prefix("forge:"))
+        .unwrap_or(kind);
+    matches!(
+        kind,
+        "none"
+            | "add_features"
+            | "remove_features"
+            | "add_spawns"
+            | "remove_spawns"
+            | "add_spawn_costs"
+            | "remove_spawn_costs"
+            | "add_carvers"
+            | "remove_carvers"
+            | "horizon:modify_biome"
+    )
+}
+
+/// A modifier's id from its file (`data/<ns>/neoforge/biome_modifier/<path>.json` is
+/// `<ns>:<path>`); the file itself when it is not one.
+pub(super) fn modifier_id(file: &str) -> String {
+    let parts = file
+        .strip_prefix("data/")
+        .and_then(|rest| rest.split_once('/'))
+        .and_then(|(ns, rest)| {
+            let (_, path) = rest.split_once("biome_modifier/")?;
+            Some(format!(
+                "{ns}:{}",
+                path.strip_suffix(".json").unwrap_or(path)
+            ))
+        });
+    parts.unwrap_or_else(|| file.to_owned())
+}
+
+/// Every biome tag of `tags`, nested tags resolved against the biomes `ids`, in id order;
+/// a tag that names an unknown biome or tag is left out.
+pub(super) fn resolved_tags(
+    ids: &BTreeSet<String>,
+    tags: &BTreeMap<String, String>,
+) -> Vec<(String, Vec<String>)> {
+    use horizon_world::holder_set::HolderLookup;
+    let registry = Registry {
+        what: "biome",
+        ids,
+        tags,
+    };
+    tags.keys()
+        .filter_map(|tag| Some((tag.clone(), registry.tag(tag).ok()?)))
+        .collect()
+}
+
 /// `ns:path` for an id that may leave out `minecraft:`.
 fn full(id: &str) -> String {
     match id.contains(':') {
@@ -1240,20 +1303,33 @@ pub(super) fn write_state(
 /// The saved modifier state of the content root `root` (`write_state`), unless a world's packs
 /// and the modifiers mods declared in code leave the root's biomes as they are: nothing
 /// declared, and no pack brings a biome or a biome tag, or the root saved none.
+/// Modifiers the content build left for the world open (`read_at_build`) also need it, and so
+/// do mods' load-time transforms of modifiers (`transforms`).
 pub(super) fn saved_bytes(
     root: &std::path::Path,
     packs: &horizon_world::worldgen::overrides::WorldgenOverrides,
     declared: &[[String; 3]],
+    transforms: bool,
 ) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(root.join(super::MODIFIERS)).ok()?;
     if declared.is_empty()
+        && !transforms
         && packs.entries("biomes").next().is_none()
         && packs.tags("biome_tags").next().is_none()
         && packs.entries("carvers").next().is_none()
         && packs.tags("carver_tags").next().is_none()
     {
-        return None;
+        #[derive(Deserialize)]
+        struct Deferred {
+            #[serde(default)]
+            deferred: Vec<[String; 3]>,
+        }
+        let saved: Deferred = serde_json::from_slice(&bytes).ok()?;
+        if saved.deferred.is_empty() {
+            return None;
+        }
     }
-    std::fs::read(root.join(super::MODIFIERS)).ok()
+    Some(bytes)
 }
 
 /// The ids of the biomes the biome modifiers of the content root `root` changed
