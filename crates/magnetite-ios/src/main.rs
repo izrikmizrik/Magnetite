@@ -61,6 +61,10 @@ fn main() {
             horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
         }),
         language: system_language(),
+        launcher: true,
+        set_orientation,
+        // The share sheet comes with the launcher's next round (UIActivityViewController).
+        share_log: horizon_client::boot::no_share,
     };
     if let Err(error) = horizon_client::boot::run(config) {
         eprintln!("Magnetite: the boot loop stopped: {error}");
@@ -111,6 +115,17 @@ fn system_language() -> Option<String> {
     // A language with no region has no game code to match (`ru` alone): the default stays.
     let region = parts.next()?;
     Some(format!("{language}_{region}"))
+}
+
+/// The launcher upright, the game on its side: the window's own orientations.
+#[cfg(target_os = "ios")]
+fn set_orientation(window: &winit::window::Window, upright: bool) {
+    use winit::platform::ios::{ValidOrientations, WindowExtIOS};
+    window.set_valid_orientations(if upright {
+        ValidOrientations::Portrait
+    } else {
+        ValidOrientations::Landscape
+    });
 }
 
 /// The general pasteboard's text (`UIPasteboard.generalPasteboard.string`).

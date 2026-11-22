@@ -25,6 +25,8 @@ use horizon_client::clipboard::SystemClipboard;
 use horizon_client::game_files::{
     InstallProgress, InstallSpec, install as install_game_files, spec_from_build,
 };
+use horizon_client::lang;
+use horizon_client::launcher_screen::{self, LauncherScreen};
 use horizon_client::osk::Output;
 use std::cell::RefCell;
 use std::path::Path;
@@ -80,7 +82,19 @@ pub struct BootConfig {
     /// The system's language as a game language code (`ru_ru`), or `None`. A first start, with
     /// no language chosen yet, takes it: the boot screen and the game both speak it.
     pub language: Option<String>,
+    /// The launcher between signing in and the game (`launcher_screen.rs`), on a phone. Without
+    /// it a ready account starts the game at once.
+    pub launcher: bool,
+    /// Turn the screen upright (`true`, the launcher) or on its side (`false`, the game), for
+    /// this window (iOS sets the window's own orientations).
+    pub set_orientation: fn(&Window, bool),
+    /// Hand the game's log to the platform's share sheet: the file, then its text.
+    pub share_log: fn(&Path, &str),
 }
+
+/// The defaults of the hooks a host may leave out: nothing happens.
+pub fn no_orientation(_window: &Window, _upright: bool) {}
+pub fn no_share(_path: &Path, _text: &str) {}
 
 /// Run the boot loop until the game takes over (or the player leaves). One event loop per
 /// process: the host sets the factory before calling this.
@@ -216,6 +230,11 @@ fn game_language(system: &str) -> Option<String> {
         .into_iter()
         .find(|code| has(code))
 }
+
+/// The game's version, for the launcher's profile line.
+const GAME_VERSION: &str = "26.3";
+/// The most of the log the launcher hands to the share sheet: its end.
+const SHARED_LOG_BYTES: usize = 96 * 1024;
 
 /// The Microsoft code the player was asked to type, kept in the session folder while the game
 /// waits for the approval: Android unloads a backgrounded app, and the next start waits for the
@@ -753,6 +772,15 @@ struct Boot {
     /// The field the platform's keyboard was shown for (`sync_system_keyboard`); `None` when it
     /// is down, or must be shown again (a tap on a field).
     keyboard_for: Option<KeyboardFor>,
+    /// The phone launcher (`BootConfig::launcher`) and whether Play was pressed in it.
+    launcher: Option<LauncherScreen>,
+    played: bool,
+    /// The screen's orientation last asked of the host (`true` upright).
+    upright: Option<bool>,
+    set_orientation: fn(&Window, bool),
+    share_log: fn(&Path, &str),
+    /// A short note at the launcher's foot and when it goes.
+    notice: Option<(String, Instant)>,
     drawn: u64,
     /// The game's app once it is handed over: every event goes to it from then on.
     app: Option<App>,
@@ -810,6 +838,14 @@ impl Boot {
             clipboard: SystemClipboard::default(),
             awake: false,
             keyboard_for: None,
+            launcher: config
+                .launcher
+                .then(|| LauncherScreen::new(launcher_screen::View::default())),
+            played: false,
+            upright: None,
+            set_orientation: config.set_orientation,
+            share_log: config.share_log,
+            notice: None,
             drawn: 0,
             app: None,
             error: None,
@@ -1013,7 +1049,27 @@ impl Boot {
 
     fn draw(&mut self) {
         let mut batch = HudBatch::new(self.size(), self.settings.gui_scale_inputs());
-        self.with_ui(&mut batch, |ui| self.screen.draw(ui));
+        if self.launcher_shown() {
+            let view = self.launcher_view();
+            let notice = self
+                .notice
+                .as_ref()
+                .filter(|(_, until)| Instant::now() < *until)
+                .map(|(text, _)| text.clone());
+            if let Some(launcher) = self.launcher.as_mut() {
+                launcher.set_view(view);
+                launcher.set_notice(notice);
+            }
+            let width = self.size()[0] as f32;
+            if let Some(launcher) = &self.launcher {
+                self.with_ui(&mut batch, |ui| {
+                    ui.set_density(LauncherScreen::density_for(width));
+                    launcher.draw(ui);
+                });
+            }
+        } else {
+            self.with_ui(&mut batch, |ui| self.screen.draw(ui));
+        }
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -1029,7 +1085,155 @@ impl Boot {
         }
     }
 
+    /// Whether the phone launcher is on the screen: an account (or an offline name) and the files
+    /// are here, and Play was not pressed yet.
+    fn launcher_shown(&self) -> bool {
+        self.launcher.is_some()
+            && !self.played
+            && self.ctrl.files_ready
+            && !self.ctrl.installing
+            && self.ctrl.failure.is_none()
+            && matches!(
+                self.ctrl.phase,
+                Phase::Signed { .. } | Phase::SavedOffline { .. } | Phase::Offline { .. }
+            )
+    }
+
+    /// Upright for the launcher, on its side for everything else, asked of the host on a change.
+    fn sync_orientation(&mut self) {
+        if self.launcher.is_none() {
+            return;
+        }
+        let upright = self.launcher_shown();
+        if self.upright != Some(upright)
+            && let Some(window) = &self.window
+        {
+            self.upright = Some(upright);
+            (self.set_orientation)(window, upright);
+        }
+    }
+
+    /// What the launcher shows, from the account and the game's settings.
+    fn launcher_view(&self) -> horizon_client::launcher_screen::View {
+        use horizon_client::launcher_screen::{Setting, View};
+        let kind = |kind: Kind| match kind {
+            Kind::Microsoft => lang::get("horizon.launcher.account.microsoft"),
+            Kind::Ely => lang::get("horizon.launcher.account.ely"),
+        };
+        let (name, account_kind) = match &self.ctrl.phase {
+            Phase::Signed { account, .. } => (account.name.clone(), kind(account.kind)),
+            Phase::SavedOffline { stored } => (stored.name.clone(), kind(stored.kind)),
+            Phase::Offline { name } => {
+                (name.clone(), lang::get("horizon.launcher.account.offline"))
+            }
+            _ => (String::new(), String::new()),
+        };
+        let soon = lang::get("horizon.launcher.soon");
+        let api = match self.settings.horizon.api {
+            horizon_client::graphics::GraphicsApi::Vulkan => "horizon.launcher.api.vulkan",
+            horizon_client::graphics::GraphicsApi::OpenGl => "horizon.launcher.api.opengl",
+            horizon_client::graphics::GraphicsApi::Dx12 => "horizon.launcher.api.dx12",
+            horizon_client::graphics::GraphicsApi::Auto => "horizon.launcher.api.auto",
+        };
+        View {
+            name,
+            account_kind,
+            profile: lang::get("horizon.launcher.profile.main"),
+            profile_detail: lang::tr("horizon.launcher.profile.detail", &[&GAME_VERSION]),
+            resign: None,
+            values: vec![
+                (Setting::Accounts, lang::get("horizon.launcher.sign_out")),
+                (Setting::GraphicsApi, lang::get(api)),
+                (Setting::Resolution, soon.clone()),
+                (Setting::FpsLimit, soon.clone()),
+                (Setting::Memory, soon.clone()),
+                (Setting::Sensitivity, soon.clone()),
+                (Setting::Vibration, soon.clone()),
+                (Setting::Cutout, soon.clone()),
+                (Setting::Language, soon.clone()),
+                (Setting::Updates, soon.clone()),
+                (Setting::Data, soon),
+                (Setting::About, env!("CARGO_PKG_VERSION").to_owned()),
+            ],
+        }
+    }
+
+    /// A tap on the launcher.
+    fn launcher_click(&mut self, event_loop: &ActiveEventLoop) {
+        use horizon_client::launcher_screen::{Action, Page, Setting};
+        let Some(action) = self
+            .launcher
+            .as_ref()
+            .and_then(|l| l.click((self.pointer.0 as f32, self.pointer.1 as f32)))
+        else {
+            return;
+        };
+        let note = |boot: &mut Self, key: &str| {
+            boot.notice = Some((lang::get(key), Instant::now() + Duration::from_secs(2)));
+        };
+        match action {
+            Action::Play => {
+                self.played = true;
+                self.sync_orientation();
+                self.start_game(event_loop);
+            }
+            Action::Open(page) => {
+                if let Some(l) = self.launcher.as_mut() {
+                    l.set_page(page);
+                }
+            }
+            Action::Back => {
+                if let Some(l) = self.launcher.as_mut() {
+                    l.set_page(Page::Home);
+                }
+            }
+            Action::Accounts | Action::Setting(Setting::Accounts) => {
+                if let Some(l) = self.launcher.as_mut() {
+                    l.set_page(Page::Home);
+                }
+                self.act(event_loop, BootAction::SignOut);
+            }
+            Action::ShareLog => {
+                let path = self.game_dir.join("logs").join("latest.log");
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        // The end only: a share sheet carries text, and a long log would not fit.
+                        let tail = &bytes[bytes.len().saturating_sub(SHARED_LOG_BYTES)..];
+                        (self.share_log)(&path, &String::from_utf8_lossy(tail));
+                    }
+                    Err(e) => {
+                        log::warn!("Horizon: the log is not readable: {e}");
+                        note(self, "horizon.launcher.share_log.none");
+                    }
+                }
+            }
+            Action::Setting(Setting::GraphicsApi) => {
+                use horizon_client::graphics::GraphicsApi;
+                let choices = GraphicsApi::choices();
+                let at = choices
+                    .iter()
+                    .position(|a| *a == self.settings.horizon.api)
+                    .unwrap_or(0);
+                self.settings.horizon.api = choices[(at + 1) % choices.len()];
+                self.settings.save(&self.game_dir.join("options.txt"));
+            }
+            Action::Setting(Setting::About) => note(self, "horizon.launcher.about.note"),
+            Action::Mods
+            | Action::Controls
+            | Action::OpenFolder
+            | Action::Profiles
+            | Action::EditProfile
+            | Action::Setting(_) => note(self, "horizon.launcher.soon.note"),
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     fn click(&mut self, event_loop: &ActiveEventLoop) {
+        if self.launcher_shown() {
+            return self.launcher_click(event_loop);
+        }
         // The layout the last draw made: a tap reads the same boxes the finger saw.
         let Some(action) = self
             .screen
@@ -1316,8 +1520,10 @@ impl ApplicationHandler for Boot {
             self.awake = want_awake;
             (self.keep_awake)(want_awake);
         }
-        // A restored sign-in or a confirmed offline name, with the files here: start at once.
-        if self.ctrl.ready_to_start() {
+        // A restored sign-in or a confirmed offline name, with the files here: start at once,
+        // or, with the phone launcher, once Play is pressed in it.
+        self.sync_orientation();
+        if self.ctrl.ready_to_start() && (self.launcher.is_none() || self.played) {
             self.start_game(event_loop);
             if self.app.is_some() {
                 return;

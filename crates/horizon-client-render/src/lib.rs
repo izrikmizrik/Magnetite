@@ -129,6 +129,7 @@ pub mod pvp_hud;
 pub mod spectator_shaders;
 pub use horizon_assets::resource_source;
 pub mod api_context;
+pub mod launcher_icons;
 pub mod radial_editor;
 pub mod radial_overlay;
 pub mod random_source;

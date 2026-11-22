@@ -170,6 +170,83 @@ fn keep_awake(on: bool) {
     }
 }
 
+/// The launcher upright, the game on its side (`ime::set_upright`, on the UI thread).
+fn set_orientation(_window: &winit::window::Window, upright: bool) {
+    if !ime::set_upright(upright) {
+        early(
+            log::Level::Warn,
+            "Android cannot turn the screen: no UI thread",
+        );
+    }
+}
+
+/// The game's log to the system's share sheet: an `ACTION_SEND` of its text, in a chooser.
+fn share_log(_path: &std::path::Path, text: &str) {
+    let Some(app) = ACTIVITY.get() else {
+        return;
+    };
+    // SAFETY: `AndroidApp` keeps the VM and the activity alive for this call.
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let shared = env.with_local_frame(16, |env| -> jni::errors::Result<()> {
+        use jni::objects::{JObject, JValue};
+        let action = JObject::from(env.new_string("android.intent.action.SEND")?);
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        let mime = JObject::from(env.new_string("text/plain")?);
+        env.call_method(
+            &intent,
+            "setType",
+            "(Ljava/lang/String;)Landroid/content/Intent;",
+            &[JValue::Object(&mime)],
+        )?;
+        for (key, value) in [
+            ("android.intent.extra.TEXT", text),
+            ("android.intent.extra.SUBJECT", "Magnetite latest.log"),
+        ] {
+            let key = JObject::from(env.new_string(key)?);
+            let value = JObject::from(env.new_string(value)?);
+            env.call_method(
+                &intent,
+                "putExtra",
+                "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;",
+                &[JValue::Object(&key), JValue::Object(&value)],
+            )?;
+        }
+        let chooser = env
+            .call_static_method(
+                "android/content/Intent",
+                "createChooser",
+                "(Landroid/content/Intent;Ljava/lang/CharSequence;)Landroid/content/Intent;",
+                &[JValue::Object(&intent), JValue::Object(&JObject::null())],
+            )?
+            .l()?;
+        // SAFETY: the activity `AndroidApp` holds alive, used for this call only.
+        let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+        env.call_method(
+            &activity,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&chooser)],
+        )?;
+        Ok(())
+    });
+    if let Err(error) = shared {
+        let _ = env.exception_clear();
+        early(
+            log::Level::Warn,
+            &format!("Android would not share the log: {error}"),
+        );
+    }
+}
+
 /// Ends the process when the game returns. winit allows one event loop per process and Android
 /// keeps a finished activity's process for the next start, which would then fail to make its
 /// loop; a fresh process starts clean.
@@ -274,6 +351,9 @@ fn android_main(app: AndroidApp) {
             horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
         }),
         language: system_language(),
+        launcher: true,
+        set_orientation,
+        share_log,
     };
     // The platform's keyboard and clipboard for the core, as the iOS host gives them: the
     // hidden EditText the system keyboard types into, and the ClipboardManager.

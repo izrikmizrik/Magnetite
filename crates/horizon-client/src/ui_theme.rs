@@ -433,6 +433,29 @@ impl<'a> Ui<'a> {
             batch,
         }
     }
+    /// This screen at `density` physical pixels per dp (the phone launcher's portrait column,
+    /// `launcher_screen.rs`): the size and the cursor follow.
+    pub fn set_density(&mut self, density: f32) {
+        let density = density.clamp(1.0, 4.0);
+        let (pw, ph) = (self.w * self.density, self.h * self.density);
+        let cursor = (
+            self.cursor.0 * self.density / density,
+            self.cursor.1 * self.density / density,
+        );
+        self.w = pw / density;
+        self.h = ph / density;
+        self.cursor = cursor;
+        self.density = density;
+    }
+    /// A sprite of the atlas (`launcher/<name>`, white on clear) as a `size` dp square at `x`,
+    /// `y`, tinted `color`; nothing when the atlas has no such sprite.
+    pub(crate) fn icon(&mut self, name: &str, x: f32, y: f32, size: f32, color: u32) {
+        let (x0, y0) = (self.px_x(x), self.px_y(y));
+        let side = (size * self.density).round();
+        let s = self.scale;
+        self.batch
+            .sprite_scaled(self.atlas, name, x0 / s, y0 / s, side / s, side / s, color);
+    }
     /// Move rasterized glyphs into the batch's atlas uploads (real frames only).
     pub fn finish(self) {
         let pending = with_cache(self.atlas, |c| std::mem::take(&mut c.pending));

@@ -1101,6 +1101,11 @@ impl HudAtlas {
             rect(0, 0, width, text_rows, width, text_rows),
         );
         let white = sprites["horizon/white"];
+        // The phone launcher's icons take the last rows; the glyphs the rest below the text.
+        let icon_rows = crate::launcher_icons::rows(width);
+        for (name, [x, y, w, h]) in crate::launcher_icons::place(&mut pixels, width, height) {
+            sprites.insert(name, rect(x, y, x + w, y + h, w, h));
+        }
         Self {
             pictures: Default::default(),
             revision: Self::next_revision(),
@@ -1109,7 +1114,7 @@ impl HudAtlas {
                 &sprites,
                 &pixels,
                 (width, height),
-                (glyph_top, height - glyph_top),
+                (glyph_top, height - glyph_top - icon_rows),
                 white,
             ),
             material_maps: Default::default(),

@@ -53,6 +53,8 @@ enum Command {
     Poll(u64),
     /// Keep the screen on, or let it sleep again (`View.setKeepScreenOn` on the native view).
     KeepScreenOn(bool),
+    /// `Activity.setRequestedOrientation` with this `ActivityInfo` constant.
+    Orientation(i32),
 }
 
 struct Ui {
@@ -375,6 +377,23 @@ impl Ui {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
             }
+            Command::Orientation(orientation) => {
+                // The native view's context is the activity.
+                let activity = env
+                    .call_method(
+                        &self.native,
+                        "getContext",
+                        "()Landroid/content/Context;",
+                        &[],
+                    )?
+                    .l()?;
+                env.call_method(
+                    &activity,
+                    "setRequestedOrientation",
+                    "(I)V",
+                    &[JValue::Int(orientation)],
+                )?;
+            }
             Command::KeepScreenOn(on) => {
                 env.call_method(
                     &self.native,
@@ -495,6 +514,18 @@ pub fn show(text: &str, mode: horizon_client::system_keyboard::Mode) -> bool {
 /// thread. Not `AndroidApp::set_window_flags`: android-activity 0.6.1 takes its state for
 /// writing there while the event loop holds it for reading around every callback, so a call from
 /// the game's loop never returns. False when the UI thread can't be reached.
+/// Turn the screen upright (`ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT`) or on its side
+/// (`SENSOR_LANDSCAPE`), on the UI thread. False when it can't be reached.
+pub fn set_upright(upright: bool) -> bool {
+    match UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) {
+        Some(ui) => {
+            ui.enqueue(Command::Orientation(if upright { 7 } else { 6 }));
+            true
+        }
+        None => false,
+    }
+}
+
 pub fn keep_screen_on(on: bool) -> bool {
     match UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) {
         Some(ui) => {
