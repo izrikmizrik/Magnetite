@@ -17,7 +17,7 @@
 //! draws. That split is what the tests exercise without a window.
 use super::*;
 use horizon_account::{
-    Account, DeviceCode, Endpoints, Kind, NEEDS_2FA, REFUSED, SecretStore, Stored, client_id,
+    Account, DeviceCode, Endpoints, Keyring, Kind, NEEDS_2FA, REFUSED, SecretStore, Stored, client_id,
     device_code, ely_sign_in, refresh_account, sign_in,
 };
 use horizon_client::boot_screen::{AccountKind, BootAction, BootScreen, BootState, ElyField};
@@ -781,6 +781,12 @@ struct Boot {
     share_log: fn(&Path, &str),
     /// A short note at the launcher's foot and when it goes.
     notice: Option<(String, Instant)>,
+    /// The kept accounts (`SecretStore`), the one that plays among them.
+    keyring: Keyring,
+    /// The launcher shows the method choice: the player asked to sign an account in.
+    signing_in: bool,
+    /// The kept account whose removal waits for a second tap.
+    confirm_remove: Option<usize>,
     drawn: u64,
     /// The game's app once it is handed over: every event goes to it from then on.
     app: Option<App>,
@@ -846,6 +852,9 @@ impl Boot {
             set_orientation: config.set_orientation,
             share_log: config.share_log,
             notice: None,
+            keyring: Keyring::default(),
+            signing_in: false,
+            confirm_remove: None,
             drawn: 0,
             app: None,
             error: None,
@@ -868,18 +877,17 @@ impl Boot {
         let Some(json) = json else {
             return;
         };
-        match Account::from_stored_json(&json) {
-            Ok(stored) => {
-                self.ctrl.begin_attempt();
-                self.ctrl.phase = Phase::Resuming {
-                    stored: stored.clone(),
-                };
-                self.run_job(Job::Resume(stored));
-            }
-            Err(e) => {
-                log::warn!("Horizon: the kept account is unreadable: {e}");
-                let _ = self.secrets.clear();
-            }
+        let (keyring, problems) = Keyring::parse(&json);
+        for problem in problems {
+            log::warn!("Horizon: a kept account is unreadable: {problem}");
+        }
+        self.keyring = keyring;
+        if let Some(stored) = self.keyring.current().cloned() {
+            self.ctrl.begin_attempt();
+            self.ctrl.phase = Phase::Resuming {
+                stored: stored.clone(),
+            };
+            self.run_job(Job::Resume(stored));
         }
     }
 
@@ -1006,15 +1014,33 @@ impl Boot {
 
     /// Keep or forget the account after a transition that asked for it.
     fn drain_side_effects(&mut self) {
-        if let Some(json) = self.ctrl.take_save()
-            && let Err(e) = self.secrets.save(&json)
-        {
-            log::warn!("Horizon: the account could not be kept: {e}");
+        if let Some(json) = self.ctrl.take_save() {
+            match Account::from_stored_json(&json) {
+                Ok(stored) => {
+                    self.keyring.keep(stored);
+                    self.signing_in = false;
+                    self.save_keyring();
+                }
+                Err(e) => log::warn!("Horizon: the account could not be kept: {e}"),
+            }
         }
         if self.ctrl.take_forget()
-            && let Err(e) = self.secrets.clear()
+            && let Some(current) = self.keyring.current
         {
-            log::warn!("Horizon: the account could not be forgotten: {e}");
+            self.keyring.remove(current);
+            self.save_keyring();
+        }
+    }
+
+    /// The keyring to its store; an empty one clears it.
+    fn save_keyring(&mut self) {
+        let result = if self.keyring.accounts.is_empty() {
+            self.secrets.clear()
+        } else {
+            self.secrets.save(&self.keyring.to_json())
+        };
+        if let Err(e) = result {
+            log::warn!("Horizon: the accounts could not be kept: {e}");
         }
     }
 
@@ -1049,8 +1075,9 @@ impl Boot {
 
     fn draw(&mut self) {
         let mut batch = HudBatch::new(self.size(), self.settings.gui_scale_inputs());
-        if self.launcher_shown() {
+        if self.launcher_active() {
             let view = self.launcher_view();
+            let flow = self.launcher_flow();
             let notice = self
                 .notice
                 .as_ref()
@@ -1059,6 +1086,7 @@ impl Boot {
             if let Some(launcher) = self.launcher.as_mut() {
                 launcher.set_view(view);
                 launcher.set_notice(notice);
+                launcher.set_flow(flow);
             }
             let width = self.size()[0] as f32;
             if let Some(launcher) = &self.launcher {
@@ -1085,26 +1113,40 @@ impl Boot {
         }
     }
 
-    /// Whether the phone launcher is on the screen: an account (or an offline name) and the files
-    /// are here, and Play was not pressed yet.
-    fn launcher_shown(&self) -> bool {
-        self.launcher.is_some()
-            && !self.played
-            && self.ctrl.files_ready
-            && !self.ctrl.installing
-            && self.ctrl.failure.is_none()
-            && matches!(
-                self.ctrl.phase,
-                Phase::Signed { .. } | Phase::SavedOffline { .. } | Phase::Offline { .. }
-            )
+    /// Whether the phone launcher owns the screen: it is on, and Play was not pressed yet. The
+    /// sign-in pages are drawn by it too (`launcher_flow`).
+    fn launcher_active(&self) -> bool {
+        self.launcher.is_some() && !self.played
     }
 
-    /// Upright for the launcher, on its side for everything else, asked of the host on a change.
+    /// The sign-in page the launcher shows over its pages, from the controller's state: a failure,
+    /// the download, a sign-in under way, or the method choice the player asked for.
+    fn launcher_flow(&self) -> Option<launcher_screen::Flow> {
+        let flow = self.ctrl.failure.is_some()
+            || self.ctrl.installing
+            || match self.ctrl.phase {
+                Phase::Choose => self.signing_in,
+                Phase::Asking | Phase::Code { .. } | Phase::Ely(_) | Phase::OfflineName { .. } => {
+                    true
+                }
+                Phase::Resuming { .. }
+                | Phase::Signed { .. }
+                | Phase::SavedOffline { .. }
+                | Phase::Offline { .. } => false,
+            };
+        flow.then(|| launcher_screen::Flow {
+            content: self.screen.content(),
+            focus: self.screen.focus(),
+            back: matches!(self.ctrl.phase, Phase::Choose) && self.ctrl.failure.is_none(),
+        })
+    }
+
+    /// Upright for the launcher, on its side for the game, asked of the host on a change.
     fn sync_orientation(&mut self) {
         if self.launcher.is_none() {
             return;
         }
-        let upright = self.launcher_shown();
+        let upright = self.launcher_active();
         if self.upright != Some(upright)
             && let Some(window) = &self.window
         {
@@ -1113,20 +1155,24 @@ impl Boot {
         }
     }
 
-    /// What the launcher shows, from the account and the game's settings.
-    fn launcher_view(&self) -> horizon_client::launcher_screen::View {
-        use horizon_client::launcher_screen::{Setting, View};
+    /// What the launcher shows, from the account, the keyring and the game's settings.
+    fn launcher_view(&self) -> launcher_screen::View {
+        use launcher_screen::{Setting, View};
         let kind = |kind: Kind| match kind {
             Kind::Microsoft => lang::get("horizon.launcher.account.microsoft"),
             Kind::Ely => lang::get("horizon.launcher.account.ely"),
         };
-        let (name, account_kind) = match &self.ctrl.phase {
-            Phase::Signed { account, .. } => (account.name.clone(), kind(account.kind)),
-            Phase::SavedOffline { stored } => (stored.name.clone(), kind(stored.kind)),
-            Phase::Offline { name } => {
-                (name.clone(), lang::get("horizon.launcher.account.offline"))
+        let (name, account_kind, signed_in) = match &self.ctrl.phase {
+            Phase::Signed { account, .. } => (account.name.clone(), kind(account.kind), true),
+            Phase::SavedOffline { stored } | Phase::Resuming { stored } => {
+                (stored.name.clone(), kind(stored.kind), true)
             }
-            _ => (String::new(), String::new()),
+            Phase::Offline { name } => (
+                name.clone(),
+                lang::get("horizon.launcher.account.offline"),
+                true,
+            ),
+            _ => (String::new(), String::new(), false),
         };
         let soon = lang::get("horizon.launcher.soon");
         let api = match self.settings.horizon.api {
@@ -1142,7 +1188,10 @@ impl Boot {
             profile_detail: lang::tr("horizon.launcher.profile.detail", &[&GAME_VERSION]),
             resign: None,
             values: vec![
-                (Setting::Accounts, lang::get("horizon.launcher.sign_out")),
+                (
+                    Setting::Accounts,
+                    self.keyring.accounts.len().to_string(),
+                ),
                 (Setting::GraphicsApi, lang::get(api)),
                 (Setting::Resolution, soon.clone()),
                 (Setting::FpsLimit, soon.clone()),
@@ -1155,12 +1204,45 @@ impl Boot {
                 (Setting::Data, soon),
                 (Setting::About, env!("CARGO_PKG_VERSION").to_owned()),
             ],
+            signed_in,
+            accounts: self
+                .keyring
+                .accounts
+                .iter()
+                .map(|s| (s.name.clone(), kind(s.kind)))
+                .collect(),
+            current: self.keyring.current,
+            confirm_remove: self.confirm_remove,
         }
+    }
+
+    /// Sign another account in: the method choice, the kept account untouched.
+    fn add_account(&mut self) {
+        self.signing_in = true;
+        self.ctrl.begin_attempt();
+        self.ctrl.phase = Phase::Choose;
+        self.ctrl.failure = None;
+    }
+
+    /// Play as the kept account at `i`: it becomes current and signs in again on a thread.
+    fn pick_account(&mut self, i: usize) {
+        let Some(stored) = self.keyring.accounts.get(i).cloned() else {
+            return;
+        };
+        self.keyring.current = Some(i);
+        self.save_keyring();
+        self.signing_in = false;
+        self.ctrl.begin_attempt();
+        self.ctrl.failure = None;
+        self.ctrl.phase = Phase::Resuming {
+            stored: stored.clone(),
+        };
+        self.run_job(Job::Resume(stored));
     }
 
     /// A tap on the launcher.
     fn launcher_click(&mut self, event_loop: &ActiveEventLoop) {
-        use horizon_client::launcher_screen::{Action, Page, Setting};
+        use launcher_screen::{Action, Page, Setting};
         let Some(action) = self
             .launcher
             .as_ref()
@@ -1171,28 +1253,70 @@ impl Boot {
         let note = |boot: &mut Self, key: &str| {
             boot.notice = Some((lang::get(key), Instant::now() + Duration::from_secs(2)));
         };
+        let page = |boot: &mut Self, page: Page| {
+            if let Some(l) = boot.launcher.as_mut() {
+                l.set_page(page);
+            }
+        };
+        // A second tap anywhere but the confirmation leaves a removal unasked.
+        if !matches!(action, Action::RemoveAccount(_)) {
+            self.confirm_remove = None;
+        }
         match action {
             Action::Play => {
-                self.played = true;
-                self.sync_orientation();
-                self.start_game(event_loop);
-            }
-            Action::Open(page) => {
-                if let Some(l) = self.launcher.as_mut() {
-                    l.set_page(page);
+                if matches!(self.ctrl.phase, Phase::Choose) {
+                    // No account yet: Play asks for one first.
+                    self.add_account();
+                } else if self.ctrl.files_ready && !self.ctrl.installing {
+                    self.played = true;
+                    self.sync_orientation();
+                    self.start_game(event_loop);
+                } else {
+                    note(self, "horizon.launcher.wait");
                 }
             }
-            Action::Back => {
-                if let Some(l) = self.launcher.as_mut() {
-                    l.set_page(Page::Home);
+            Action::Open(p) => page(self, p),
+            Action::Back => page(self, Page::Home),
+            Action::AddAccount => {
+                page(self, Page::Home);
+                self.add_account();
+            }
+            Action::PickAccount(i) => {
+                page(self, Page::Home);
+                self.pick_account(i);
+            }
+            Action::RemoveAccount(i) => {
+                if self.confirm_remove != Some(i) {
+                    self.confirm_remove = Some(i);
+                } else {
+                    self.confirm_remove = None;
+                    let was_current = self.keyring.current == Some(i);
+                    self.keyring.remove(i);
+                    self.save_keyring();
+                    if was_current {
+                        match self.keyring.current {
+                            Some(next) => self.pick_account(next),
+                            None => {
+                                self.ctrl.begin_attempt();
+                                self.ctrl.phase = Phase::Choose;
+                            }
+                        }
+                    }
                 }
             }
-            Action::Accounts | Action::Setting(Setting::Accounts) => {
-                if let Some(l) = self.launcher.as_mut() {
-                    l.set_page(Page::Home);
+            Action::Boot(boot_action) => {
+                if matches!(boot_action, BootAction::FocusField(_)) {
+                    self.keyboard_for = None;
                 }
-                self.act(event_loop, BootAction::SignOut);
+                self.act(event_loop, boot_action);
             }
+            Action::FlowBack => {
+                self.signing_in = false;
+                if let Some(current) = self.keyring.current {
+                    self.pick_account(current);
+                }
+            }
+            Action::Setting(Setting::Accounts) => page(self, Page::Accounts),
             Action::ShareLog => {
                 let path = self.game_dir.join("logs").join("latest.log");
                 match std::fs::read(&path) {
@@ -1231,7 +1355,7 @@ impl Boot {
     }
 
     fn click(&mut self, event_loop: &ActiveEventLoop) {
-        if self.launcher_shown() {
+        if self.launcher_active() {
             return self.launcher_click(event_loop);
         }
         // The layout the last draw made: a tap reads the same boxes the finger saw.

@@ -5,7 +5,7 @@
 //!
 //! What it shows comes in as a [`View`]; what a tap asks for goes out as an [`Action`]. It holds no
 //! settings of its own: their values are the game's files', read and written by the boot loop.
-use crate::boot_screen::Rect;
+use crate::boot_screen::{BootAction, Content, ElyField, Rect, wrap};
 use crate::lang;
 use crate::ui_theme::{Face, Ui, color};
 use std::cell::RefCell;
@@ -25,6 +25,8 @@ const TOP: f32 = 36.0;
 pub enum Page {
     Home,
     Settings,
+    /// The kept accounts: pick the one that plays, remove one, add one.
+    Accounts,
 }
 
 /// A setting the settings page lists, by what it changes.
@@ -125,7 +127,16 @@ pub enum Action {
     Play,
     Open(Page),
     Back,
-    Accounts,
+    /// Sign another account in (the header's people button).
+    AddAccount,
+    /// Make the kept account at this index the one that plays.
+    PickAccount(usize),
+    /// Remove the kept account at this index (asked twice: the first tap asks to confirm).
+    RemoveAccount(usize),
+    /// A sign-in page's own control, for the boot loop's controller.
+    Boot(BootAction),
+    /// Leave the sign-in pages without signing in.
+    FlowBack,
     Mods,
     Controls,
     ShareLog,
@@ -151,6 +162,21 @@ pub struct View {
     /// Each setting's value as shown; a setting left out is not listed (gyro only on Android,
     /// JIT only on iOS).
     pub values: Vec<(Setting, String)>,
+    /// Whether an account (or an offline name) plays: without one the header asks to sign in.
+    pub signed_in: bool,
+    /// The kept accounts (name, kind), the one that plays, and the one whose removal waits for a
+    /// second tap.
+    pub accounts: Vec<(String, String)>,
+    pub current: Option<usize>,
+    pub confirm_remove: Option<usize>,
+}
+
+/// A sign-in page (the boot screen's content), drawn in the launcher's look.
+pub struct Flow {
+    pub content: Content,
+    pub focus: Option<ElyField>,
+    /// A back arrow at the top (the method choice, when an account is kept to go back to).
+    pub back: bool,
 }
 
 /// Where everything was drawn, in dp, with the action each place asks for.
@@ -166,6 +192,8 @@ pub struct LauncherScreen {
     view: View,
     /// A short note over the foot ("Coming soon", "No log yet"), while the boot loop shows it.
     notice: Option<String>,
+    /// A sign-in page over the pages, while the boot loop has one.
+    flow: Option<Flow>,
     frame: RefCell<Layout>,
 }
 
@@ -175,6 +203,7 @@ impl LauncherScreen {
             page: Page::Home,
             view,
             notice: None,
+            flow: None,
             frame: RefCell::new(Layout::default()),
         }
     }
@@ -192,6 +221,9 @@ impl LauncherScreen {
     }
     pub fn set_notice(&mut self, notice: Option<String>) {
         self.notice = notice;
+    }
+    pub fn set_flow(&mut self, flow: Option<Flow>) {
+        self.flow = flow;
     }
 
     /// The physical pixels per dp for a screen `width` physical pixels across: a phone held upright
@@ -218,9 +250,11 @@ impl LauncherScreen {
     pub fn draw(&self, ui: &mut Ui) {
         let mut targets = Vec::new();
         ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::bg());
-        match self.page {
-            Page::Home => self.draw_home(ui, &mut targets),
-            Page::Settings => self.draw_settings(ui, &mut targets),
+        match (&self.flow, self.page) {
+            (Some(flow), _) => draw_flow(ui, flow, &mut targets),
+            (None, Page::Home) => self.draw_home(ui, &mut targets),
+            (None, Page::Settings) => self.draw_settings(ui, &mut targets),
+            (None, Page::Accounts) => self.draw_accounts(ui, &mut targets),
         }
         if let Some(note) = &self.notice {
             let nw = ui.measure(Face::Regular, 13.0, note) + 32.0;
@@ -259,22 +293,16 @@ impl LauncherScreen {
             color::text(),
         );
         let tx = col.x + avatar + 12.0;
-        ui.text(
-            Face::SemiBold,
-            17.0,
-            tx,
-            col.y + 10.0,
-            color::text(),
-            &self.view.name,
-        );
-        ui.text(
-            Face::Regular,
-            12.0,
-            tx,
-            col.y + 34.0,
-            color::muted(),
-            &self.view.account_kind,
-        );
+        let (name, kind) = if self.view.signed_in {
+            (self.view.name.clone(), self.view.account_kind.clone())
+        } else {
+            (
+                lang::get("horizon.launcher.no_account"),
+                lang::get("horizon.launcher.no_account.hint"),
+            )
+        };
+        ui.text(Face::SemiBold, 17.0, tx, col.y + 10.0, color::text(), &name);
+        ui.text(Face::Regular, 12.0, tx, col.y + 34.0, color::muted(), &kind);
         let button = 44.0;
         let settings = Rect::new(
             col.x + col.w - button,
@@ -283,8 +311,18 @@ impl LauncherScreen {
             button,
         );
         let accounts = Rect::new(settings.x - button - 4.0, settings.y, button, button);
+        // The account's plate: the kept accounts, or signing in when there is none.
+        let plate = Rect::new(col.x, col.y, accounts.x - col.x - 4.0, head);
+        targets.push((
+            if self.view.signed_in || !self.view.accounts.is_empty() {
+                Action::Open(Page::Accounts)
+            } else {
+                Action::AddAccount
+            },
+            plate,
+        ));
         for (rect, icon, action) in [
-            (accounts, "launcher/accounts", Action::Accounts),
+            (accounts, "launcher/accounts", Action::AddAccount),
             (settings, "launcher/settings", Action::Open(Page::Settings)),
         ] {
             ui.icon(icon, rect.x + 10.0, rect.y + 10.0, 24.0, color::text());
@@ -394,6 +432,103 @@ impl LauncherScreen {
         targets.push((Action::Play, play));
     }
 
+    fn draw_accounts(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let w = ui.w;
+        let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let mut y = top_bar(
+            ui,
+            col,
+            &lang::get("horizon.launcher.accounts"),
+            true,
+            targets,
+        );
+        let row_h = 60.0;
+        for (i, (name, kind)) in self.view.accounts.iter().enumerate() {
+            let rect = Rect::new(col.x, y, col.w, row_h);
+            ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, color::raised());
+            if self.view.current == Some(i) {
+                ui.border(rect.x, rect.y, rect.w, rect.h, 10.0, color::muted());
+            }
+            ui.icon(
+                "launcher/user",
+                rect.x + 16.0,
+                rect.y + 18.0,
+                24.0,
+                color::text(),
+            );
+            ui.text(
+                Face::Medium,
+                15.0,
+                rect.x + 54.0,
+                rect.y + 10.0,
+                color::text(),
+                name,
+            );
+            ui.text(
+                Face::Regular,
+                12.0,
+                rect.x + 54.0,
+                rect.y + 32.0,
+                color::muted(),
+                kind,
+            );
+            let remove = Rect::new(rect.x + rect.w - 52.0, rect.y + 8.0, 44.0, 44.0);
+            if self.view.confirm_remove == Some(i) {
+                let ask = lang::get("horizon.launcher.accounts.remove_confirm");
+                let aw = ui.measure(Face::Medium, 13.0, &ask);
+                let ask_rect =
+                    Rect::new(rect.x + rect.w - aw - 28.0, rect.y + 12.0, aw + 20.0, 36.0);
+                ui.rounded(
+                    ask_rect.x,
+                    ask_rect.y,
+                    ask_rect.w,
+                    ask_rect.h,
+                    18.0,
+                    color::text(),
+                );
+                ui.text(
+                    Face::Medium,
+                    13.0,
+                    ask_rect.x + 10.0,
+                    ask_rect.y + 8.0,
+                    color::bg(),
+                    &ask,
+                );
+                targets.push((Action::RemoveAccount(i), ask_rect));
+            } else {
+                ui.icon(
+                    "launcher/delete",
+                    remove.x + 12.0,
+                    remove.y + 12.0,
+                    20.0,
+                    color::muted(),
+                );
+                targets.push((Action::RemoveAccount(i), remove));
+            }
+            if self.view.current == Some(i) {
+                ui.icon(
+                    "launcher/check",
+                    remove.x - 32.0,
+                    remove.y + 12.0,
+                    20.0,
+                    color::text(),
+                );
+            }
+            targets.push((Action::PickAccount(i), rect));
+            y += row_h + GAP;
+        }
+        let add = Rect::new(col.x, y, col.w, ROW);
+        row(
+            ui,
+            add,
+            "launcher/add",
+            &lang::get("horizon.launcher.accounts.add"),
+            None,
+            false,
+        );
+        targets.push((Action::AddAccount, add));
+    }
+
     fn draw_settings(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
         let w = ui.w;
         let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
@@ -483,6 +618,122 @@ impl LauncherScreen {
             }
             y += 12.0;
         }
+    }
+}
+
+/// A page's top: a back arrow (when `back`), its title and the rule under them; returns where the
+/// page's content starts.
+fn top_bar(
+    ui: &mut Ui,
+    col: Rect,
+    title: &str,
+    back: bool,
+    targets: &mut Vec<(Action, Rect)>,
+) -> f32 {
+    let tx = if back {
+        let rect = Rect::new(col.x - 4.0, col.y + 6.0, 44.0, 44.0);
+        ui.icon(
+            "launcher/back",
+            rect.x + 12.0,
+            rect.y + 12.0,
+            20.0,
+            color::text(),
+        );
+        targets.push((Action::Back, rect));
+        col.x + 48.0
+    } else {
+        col.x + 4.0
+    };
+    ui.text(Face::SemiBold, 17.0, tx, col.y + 16.0, color::text(), title);
+    ui.rounded(0.0, col.y + 56.0, ui.w, 1.0, 0.0, color::border());
+    col.y + 72.0
+}
+
+/// A sign-in page: the boot screen's content in the launcher's look, top to bottom, the buttons
+/// after it (the first one white) so the system keyboard never covers them.
+fn draw_flow(ui: &mut Ui, flow: &Flow, targets: &mut Vec<(Action, Rect)>) {
+    let c = &flow.content;
+    let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+    let mut y = top_bar(ui, col, &c.title, flow.back, targets);
+    if flow.back {
+        // The flow's back is its own: leaving the method choice.
+        if let Some(last) = targets.last_mut() {
+            last.0 = Action::FlowBack;
+        }
+    }
+    for paragraph in &c.lines {
+        for line in wrap(ui, Face::Regular, 15.0, paragraph, col.w) {
+            ui.text(Face::Regular, 15.0, col.x, y, color::text(), &line);
+            y += 22.0;
+        }
+        y += 10.0;
+    }
+    if let Some(code) = &c.code {
+        ui.text(Face::SemiBold, 34.0, col.x, y, color::text(), code);
+        y += 58.0;
+    }
+    if let Some(error) = &c.error {
+        for line in wrap(ui, Face::Medium, 14.0, error, col.w) {
+            ui.text(Face::Medium, 14.0, col.x, y, color::text(), &line);
+            y += 20.0;
+        }
+        y += 10.0;
+    }
+    for (field, caption, value) in &c.fields {
+        ui.text(Face::Regular, 12.0, col.x + 2.0, y, color::muted(), caption);
+        y += 20.0;
+        let rect = Rect::new(col.x, y, col.w, 48.0);
+        ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, color::raised());
+        if flow.focus == Some(*field) {
+            ui.border(rect.x, rect.y, rect.w, rect.h, 10.0, color::text());
+        }
+        ui.text(
+            Face::Regular,
+            15.0,
+            rect.x + 14.0,
+            rect.y + 13.0,
+            color::text(),
+            value,
+        );
+        targets.push((Action::Boot(BootAction::FocusField(*field)), rect));
+        y += 48.0 + 12.0;
+    }
+    if let Some(status) = &c.status {
+        ui.text(Face::Regular, 13.0, col.x, y, color::muted(), status);
+        y += 24.0;
+    }
+    if let Some(progress) = c.progress {
+        ui.rounded(col.x, y, col.w, 6.0, 3.0, color::hover());
+        ui.rounded(
+            col.x,
+            y,
+            col.w * progress.clamp(0.0, 1.0),
+            6.0,
+            3.0,
+            color::text(),
+        );
+        y += 22.0;
+    }
+    y += 8.0;
+    for (i, (label, action)) in c.buttons.iter().enumerate() {
+        let rect = Rect::new(col.x, y, col.w, ROW);
+        let (fill, ink) = if i == 0 {
+            (color::text(), color::bg())
+        } else {
+            (color::raised(), color::text())
+        };
+        ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, fill);
+        let lw = ui.measure(Face::Medium, 15.0, label);
+        ui.text(
+            Face::Medium,
+            15.0,
+            rect.x + (rect.w - lw) / 2.0,
+            rect.y + 16.0,
+            ink,
+            label,
+        );
+        targets.push((Action::Boot(action.clone()), rect));
+        y += ROW + GAP;
     }
 }
 

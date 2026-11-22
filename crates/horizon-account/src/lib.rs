@@ -13,10 +13,12 @@
 //! name the service and what went wrong, never a token or a password.
 
 mod ely;
+mod keyring;
 mod microsoft;
 mod store;
 
 pub use ely::{ElyTokens, NEEDS_2FA, REFUSED, ely_refresh, ely_sign_in};
+pub use keyring::Keyring;
 pub use microsoft::{
     DeviceCode, MinecraftLogin, MsTokens, Poll, Profile, device_code, finish_sign_in,
     minecraft_login, needs_renewal, oauth_error, owns_game, poll, profile, refresh_ms, sign_in,

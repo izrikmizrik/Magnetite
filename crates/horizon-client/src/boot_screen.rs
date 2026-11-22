@@ -706,8 +706,15 @@ impl BootScreen {
         Some((band, Keys::within(area)))
     }
 
+    /// The field that has focus on the Ely.by form.
+    pub fn focus(&self) -> Option<ElyField> {
+        match &self.state {
+            BootState::Ely { focus, .. } => Some(*focus),
+            _ => None,
+        }
+    }
     /// What the state says, in the current language.
-    fn content(&self) -> Content {
+    pub fn content(&self) -> Content {
         match &self.state {
             BootState::Choose => Content {
                 title: lang::get("horizon.boot.title"),
@@ -880,22 +887,23 @@ impl BootScreen {
 }
 
 /// One state's strings and controls, laid out and drawn from the same list.
+/// The phone launcher draws the same content in its own look (`launcher_screen.rs`).
 #[derive(Default)]
-struct Content {
-    title: String,
+pub struct Content {
+    pub title: String,
     /// Paragraphs of body text.
-    lines: Vec<String>,
+    pub lines: Vec<String>,
     /// Drawn large: the device code, the offline name.
-    code: Option<String>,
+    pub code: Option<String>,
     /// The form's complaint.
-    error: Option<String>,
+    pub error: Option<String>,
     /// The download's line over its bar.
-    status: Option<String>,
+    pub status: Option<String>,
     /// The download's fraction, 0 to 1.
-    progress: Option<f32>,
+    pub progress: Option<f32>,
     /// The form's fields: which, its caption and its text.
-    fields: Vec<(ElyField, String, String)>,
-    buttons: Vec<(String, BootAction)>,
+    pub fields: Vec<(ElyField, String, String)>,
+    pub buttons: Vec<(String, BootAction)>,
 }
 
 /// The design system's type and control sizes at one fit factor, in dp.
@@ -1012,7 +1020,7 @@ fn estimate_lines(text: &str, size: f32, width: f32) -> usize {
 /// `text` broken at spaces into lines no wider than `width` dp. A word with no
 /// space in it (a link, a server's complaint) is cut where the column ends
 /// rather than drawn over the page's margin.
-fn wrap(ui: &Ui, face: Face, size: f32, text: &str, width: f32) -> Vec<String> {
+pub(crate) fn wrap(ui: &Ui, face: Face, size: f32, text: &str, width: f32) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for word in text.split(' ') {
         let joins = lines
