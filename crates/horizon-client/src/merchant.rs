@@ -344,15 +344,22 @@ pub struct Trades {
     /// potion tags, ordered (`set_random_potion` options).
     pub potion_tags: HashMap<String, Vec<String>>,
 }
-/// The `.json` files under `dir` as `minecraft:<path>` ids, through `json_folder` (from the
-/// prepared data file when there is one); a file that doesn't parse is left out.
-fn walk(dir: &Path, out: &mut HashMap<String, Value>) {
-    let Ok(folder) = horizon_world::json_folder::read(dir) else {
-        return;
-    };
-    for file in &folder.files {
-        if let Ok(value) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
-            out.insert(format!("minecraft:{}", file.name), value);
+/// The `.json` files under `data/<namespace>/<kind>` of `root` as `<namespace>:<path>` ids, for
+/// `minecraft` and every content namespace of the root (a mod's `data/mymod/villager_trade/`),
+/// through `json_folder` (from the prepared data file when there is one); a file that doesn't
+/// parse is left out. As `SimpleJsonResourceReloadListener` lists every namespace.
+fn walk(root: &Path, kind: &str, out: &mut HashMap<String, Value>) {
+    let namespaces = std::iter::once("minecraft".to_owned())
+        .chain(horizon_items::content_namespaces::namespaces(root));
+    for namespace in namespaces {
+        let dir = root.join("data").join(&namespace).join(kind);
+        let Ok(folder) = horizon_world::json_folder::read(&dir) else {
+            continue;
+        };
+        for file in &folder.files {
+            if let Ok(value) = serde_json::from_slice(file.bytes().unwrap_or_default()) {
+                out.insert(format!("{namespace}:{}", file.name), value);
+            }
         }
     }
 }
@@ -361,13 +368,12 @@ impl Trades {
     /// content files) merges over it, the way a pack stack layers
     /// (`SimpleJsonResourceReloadListener`, `TagLoader`).
     pub fn load(root: &Path, overlay: &horizon_world::loot::PackOverlay) -> Self {
-        let data = root.join("data/minecraft");
         let (mut trades, mut raw_tags, mut sets) = (HashMap::new(), HashMap::new(), HashMap::new());
-        walk(&data.join("villager_trade"), &mut trades);
-        walk(&data.join("tags/villager_trade"), &mut raw_tags);
-        walk(&data.join("trade_set"), &mut sets);
+        walk(root, "villager_trade", &mut trades);
+        walk(root, "tags/villager_trade", &mut raw_tags);
+        walk(root, "trade_set", &mut sets);
         let mut raw_potions = HashMap::new();
-        walk(&data.join("tags/potion"), &mut raw_potions);
+        walk(root, "tags/potion", &mut raw_potions);
         // The packs' trade files: a trade or set's top pack file replaces
         // the game's own (`SimpleJsonResourceReloadListener` sees one
         // resource per id), a tag's entries join in pack order with a
@@ -1259,6 +1265,79 @@ mod tests {
         );
         assert_eq!(o.base_cost_a.stack.count, 7);
         assert_eq!(o.cost_b.unwrap().stack.count, 2);
+    }
+}
+
+#[cfg(test)]
+mod namespace_tests {
+    use super::*;
+
+    fn write(root: &Path, file: &str, text: &str) {
+        let path = root.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// A content mod's trades and trade sets in its own namespace load beside vanilla's, and a
+    /// `minecraft:` profession tag that names them reaches them: a farmer buys the mod's crop
+    /// and the wandering trader sells its seeds.
+    #[test]
+    fn a_mods_own_trades_and_sets_load_and_vanilla_tags_reach_them() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        write(
+            root,
+            horizon_items::content_namespaces::MARKER,
+            r#"["mymod"]"#,
+        );
+        write(
+            root,
+            "data/minecraft/villager_trade/farmer_1_wheat.json",
+            r#"{"wants":{"id":"minecraft:wheat","count":20},"gives":{"id":"minecraft:emerald"}}"#,
+        );
+        write(
+            root,
+            "data/mymod/villager_trade/onion.json",
+            r#"{"wants":{"id":"mymod:onion","count":22},"gives":{"id":"minecraft:emerald"}}"#,
+        );
+        write(
+            root,
+            "data/mymod/villager_trade/wanderer_onion.json",
+            r#"{"wants":{"id":"minecraft:emerald"},"gives":{"id":"mymod:onion"}}"#,
+        );
+        write(
+            root,
+            "data/mymod/trade_set/chef/level_1.json",
+            r##"{"trades":"#mymod:chef/level_1","amount":2}"##,
+        );
+        write(
+            root,
+            "data/minecraft/tags/villager_trade/farmer/level_1.json",
+            r#"{"values":["minecraft:farmer_1_wheat","mymod:onion"]}"#,
+        );
+        write(
+            root,
+            "data/minecraft/tags/villager_trade/wandering_trader/common.json",
+            r#"{"values":["mymod:wanderer_onion"]}"#,
+        );
+        write(
+            root,
+            "data/mymod/tags/villager_trade/chef/level_1.json",
+            r#"{"values":["mymod:onion"]}"#,
+        );
+        let trades = Trades::load(root, &PackOverlay::NONE);
+        assert!(trades.trades.contains_key("minecraft:farmer_1_wheat"));
+        assert!(trades.trades.contains_key("mymod:onion"));
+        assert!(trades.sets.contains_key("mymod:chef/level_1"));
+        assert_eq!(
+            trades.tags["minecraft:farmer/level_1"],
+            ["minecraft:farmer_1_wheat", "mymod:onion"]
+        );
+        assert_eq!(
+            trades.tags["minecraft:wandering_trader/common"],
+            ["mymod:wanderer_onion"]
+        );
+        assert_eq!(trades.tags["mymod:chef/level_1"], ["mymod:onion"]);
     }
 }
 
