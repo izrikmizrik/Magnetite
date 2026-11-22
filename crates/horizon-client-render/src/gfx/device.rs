@@ -84,7 +84,8 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
 /// OpenGL. Each is tried when the one before has no surface, adapter or device. A native
 /// crash in the driver can't be caught in the game; the launcher switches the setting to
 /// DirectX 12 after one at the renderer's start on Vulkan (#746) or, on Windows, OpenGL
-/// (#18291). macOS and iOS have Metal only; Android tries Vulkan, then OpenGL ES.
+/// (#18291). macOS and iOS have Metal only; Android tries Vulkan, then OpenGL ES, and with no
+/// launcher switches itself to OpenGL ES after such a crash (`graphics::RENDER_MARKER`).
 pub(crate) fn backend_order(
     api: GraphicsApi,
     os: &str,

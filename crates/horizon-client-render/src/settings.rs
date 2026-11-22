@@ -413,6 +413,9 @@ impl Settings {
                 ..Self::default()
             },
         };
+        if let Some(dir) = path.parent() {
+            settings.recover_failed_render_start(path, dir, std::env::consts::OS);
+        }
         // Horizon's own key bindings live in horizon-extras.txt, not in options.txt.
         let emote = settings.extras.emote_key.clone();
         settings.keys.set("key.emote", &emote);
@@ -427,6 +430,29 @@ impl Settings {
         Self {
             startup_api: settings.horizon.api,
             ..settings
+        }
+    }
+    /// The last start's renderer marker in `dir` (`graphics::RENDER_MARKER`), taken: when that
+    /// start crashed in the driver while trying Vulkan on a system that recovers by itself, the
+    /// graphics API becomes OpenGL (ES) and the options at `path` are saved with it, as a desktop's
+    /// launcher switches the setting. The player can choose Vulkan again in Video Settings.
+    fn recover_failed_render_start(&mut self, path: &Path, dir: &Path, os: &str) {
+        if !crate::graphics::handles_render_crash(os) {
+            return;
+        }
+        let marker = dir.join(crate::graphics::RENDER_MARKER);
+        let Ok(text) = fs::read_to_string(&marker) else {
+            return;
+        };
+        let _ = fs::remove_file(&marker);
+        if let Some(api) = crate::graphics::after_failed_render_start(&text, self.horizon.api, os) {
+            log::warn!(
+                "the last start ended before the renderer showed its first frame on {}; the graphics API is now {} (choose it again in Video Settings)",
+                self.horizon.api.label(),
+                api.label()
+            );
+            self.horizon.api = api;
+            self.save(path);
         }
     }
     /// The render settings and resource packs a crash report lists.
@@ -1338,6 +1364,35 @@ mod tests {
         let loaded = Settings::load(&options);
         assert_eq!(loaded.horizon.api, GraphicsApi::Vulkan);
         assert_eq!(loaded.startup_api, GraphicsApi::Vulkan);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_driver_crash_at_the_renderers_start_on_android_switches_to_opengl() {
+        use crate::graphics::{GraphicsApi, RENDER_MARKER, render_marker_text};
+        let dir = std::env::temp_dir().join(format!("horizon-render-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let options = dir.join("options.txt");
+        let marker = dir.join(RENDER_MARKER);
+        fs::write(&marker, render_marker_text("vulkan")).unwrap();
+        // A desktop leaves the crash to its launcher: the marker and the API stay.
+        let mut desktop = Settings::default();
+        desktop.recover_failed_render_start(&options, &dir, "linux");
+        assert_eq!(desktop.horizon.api, GraphicsApi::Auto);
+        assert!(marker.exists());
+        // Android takes the marker, switches to OpenGL ES and saves it for the next starts.
+        let mut phone = Settings::default();
+        phone.recover_failed_render_start(&options, &dir, "android");
+        assert_eq!(phone.horizon.api, GraphicsApi::OpenGl);
+        assert!(!marker.exists());
+        assert_eq!(Settings::load(&options).horizon.api, GraphicsApi::OpenGl);
+        // A start that crashed on OpenGL ES already changes nothing, but the marker still goes.
+        fs::write(&marker, render_marker_text("gl")).unwrap();
+        let mut again = Settings::load(&options);
+        again.recover_failed_render_start(&options, &dir, "android");
+        assert_eq!(again.horizon.api, GraphicsApi::OpenGl);
+        assert!(!marker.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

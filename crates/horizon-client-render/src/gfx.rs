@@ -503,6 +503,7 @@ mod in_flight;
 mod material_animate;
 #[cfg(test)]
 mod material_animation_tests;
+mod render_start;
 pub use hdr::{Calibration as HdrCalibration, Output as HdrOutput};
 pub use output::{DisplayReading, EffectiveOutput, FrameConfiguration, FrameRequest};
 
@@ -1786,6 +1787,9 @@ pub struct Renderer {
     /// The marker file of an HDR output that has not presented a frame yet
     /// (`graphics::HDR_MARKER`).
     hdr_marker: Option<std::path::PathBuf>,
+    /// The marker of a window's first device that has not presented a frame yet
+    /// (`render_start`, `graphics::RENDER_MARKER`).
+    render_marker: Option<render_start::StartMarker>,
     /// The window's graphics driver (`hdr_start`); `None` offscreen.
     hdr_driver: Option<String>,
     /// Whether the Look setting is Horizon's, kept for the HDR output made when HDR turns on.
@@ -2357,6 +2361,12 @@ impl Renderer {
         request: output::FrameRequest,
         display: output::DisplayReading,
     ) -> Result<Self> {
+        // A window's first device: a driver crash from here to the first frame leaves the marker.
+        let render_marker = if previous.is_none() && !offscreen {
+            render_start::StartMarker::begin()
+        } else {
+            None
+        };
         let Opened {
             instance,
             surface,
@@ -2403,6 +2413,9 @@ impl Renderer {
         // shader pack atlas all cut the sprites by it.
         let split = check_layers(&adapter, layers)?;
         let info = adapter.get_info();
+        if let Some(marker) = &render_marker {
+            marker.opened_on(info.backend);
+        }
         surface_setup::log_sprite_split(&info, split, layers);
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
         let size = window.inner_size();
@@ -4645,6 +4658,7 @@ impl Renderer {
             output: output::resolve_output(settings, output_caps, display, frame, false),
             frame_kept_logged: false,
             hdr_marker: None,
+            render_marker,
             hdr_driver,
             pack_post: None,
             pack_loading: None,
@@ -11320,6 +11334,10 @@ impl Renderer {
                 startup_step(format_args!("presenting the first frame"));
             }
             self.queue.present(surface_frame);
+            if first_frame {
+                // Dropping it removes the marker: the driver got through the start.
+                self.render_marker = None;
+            }
             if self.hdr.is_some()
                 && let Some(marker) = self.hdr_marker.take()
             {

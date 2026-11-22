@@ -96,6 +96,10 @@ pub fn run(mut config: BootConfig) -> Result<()> {
     if config.install.is_none() {
         config.install = installer_from_build(config.resources.clone(), config.work.clone());
     }
+    // The game folder is the working directory from here, as `--game-dir` makes it for the core:
+    // the player's folder (`logging::player_dir`) is the one the game will use, so a renderer
+    // start the boot window leaves unfinished is found by the game's options (`RENDER_MARKER`).
+    std::env::set_current_dir(&config.game_dir)?;
     let mut boot = Boot::new(config);
     let event_loop = horizon_client::window::new_event_loop()?;
     event_loop.run_app(&mut boot)?;
@@ -720,6 +724,10 @@ impl Boot {
         let files_ready = loading_screen::missing_resources(&config.resources, None).is_none();
         let ctrl = Controller::new(files_ready, config.install.is_some(), client_id());
         let (tx, rx) = channel();
+        // The player's own options, for the graphics API: reading them also switches it after a
+        // driver crash at the last start's renderer (`Settings::load`), before the boot window
+        // opens a device. The game reads them again after the hand-over.
+        let settings = Settings::load(&config.game_dir.join("options.txt"));
         let mut boot = Self {
             ctrl,
             screen: BootScreen::new(BootState::Choose),
@@ -742,8 +750,7 @@ impl Boot {
                 panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
                 splashes: Arc::from(""),
             },
-            // Defaults: the player's own settings are read by the game after the hand-over.
-            settings: Settings::default(),
+            settings,
             pointer: (0.0, 0.0),
             clipboard: SystemClipboard::default(),
             awake: false,

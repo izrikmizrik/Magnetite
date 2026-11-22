@@ -15,6 +15,42 @@ pub const HDR_MARKER: &str = "horizon-hdr-pending";
 pub fn hdr_marker_text(driver: &str) -> String {
     format!("driver:{driver}\n")
 }
+/// Written beside `options.txt` as a window's first renderer starts opening its graphics device,
+/// naming the backend once one is open ([`render_marker_text`]), and removed when that renderer
+/// presents its first frame. A driver crash there can't be caught in the game; on a desktop the
+/// launcher sees the crash and switches the API (`gfx::device::backend_order`). A system with no
+/// launcher ([`handles_render_crash`]) finds the marker at the next start instead and switches
+/// the API itself ([`after_failed_render_start`]).
+pub const RENDER_MARKER: &str = "horizon-render-pending";
+/// The marker's text once the device is open on `backend` (`vulkan`, `gl`); before that it names
+/// none, and a crash inside the driver's device search leaves it so.
+pub fn render_marker_text(backend: &str) -> String {
+    format!("backend:{backend}\n")
+}
+/// Whether the game itself recovers from a driver crash at the renderer's start, on `os`
+/// (`std::env::consts::OS`): Android, where no launcher starts the game and Vulkan drivers
+/// vary most. Desktops leave it to the launcher; Apple systems have Metal only.
+pub fn handles_render_crash(os: &str) -> bool {
+    os == "android"
+}
+/// The graphics API to use after the last start left the marker with `marker` as its text: OpenGL
+/// (ES) when it was trying Vulkan — named, or none named yet while `api` puts Vulkan first — on a
+/// system that handles its own renderer crashes. `None` keeps `api`.
+pub fn after_failed_render_start(marker: &str, api: GraphicsApi, os: &str) -> Option<GraphicsApi> {
+    if !handles_render_crash(os) || api == GraphicsApi::OpenGl {
+        return None;
+    }
+    let backend = marker
+        .lines()
+        .find_map(|line| line.strip_prefix("backend:"))
+        .unwrap_or_default()
+        .trim();
+    match backend {
+        "vulkan" => Some(GraphicsApi::OpenGl),
+        "" if matches!(api, GraphicsApi::Auto | GraphicsApi::Vulkan) => Some(GraphicsApi::OpenGl),
+        _ => None,
+    }
+}
 /// The driver a marker names; empty for one written before markers named it.
 fn marker_driver(text: &str) -> &str {
     text.lines()
@@ -279,7 +315,8 @@ impl GraphicsApi {
         GraphicsApi::OpenGl,
     ];
     /// The APIs this system offers, in the order the setting cycles through
-    /// them: DirectX 12 is Windows' third backend, and macOS has no choice.
+    /// them: DirectX 12 is Windows' third backend, and macOS and iOS (Metal only) have no choice.
+    /// Android offers Vulkan and OpenGL ES, as Linux does.
     pub fn choices() -> &'static [GraphicsApi] {
         const WINDOWS: [GraphicsApi; 4] = [
             GraphicsApi::Auto,
@@ -292,7 +329,7 @@ impl GraphicsApi {
         const MACOS: [GraphicsApi; 1] = [GraphicsApi::Auto];
         if cfg!(windows) {
             &WINDOWS
-        } else if cfg!(target_os = "macos") {
+        } else if cfg!(any(target_os = "macos", target_os = "ios")) {
             &MACOS
         } else {
             &LINUX
@@ -1380,6 +1417,34 @@ pub use preset::apply_preset;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crash_trying_vulkan_on_android_turns_to_opengl() {
+        use GraphicsApi::{Auto, OpenGl, Vulkan};
+        let vulkan = render_marker_text("vulkan");
+        let none = render_marker_text("");
+        let gl = render_marker_text("gl");
+        assert_eq!(
+            after_failed_render_start(&vulkan, Auto, "android"),
+            Some(OpenGl)
+        );
+        assert_eq!(
+            after_failed_render_start(&vulkan, Vulkan, "android"),
+            Some(OpenGl)
+        );
+        // Inside the device search, before any backend was named: Vulkan was first.
+        assert_eq!(
+            after_failed_render_start(&none, Auto, "android"),
+            Some(OpenGl)
+        );
+        // OpenGL ES itself crashed: nothing further to fall back to.
+        assert_eq!(after_failed_render_start(&gl, Auto, "android"), None);
+        assert_eq!(after_failed_render_start(&none, OpenGl, "android"), None);
+        // Desktops leave it to the launcher; Apple systems have Metal only.
+        for os in ["windows", "linux", "macos", "ios"] {
+            assert_eq!(after_failed_render_start(&vulkan, Auto, os), None);
+        }
+    }
 
     /// UI Brightness is saved in nits, 0 for Auto. An older file's share of Paper White reads
     /// as Auto at 100% or with Paper White on Auto, else as that share of it to the nearest step.

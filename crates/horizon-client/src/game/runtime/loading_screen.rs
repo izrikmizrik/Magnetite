@@ -44,7 +44,7 @@ pub(super) fn run_event_loop(mut game: Game<'static>) -> Result<()> {
         // Nothing else wraps a running game here.
         return result.map_err(Into::into);
     };
-    game = (*split).host;
+    game = split.host;
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     let result = result
