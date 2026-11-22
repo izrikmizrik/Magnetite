@@ -35,6 +35,10 @@
   не в Magnetite: если их попросят убрать, основной проект не затронут. Телефон качает их после входа
   (установщик — `crates/horizon-client/src/game_files.rs`, адрес и sha256 — `MAGNETITE_TABLES_URL` /
   `MAGNETITE_TABLES_SHA256`; сборка без них не предлагает скачивание).
+- Microsoft client ID: только **своё** Azure-приложение Magnetite + одобрение Mojang (App ID review,
+  https://aka.ms/mce-reviewappid). ID Horizon запрещён его docs/forking.md («Microsoft sign-in in a fork»),
+  чужие ID (Cazza из iOS-форка, официального лаунчера) — тоже (docs/microsoft-account.md). ID — переменная
+  репозитория `MAGNETITE_MSA_CLIENT_ID` (не секрет). До одобрения на телефонах работают Ely.by и офлайн.
 - Предустановленные нативные моды на мобилах: из 60 модов iOS-форка (`NATIVE_MODS.md`) оставить только
   `coords_hud` (координаты), `fps_overlay` (FPS) и мод урожая по клику (`right_click_crops`, выбран). Остальные не вшивать. На мобилах моды вшиваются в бинарник статически
   (как в iOS-форке): загрузка `.dll`/`.so` и процесс-холдер (`runtime-process`, `holder`) — только ПК, фича `native-mods`.
