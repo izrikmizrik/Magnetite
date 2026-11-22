@@ -49,7 +49,8 @@ impl Game<'_> {
         );
         let revision = api.revision();
         let mut reply = mod_api::BlockEntityTickReply::Changed;
-        self.native_block_entity_tick(&mut reply, pos, &mut api);
+        let level = self.level_ref(self.lend_epoch(), self.dim.key());
+        self.native_block_entity_tick(&mut reply, pos, level, &mut api);
         let changed = reply == mod_api::BlockEntityTickReply::Changed;
         if changed {
             // Preserve the existing Changed normalization before checked apply.
