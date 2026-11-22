@@ -232,7 +232,7 @@ fn centered_x(width: f32, text_width: f32) -> f32 {
 
 /// The server list, beside `saves/`; with `--player-dir`, the player's own.
 pub fn servers_file(saves: &Path) -> PathBuf {
-    servers_file_of(crate::logging::player_dir_override(), saves)
+    servers_file_of(crate::logging::player_dir_override().as_deref(), saves)
 }
 
 /// [`servers_file`] for a given `--player-dir`.

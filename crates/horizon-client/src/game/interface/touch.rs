@@ -192,8 +192,13 @@ impl HudFile {
     }
 }
 
-/// The file the layouts are kept in, in the game folder.
+/// The file the layouts are kept in, in the player's folder (the game folder, or the phone
+/// launcher's profile).
 const LAYOUT_FILE: &str = "touch-controls.json";
+
+fn layout_file() -> std::path::PathBuf {
+    horizon_client::logging::player_dir().join(LAYOUT_FILE)
+}
 
 fn parse_buttons(value: &serde_json::Value) -> Vec<Placed> {
     value
@@ -245,7 +250,7 @@ fn parse_layout(value: &serde_json::Value, defaults: &HudLayout) -> Option<HudLa
 /// The file, read against the default layout (for what it leaves out). The first Edit HUD kept
 /// one layout of buttons only: it is the first layout.
 fn load_layouts(defaults: &HudLayout) -> HudFile {
-    let Some(value) = std::fs::read_to_string(LAYOUT_FILE)
+    let Some(value) = std::fs::read_to_string(layout_file())
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
     else {
@@ -281,7 +286,7 @@ fn save_layouts(file: &HudFile) {
         "layouts": file.layouts.iter().map(layout).collect::<Vec<_>>(),
     })
     .to_string();
-    if let Err(e) = std::fs::write(LAYOUT_FILE, text) {
+    if let Err(e) = std::fs::write(layout_file(), text) {
         log::warn!("Horizon: the touch layout could not be saved: {e}");
     }
 }
@@ -1031,7 +1036,7 @@ impl Game<'_> {
                 .collect();
             self.touch.hud = HudFile { active, layouts };
             if self.touch.hud.layouts.iter().all(Option::is_none) && active == 0 {
-                let _ = std::fs::remove_file(LAYOUT_FILE);
+                let _ = std::fs::remove_file(layout_file());
             } else {
                 save_layouts(&self.touch.hud);
             }

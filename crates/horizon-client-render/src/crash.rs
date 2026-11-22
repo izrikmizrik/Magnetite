@@ -562,7 +562,11 @@ fn deliver(home: &Path, report: Report) -> Option<PathBuf> {
         hook(home, &report);
     }
     // A player of a shared game folder (`--player-dir`) finds the report beside its own log.
-    match report.save(crate::logging::player_dir_override().unwrap_or(home)) {
+    match report.save(
+        crate::logging::player_dir_override()
+            .as_deref()
+            .unwrap_or(home),
+    ) {
         Ok(path) => {
             eprintln!("{SAVED_LINE}{}", path.display());
             Some(path)

@@ -40,9 +40,10 @@ pub fn set_game_home(home: PathBuf) {
     let _ = HOME.set(home);
 }
 
-/// `--player-dir DIR` (#4952), set once at start: one player's own files, when several games
-/// play in one game folder at the same time (the launcher's `play --account`).
-static PLAYER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// `--player-dir DIR` (#4952): one player's own files, when several games play in one game
+/// folder at the same time (the launcher's `play --account`), or the phone launcher's profile.
+/// Set at start; the phone launcher sets it again while the player switches profiles.
+static PLAYER: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
 /// Makes [`player_dir`] return `dir` for the rest of the run (`--player-dir`), creating it.
 /// What is a player's own goes there: `options.txt` and the settings files beside it,
@@ -51,28 +52,43 @@ static PLAYER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// shader packs, mods and their config, caches.
 pub fn set_player_dir(dir: PathBuf) {
     let _ = fs::create_dir_all(&dir);
-    let _ = PLAYER.set(dir);
+    set_player(Some(dir));
+}
+
+/// The player's folder back to the game folder (the phone launcher's main profile).
+pub fn clear_player_dir() {
+    set_player(None);
+}
+
+fn set_player(dir: Option<PathBuf>) {
+    *PLAYER
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = dir;
+}
+
+fn player() -> Option<PathBuf> {
+    PLAYER
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// The folder of this player's own files: `--player-dir`, else the game folder (the working
 /// directory, where the launcher runs the game).
 pub fn player_dir() -> PathBuf {
-    PLAYER
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+    player().unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
 }
 
 /// `--player-dir`, if given.
-pub fn player_dir_override() -> Option<&'static Path> {
-    PLAYER.get().map(PathBuf::as_path)
+pub fn player_dir_override() -> Option<PathBuf> {
+    player()
 }
 
 /// Where the files all players share live, for settings kept beside `options.txt` in
 /// `options_dir` (the enabled mods): that folder, unless `--player-dir` moved `options.txt`
 /// out of the game folder.
 pub fn shared_dir(options_dir: &Path) -> PathBuf {
-    shared_dir_of(PLAYER.get().map(PathBuf::as_path), options_dir, || {
+    shared_dir_of(player().as_deref(), options_dir, || {
         std::env::current_dir().unwrap_or_default()
     })
 }

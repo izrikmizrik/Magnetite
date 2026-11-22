@@ -186,7 +186,9 @@ pub fn start<G>(
         (launch.context.home.clone(), "client", "Render thread")
     };
     logging::init(
-        logging::player_dir_override().unwrap_or(home.as_path()),
+        logging::player_dir_override()
+            .as_deref()
+            .unwrap_or(home.as_path()),
         thread,
     );
     // The log's first line names the build, so a bug report that carries the log says which one it was.

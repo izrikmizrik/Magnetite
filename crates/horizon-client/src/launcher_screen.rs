@@ -27,6 +27,10 @@ pub enum Page {
     Settings,
     /// The kept accounts: pick the one that plays, remove one, add one.
     Accounts,
+    /// The profiles: pick the one that plays, make a new one.
+    Profiles,
+    /// The current profile: its name, removing it.
+    EditProfile,
 }
 
 /// A setting the settings page lists, by what it changes.
@@ -141,8 +145,14 @@ pub enum Action {
     Controls,
     ShareLog,
     OpenFolder,
-    Profiles,
-    EditProfile,
+    /// Make the profile at this index the one that plays.
+    PickProfile(usize),
+    /// A new profile, from the current one's settings.
+    NewProfile,
+    /// Type the current profile's name (the system keyboard).
+    RenameProfile,
+    /// Remove the current profile (asked twice).
+    RemoveProfile,
     Setting(Setting),
 }
 
@@ -169,6 +179,15 @@ pub struct View {
     pub accounts: Vec<(String, String)>,
     pub current: Option<usize>,
     pub confirm_remove: Option<usize>,
+    /// The profiles' names, the one that plays, and the edit page's state: the name as typed so
+    /// far, whether it is being typed, whether the profile can be removed (not the main one) and
+    /// whether its removal waits for a second tap.
+    pub profiles: Vec<String>,
+    pub profile_current: usize,
+    pub profile_name: String,
+    pub renaming: bool,
+    pub profile_removable: bool,
+    pub confirm_remove_profile: bool,
 }
 
 /// A sign-in page (the boot screen's content), drawn in the launcher's look.
@@ -255,6 +274,8 @@ impl LauncherScreen {
             (None, Page::Home) => self.draw_home(ui, &mut targets),
             (None, Page::Settings) => self.draw_settings(ui, &mut targets),
             (None, Page::Accounts) => self.draw_accounts(ui, &mut targets),
+            (None, Page::Profiles) => self.draw_profiles(ui, &mut targets),
+            (None, Page::EditProfile) => self.draw_edit_profile(ui, &mut targets),
         }
         if let Some(note) = &self.notice {
             let nw = ui.measure(Face::Regular, 13.0, note) + 32.0;
@@ -416,8 +437,8 @@ impl LauncherScreen {
             20.0,
             color::text(),
         );
-        targets.push((Action::EditProfile, edit));
-        targets.push((Action::Profiles, pick));
+        targets.push((Action::Open(Page::EditProfile), edit));
+        targets.push((Action::Open(Page::Profiles), pick));
         ui.rounded(play.x, play.y, play.w, play.h, 10.0, color::text());
         let label = lang::get("horizon.launcher.play");
         let lw = ui.measure(Face::SemiBold, 16.0, &label);
@@ -527,6 +548,129 @@ impl LauncherScreen {
             false,
         );
         targets.push((Action::AddAccount, add));
+    }
+
+    fn draw_profiles(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let mut y = top_bar(
+            ui,
+            col,
+            &lang::get("horizon.launcher.profiles"),
+            true,
+            targets,
+        );
+        for (i, name) in self.view.profiles.iter().enumerate() {
+            let rect = Rect::new(col.x, y, col.w, ROW);
+            row(ui, rect, "launcher/profile", name, None, false);
+            if self.view.profile_current == i {
+                ui.border(rect.x, rect.y, rect.w, rect.h, 10.0, color::muted());
+                ui.icon(
+                    "launcher/check",
+                    rect.x + rect.w - 36.0,
+                    rect.y + (rect.h - 20.0) / 2.0,
+                    20.0,
+                    color::text(),
+                );
+            }
+            targets.push((Action::PickProfile(i), rect));
+            y += ROW + GAP;
+        }
+        let add = Rect::new(col.x, y, col.w, ROW);
+        row(
+            ui,
+            add,
+            "launcher/add",
+            &lang::get("horizon.launcher.profiles.new"),
+            None,
+            false,
+        );
+        targets.push((Action::NewProfile, add));
+    }
+
+    fn draw_edit_profile(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let mut y = top_bar(
+            ui,
+            col,
+            &lang::get("horizon.launcher.profile.edit"),
+            true,
+            targets,
+        );
+        ui.text(
+            Face::Regular,
+            12.0,
+            col.x + 2.0,
+            y,
+            color::muted(),
+            &lang::get("horizon.launcher.profile.name"),
+        );
+        y += 20.0;
+        let field = Rect::new(col.x, y, col.w, 48.0);
+        ui.rounded(field.x, field.y, field.w, field.h, 10.0, color::raised());
+        if self.view.renaming {
+            ui.border(field.x, field.y, field.w, field.h, 10.0, color::text());
+        }
+        let shown = if self.view.renaming {
+            format!("{}|", self.view.profile_name)
+        } else {
+            self.view.profile_name.clone()
+        };
+        ui.text(
+            Face::Regular,
+            15.0,
+            field.x + 14.0,
+            field.y + 13.0,
+            color::text(),
+            &shown,
+        );
+        if !self.view.renaming {
+            ui.icon(
+                "launcher/edit",
+                field.x + field.w - 34.0,
+                field.y + 14.0,
+                20.0,
+                color::muted(),
+            );
+        }
+        targets.push((Action::RenameProfile, field));
+        y += 48.0 + 16.0;
+        for line in wrap(
+            ui,
+            Face::Regular,
+            13.0,
+            &lang::get("horizon.launcher.profile.hint"),
+            col.w,
+        ) {
+            ui.text(Face::Regular, 13.0, col.x + 2.0, y, color::muted(), &line);
+            y += 19.0;
+        }
+        y += 16.0;
+        if self.view.profile_removable {
+            let rect = Rect::new(col.x, y, col.w, ROW);
+            if self.view.confirm_remove_profile {
+                ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, color::text());
+                let label = lang::get("horizon.launcher.profile.remove_confirm");
+                let lw = ui.measure(Face::Medium, 15.0, &label);
+                ui.text(
+                    Face::Medium,
+                    15.0,
+                    rect.x + (rect.w - lw) / 2.0,
+                    rect.y + 16.0,
+                    color::bg(),
+                    &label,
+                );
+            } else {
+                row(
+                    ui,
+                    rect,
+                    "launcher/delete",
+                    &lang::get("horizon.launcher.profile.remove"),
+                    None,
+                    false,
+                );
+            }
+            targets.push((Action::RemoveProfile, rect));
+        }
     }
 
     fn draw_settings(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {

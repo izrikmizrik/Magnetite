@@ -28,6 +28,7 @@ use horizon_client::game_files::{
 use horizon_client::lang;
 use horizon_client::launcher_screen::{self, LauncherScreen};
 use horizon_client::osk::Output;
+use horizon_client::profiles::Profiles;
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::Arc;
@@ -170,6 +171,7 @@ fn detail(error: &str) -> String {
 fn game_args(
     game_dir: &Path,
     resources: &Path,
+    player_dir: Option<&Path>,
     session: Option<&Path>,
     name: Option<&str>,
 ) -> Vec<String> {
@@ -179,6 +181,11 @@ fn game_args(
         "--resources".to_owned(),
         resources.to_string_lossy().into_owned(),
     ];
+    // The launcher's profile other than the main one: its own settings and layout.
+    if let Some(dir) = player_dir {
+        args.push("--player-dir".to_owned());
+        args.push(dir.to_string_lossy().into_owned());
+    }
     if let Some(path) = session {
         args.push("--session-file".to_owned());
         args.push(path.to_string_lossy().into_owned());
@@ -188,6 +195,15 @@ fn game_args(
         args.push(name.to_owned());
     }
     args
+}
+
+/// The player's folder for the launcher's current profile: its own, or the game folder for the
+/// main one.
+fn set_player_dir(profiles: &Profiles) {
+    match profiles.player_dir() {
+        Some(dir) => horizon_client::logging::set_player_dir(dir),
+        None => horizon_client::logging::clear_player_dir(),
+    }
 }
 
 /// Write the session file the core reads at startup: private (0600 on Unix), synced, fresh. The
@@ -276,6 +292,8 @@ enum Event {
 enum KeyboardFor {
     Ely(ElyField),
     Offline,
+    /// The launcher's profile name.
+    Profile,
 }
 
 /// The Ely.by form's values: the controller keeps them, never the screen. The password is used
@@ -787,6 +805,12 @@ struct Boot {
     signing_in: bool,
     /// The kept account whose removal waits for a second tap.
     confirm_remove: Option<usize>,
+    /// The launcher's profiles; the current one's folder is the player's (`logging::player_dir`).
+    profiles: Profiles,
+    /// The profile's name while the player types it, and whether its removal waits for a second
+    /// tap.
+    renaming: Option<String>,
+    confirm_remove_profile: bool,
     drawn: u64,
     /// The game's app once it is handed over: every event goes to it from then on.
     app: Option<App>,
@@ -802,7 +826,10 @@ impl Boot {
         // The player's own options, for the graphics API: reading them also switches it after a
         // driver crash at the last start's renderer (`Settings::load`), before the boot window
         // opens a device. The game reads them again after the hand-over.
-        let options = config.game_dir.join("options.txt");
+        // The launcher's profile that plays: its folder holds the settings read here.
+        let profiles = Profiles::load(&config.game_dir);
+        set_player_dir(&profiles);
+        let options = profiles.dir(profiles.current).join("options.txt");
         let mut settings = Settings::load(&options);
         // A first start (no options yet) speaks the system's language, and the game keeps it; a
         // kept code the game has no file for (`ru_ua`) becomes the closest one it has.
@@ -855,6 +882,9 @@ impl Boot {
             keyring: Keyring::default(),
             signing_in: false,
             confirm_remove: None,
+            profiles,
+            renaming: None,
+            confirm_remove_profile: false,
             drawn: 0,
             app: None,
             error: None,
@@ -1184,7 +1214,7 @@ impl Boot {
         View {
             name,
             account_kind,
-            profile: lang::get("horizon.launcher.profile.main"),
+            profile: self.profile_name(self.profiles.current),
             profile_detail: lang::tr("horizon.launcher.profile.detail", &[&GAME_VERSION]),
             resign: None,
             values: vec![
@@ -1213,6 +1243,56 @@ impl Boot {
                 .collect(),
             current: self.keyring.current,
             confirm_remove: self.confirm_remove,
+            profiles: (0..self.profiles.list.len())
+                .map(|i| self.profile_name(i))
+                .collect(),
+            profile_current: self.profiles.current,
+            profile_name: self
+                .renaming
+                .clone()
+                .unwrap_or_else(|| self.profile_name(self.profiles.current)),
+            renaming: self.renaming.is_some(),
+            profile_removable: !self.profiles.current().is_main(),
+            confirm_remove_profile: self.confirm_remove_profile,
+        }
+    }
+
+    /// The profile at `i`'s name as shown: the player's, else the main one's own.
+    fn profile_name(&self, i: usize) -> String {
+        self.profiles
+            .list
+            .get(i)
+            .and_then(|p| p.name.clone())
+            .unwrap_or_else(|| lang::get("horizon.launcher.profile.main"))
+    }
+
+    /// The current profile's `options.txt`.
+    fn options_path(&self) -> PathBuf {
+        self.profiles
+            .dir(self.profiles.current)
+            .join("options.txt")
+    }
+
+    /// Play the profile `profiles` now has as current: its folder is the player's, its settings
+    /// the ones the launcher shows.
+    fn use_profile(&mut self) {
+        set_player_dir(&self.profiles);
+        self.settings = Settings::load(&self.options_path());
+    }
+
+    /// Keep the name being typed (an empty one leaves the old name).
+    fn finish_rename(&mut self) {
+        let Some(name) = self.renaming.take() else {
+            return;
+        };
+        if !name.trim().is_empty()
+            && let Err(e) = self.profiles.rename(self.profiles.current, &name)
+        {
+            log::warn!("Horizon: the profile could not be renamed: {e}");
+            self.notice = Some((
+                lang::get("horizon.launcher.profile.failed"),
+                Instant::now() + Duration::from_secs(2),
+            ));
         }
     }
 
@@ -1262,6 +1342,17 @@ impl Boot {
         if !matches!(action, Action::RemoveAccount(_)) {
             self.confirm_remove = None;
         }
+        if action != Action::RemoveProfile {
+            self.confirm_remove_profile = false;
+        }
+        // A tap anywhere but the name field keeps the name typed so far.
+        if action != Action::RenameProfile {
+            self.finish_rename();
+        }
+        let failed = |boot: &mut Self, e: std::io::Error| {
+            log::warn!("Horizon: the launcher's profiles: {e}");
+            note(boot, "horizon.launcher.profile.failed");
+        };
         match action {
             Action::Play => {
                 if matches!(self.ctrl.phase, Phase::Choose) {
@@ -1317,6 +1408,47 @@ impl Boot {
                 }
             }
             Action::Setting(Setting::Accounts) => page(self, Page::Accounts),
+            Action::PickProfile(i) => {
+                if let Err(e) = self.profiles.select(i) {
+                    failed(self, e);
+                }
+                self.use_profile();
+                page(self, Page::Home);
+            }
+            Action::NewProfile => {
+                let name = lang::tr(
+                    "horizon.launcher.profiles.new_name",
+                    &[&(self.profiles.list.len() + 1)],
+                );
+                match self.profiles.create(&name) {
+                    Ok(_) => {
+                        self.use_profile();
+                        // Straight to its name, the keyboard up.
+                        page(self, Page::EditProfile);
+                        self.renaming = Some(name);
+                        self.keyboard_for = None;
+                    }
+                    Err(e) => failed(self, e),
+                }
+            }
+            Action::RenameProfile => {
+                if self.renaming.is_none() {
+                    self.renaming = Some(self.profile_name(self.profiles.current));
+                }
+                self.keyboard_for = None;
+            }
+            Action::RemoveProfile => {
+                if !self.confirm_remove_profile {
+                    self.confirm_remove_profile = true;
+                } else {
+                    self.confirm_remove_profile = false;
+                    if let Err(e) = self.profiles.remove(self.profiles.current) {
+                        failed(self, e);
+                    }
+                    self.use_profile();
+                    page(self, Page::Home);
+                }
+            }
             Action::ShareLog => {
                 let path = self.game_dir.join("logs").join("latest.log");
                 match std::fs::read(&path) {
@@ -1332,6 +1464,7 @@ impl Boot {
                 }
             }
             Action::Setting(Setting::GraphicsApi) => {
+                let options = self.options_path();
                 use horizon_client::graphics::GraphicsApi;
                 let choices = GraphicsApi::choices();
                 let at = choices
@@ -1339,15 +1472,12 @@ impl Boot {
                     .position(|a| *a == self.settings.horizon.api)
                     .unwrap_or(0);
                 self.settings.horizon.api = choices[(at + 1) % choices.len()];
-                self.settings.save(&self.game_dir.join("options.txt"));
+                self.settings.save(&options);
             }
             Action::Setting(Setting::About) => note(self, "horizon.launcher.about.note"),
-            Action::Mods
-            | Action::Controls
-            | Action::OpenFolder
-            | Action::Profiles
-            | Action::EditProfile
-            | Action::Setting(_) => note(self, "horizon.launcher.soon.note"),
+            Action::Mods | Action::Controls | Action::OpenFolder | Action::Setting(_) => {
+                note(self, "horizon.launcher.soon.note")
+            }
         }
         if let Some(window) = &self.window {
             window.request_redraw();
@@ -1427,6 +1557,13 @@ impl Boot {
             }
             _ => None,
         };
+        // The launcher's profile name, while the player types it.
+        let wanted = match &self.renaming {
+            Some(name) if self.launcher_flow().is_none() => {
+                Some((KeyboardFor::Profile, name.clone(), Mode::Text))
+            }
+            _ => wanted,
+        };
         match wanted {
             Some((field, text, mode)) => {
                 if self.keyboard_for != Some(field) {
@@ -1443,6 +1580,10 @@ impl Boot {
         }
         for edit in horizon_client::system_keyboard::poll(false) {
             use horizon_client::system_keyboard::Edit;
+            if self.keyboard_for == Some(KeyboardFor::Profile) {
+                self.type_profile_name(edit);
+                continue;
+            }
             let action = match edit {
                 Edit::Text(text) => BootAction::Typed(Output::Text(text)),
                 Edit::Backspace => BootAction::Typed(Output::Backspace),
@@ -1452,17 +1593,44 @@ impl Boot {
         }
     }
 
+    /// A key of the system keyboard into the profile's name; Enter keeps it.
+    fn type_profile_name(&mut self, edit: horizon_client::system_keyboard::Edit) {
+        use horizon_client::system_keyboard::Edit;
+        let Some(name) = self.renaming.as_mut() else {
+            return;
+        };
+        match edit {
+            Edit::Text(text) => {
+                let room = horizon_client::profiles::NAME_MAX.saturating_sub(name.chars().count());
+                name.extend(text.chars().filter(|c| !c.is_control()).take(room));
+            }
+            Edit::Backspace => {
+                name.pop();
+            }
+            Edit::Enter => self.finish_rename(),
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
     /// Start the game: write the fresh session file, close this screen's window and renderer (the
     /// game makes its own in `resumed`), hand the sink over, run the host's `start`, then take the
     /// app and run it on this loop.
     fn start_game(&mut self, event_loop: &ActiveEventLoop) {
+        let player = self.profiles.player_dir();
+        let player = player.as_deref();
         let args = match &self.ctrl.phase {
             Phase::Signed { account, .. } => {
                 let path = self.session_dir.join("session.json");
                 match write_session(&path, &account.session_json()) {
-                    Ok(()) => {
-                        game_args(&self.game_dir, &self.resources, Some(path.as_path()), None)
-                    }
+                    Ok(()) => game_args(
+                        &self.game_dir,
+                        &self.resources,
+                        player,
+                        Some(path.as_path()),
+                        None,
+                    ),
                     Err(e) => {
                         self.error = Some(format!("session file {}: {e}", path.display()).into());
                         event_loop.exit();
@@ -1473,12 +1641,17 @@ impl Boot {
             Phase::SavedOffline { stored } => game_args(
                 &self.game_dir,
                 &self.resources,
+                player,
                 None,
                 Some(stored.name.as_str()),
             ),
-            Phase::Offline { name } => {
-                game_args(&self.game_dir, &self.resources, None, Some(name.as_str()))
-            }
+            Phase::Offline { name } => game_args(
+                &self.game_dir,
+                &self.resources,
+                player,
+                None,
+                Some(name.as_str()),
+            ),
             _ => return,
         };
         // The game opens its own window: this one goes first, the renderer before the window it
@@ -1946,7 +2119,7 @@ mod tests {
         let res = Path::new("/game/resources");
         let session = Path::new("/game/session.json");
         assert_eq!(
-            game_args(dir, res, Some(session), None),
+            game_args(dir, res, None, Some(session), None),
             vec![
                 "--game-dir",
                 "/game",
@@ -1957,7 +2130,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            game_args(dir, res, None, Some("Steve")),
+            game_args(dir, res, None, None, Some("Steve")),
             vec![
                 "--game-dir",
                 "/game",
@@ -1965,6 +2138,17 @@ mod tests {
                 "/game/resources",
                 "--name",
                 "Steve"
+            ]
+        );
+        assert_eq!(
+            game_args(dir, res, Some(Path::new("/game/profiles/1")), None, None),
+            vec![
+                "--game-dir",
+                "/game",
+                "--resources",
+                "/game/resources",
+                "--player-dir",
+                "/game/profiles/1",
             ]
         );
     }
