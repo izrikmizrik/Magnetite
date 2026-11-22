@@ -457,6 +457,10 @@ impl BootScreen {
 
     /// The room the on-screen keyboard will take, which the form keeps out of.
     fn keyboard_room(&self, h: f32) -> f32 {
+        // The platform's own keyboard types instead (`system_keyboard`): no keys drawn here.
+        if crate::system_keyboard::platform_keyboard() {
+            return 0.0;
+        }
         if matches!(
             self.state,
             BootState::Ely { .. } | BootState::OfflineName { .. }

@@ -18,7 +18,7 @@ horizon-mod-host = { path = "../horizon-mod-host", default-features = false, fea
 # The refresh-secret store the boot loop keeps (a private file in Application Support).
 horizon-account = { path = "../horizon-account" }
 
-# Safari and the idle timer (UIApplication). The bindings winit already lays down for this target:
+# Safari, the idle timer (UIApplication) and the clipboard (UIPasteboard). The bindings winit already lays down for this target:
 # UIKit's generated methods need the matching objc2 0.5 runtime, and `block2` is what
 # `openURL:options:completionHandler:` takes (a nil handler, so no block outlives the call).
 [target.'cfg(target_os = "ios")'.dependencies.objc2]
@@ -32,7 +32,7 @@ features = ["std", "NSThread", "NSString", "NSURL", "NSDictionary"]
 [target.'cfg(target_os = "ios")'.dependencies.objc2-ui-kit]
 version = "0.2.2"
 default-features = false
-features = ["std", "block2", "UIApplication", "UIResponder"]
+features = ["std", "block2", "UIApplication", "UIResponder", "UIPasteboard"]
 
 [lints]
 workspace = true

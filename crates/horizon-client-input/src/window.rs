@@ -1207,3 +1207,6 @@ mod tests {
         assert_eq!(RUNS.load(Ordering::Relaxed), 1);
     }
 }
+
+/// The platform's own keyboard (`system_keyboard`), given by the host like its event loop.
+pub use crate::system_keyboard::{PlatformKeyboard, set_platform_keyboard};

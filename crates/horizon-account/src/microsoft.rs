@@ -30,6 +30,37 @@ impl std::fmt::Debug for DeviceCode {
     }
 }
 
+impl DeviceCode {
+    /// The code as JSON, for a host that may be ended while the player is at the page (Android
+    /// unloads a backgrounded app): kept in a private file, it lets the next start wait for the
+    /// same approval. It holds the device code, which buys tokens once the player approves and
+    /// until it expires: keep it like the refresh secret.
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "user_code": self.user_code,
+            "verification_uri": self.verification_uri,
+            "interval": self.interval,
+            "expires_at": self.expires_at,
+            "device_code": self.device_code,
+        })
+        .to_string()
+    }
+
+    /// A kept code ([`DeviceCode::to_json`]) with at least a minute left; `None` for one that
+    /// expired or is unreadable.
+    pub fn from_json(text: &str) -> Option<Self> {
+        let v: Value = serde_json::from_str(text).ok()?;
+        let code = Self {
+            user_code: str_field(&v, "user_code")?,
+            verification_uri: str_field(&v, "verification_uri")?,
+            interval: v.get("interval")?.as_u64()?.clamp(1, 60),
+            expires_at: v.get("expires_at")?.as_u64()?,
+            device_code: str_field(&v, "device_code")?,
+        };
+        (code.expires_at > now().saturating_add(60)).then_some(code)
+    }
+}
+
 /// The Microsoft tokens; the access token only lasts for the Xbox step.
 pub struct MsTokens {
     pub access: String,

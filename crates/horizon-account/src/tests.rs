@@ -34,6 +34,20 @@ fn device_code_answer() {
 }
 
 #[test]
+fn a_kept_device_code_comes_back_until_it_is_about_to_expire() {
+    let v =
+        json!({"user_code": "ABCD-EFGH", "device_code": "dev-1", "expires_in": 900, "interval": 5});
+    let code = microsoft::parse_device_code(200, &v).unwrap();
+    let back = DeviceCode::from_json(&code.to_json()).unwrap();
+    assert_eq!(back, code);
+    // Under a minute left: the next start asks for a new code instead.
+    let v = json!({"user_code": "C", "device_code": "d", "expires_in": 30});
+    let short = microsoft::parse_device_code(200, &v).unwrap();
+    assert!(DeviceCode::from_json(&short.to_json()).is_none());
+    assert!(DeviceCode::from_json("not json").is_none());
+}
+
+#[test]
 fn token_answer_and_poll_errors() {
     let tokens = microsoft::ms_tokens(
         200,

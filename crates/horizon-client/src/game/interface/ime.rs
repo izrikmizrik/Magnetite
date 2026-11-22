@@ -47,6 +47,9 @@ impl Game<'_> {
     /// Allow the input method only while a text box has focus.
     pub(super) fn sync_ime(&mut self) {
         let want = self.text_field_focused();
+        if horizon_client::system_keyboard::platform_keyboard() {
+            self.sync_system_keyboard(want);
+        }
         if want != self.ime_allowed
             && let Some(window) = &self.window
         {
@@ -58,6 +61,31 @@ impl Game<'_> {
             if !want {
                 preedit::reset();
             }
+        }
+    }
+
+    /// The platform's own keyboard (`system_keyboard`, Android): up while a text box has focus,
+    /// starting from chat's line where that is the box, and what it typed into the box as the
+    /// on-screen keyboard's keys (`pad_osk_output`). A page of a book keeps its line breaks.
+    fn sync_system_keyboard(&mut self, want: bool) {
+        use horizon_client::{osk::Output, system_keyboard as keyboard};
+        if want && !keyboard::shown() {
+            let text = match (&self.screen, self.ui.chat_screen.as_ref()) {
+                (Screen::Chat, Some(chat)) => chat.value().to_owned(),
+                _ => String::new(),
+            };
+            keyboard::show(&text, false);
+        } else if !want && keyboard::shown() {
+            keyboard::hide();
+            return;
+        }
+        let multiline = self.book.is_some();
+        for edit in keyboard::poll(multiline) {
+            self.pad_osk_output(match edit {
+                keyboard::Edit::Text(text) => Output::Text(text),
+                keyboard::Edit::Backspace => Output::Backspace,
+                keyboard::Edit::Enter => Output::Done,
+            });
         }
     }
 

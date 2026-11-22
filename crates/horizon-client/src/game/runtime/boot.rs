@@ -195,12 +195,20 @@ fn write_session(path: &Path, json: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The Microsoft code the player was asked to type, kept in the session folder while the game
+/// waits for the approval: Android unloads a backgrounded app, and the next start waits for the
+/// same approval instead of asking for a new code (`DeviceCode::to_json`).
+const PENDING_CODE: &str = "pending-sign-in.json";
+
 /// A thread to run, or the game to start. The controller asks; [`Boot`] does.
 enum Job {
     /// Sign a kept account in again.
     Resume(Stored),
     /// Microsoft's device code, then the wait for the player.
     Microsoft,
+    /// The wait for the player on a code the last start asked for and kept (`PENDING_CODE`): the
+    /// app was unloaded while the player was at the page.
+    MicrosoftKept(DeviceCode),
     /// Ely.by authenticate.
     Ely {
         login: String,
@@ -220,6 +228,13 @@ enum Event {
     SignIn(std::result::Result<Account, String>),
     Ely(std::result::Result<Account, String>),
     Install(std::result::Result<(), String>),
+}
+
+/// The field the platform's keyboard is up for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyboardFor {
+    Ely(ElyField),
+    Offline,
 }
 
 /// The Ely.by form's values: the controller keeps them, never the screen. The password is used
@@ -712,6 +727,9 @@ struct Boot {
     pointer: (f64, f64),
     clipboard: SystemClipboard,
     awake: bool,
+    /// The field the platform's keyboard was shown for (`sync_system_keyboard`); `None` when it
+    /// is down, or must be shown again (a tap on a field).
+    keyboard_for: Option<KeyboardFor>,
     drawn: u64,
     /// The game's app once it is handed over: every event goes to it from then on.
     app: Option<App>,
@@ -754,11 +772,13 @@ impl Boot {
             pointer: (0.0, 0.0),
             clipboard: SystemClipboard::default(),
             awake: false,
+            keyboard_for: None,
             drawn: 0,
             app: None,
             error: None,
         };
         boot.resume_saved();
+        boot.resume_pending_code();
         boot
     }
 
@@ -790,6 +810,26 @@ impl Boot {
         }
     }
 
+    /// With no kept account, a Microsoft code the last start was waiting on and kept
+    /// (`PENDING_CODE`): the wait goes on, the code still on the screen.
+    fn resume_pending_code(&mut self) {
+        let path = self.session_dir.join(PENDING_CODE);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let code = DeviceCode::from_json(&text);
+        let Some(code) = code.filter(|_| {
+            matches!(self.ctrl.phase, Phase::Choose) && self.ctrl.client_id.is_some()
+        }) else {
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
+        log::info!("Horizon: waiting again for the Microsoft sign-in the last start began");
+        self.ctrl.begin_attempt();
+        self.ctrl.phase = Phase::Code { code: code.clone() };
+        self.run_job(Job::MicrosoftKept(code));
+    }
+
     fn try_spawn(&self, name: &str, job: impl FnOnce() + Send + 'static) -> bool {
         match std::thread::Builder::new().name(name.to_owned()).spawn(job) {
             Ok(_) => true,
@@ -818,21 +858,38 @@ impl Boot {
                         .send((attempt, Event::Resume(Err("no resume thread".into()))));
                 }
             }
-            Job::Microsoft => {
+            job @ (Job::Microsoft | Job::MicrosoftKept(_)) => {
+                let kept = match job {
+                    Job::MicrosoftKept(code) => Some(code),
+                    _ => None,
+                };
                 let ep = self.ep.clone();
                 let id = self.ctrl.client_id.clone().unwrap_or_default();
                 let current = self.ctrl.attempt.clone();
+                let pending = self.session_dir.join(PENDING_CODE);
                 if !self.try_spawn("Microsoft sign-in", move || {
-                    let code = match device_code(&ep, &id) {
+                    let code = match kept.map_or_else(|| device_code(&ep, &id), Ok) {
                         Ok(code) => code,
                         Err(e) => {
                             let _ = tx.send((attempt, Event::SignIn(Err(e))));
                             return;
                         }
                     };
+                    // Kept while the player is at the page; gone once the wait ends either way.
+                    if let Err(e) = write_session(&pending, &code.to_json()) {
+                        log::warn!("Horizon: the sign-in code is not kept: {e}");
+                    }
                     let _ = tx.send((attempt, Event::Code(Ok(code.clone()))));
                     let cancelled = || current.load(Ordering::SeqCst) != attempt;
                     let result = sign_in(&ep, &id, &code, &cancelled);
+                    // A newer attempt's code stays: only this one's goes.
+                    let theirs = std::fs::read_to_string(&pending)
+                        .ok()
+                        .and_then(|text| DeviceCode::from_json(&text))
+                        .is_some_and(|kept| kept.user_code != code.user_code);
+                    if !theirs {
+                        let _ = std::fs::remove_file(&pending);
+                    }
                     let _ = tx.send((attempt, Event::SignIn(result)));
                 }) {
                     let _ = self
@@ -955,16 +1012,71 @@ impl Boot {
                 }
             }
             other => {
-                let jobs = self.ctrl.action(other);
-                self.drain_side_effects();
-                for job in jobs {
-                    if matches!(job, Job::Start) {
-                        self.start_game(event_loop);
-                    } else {
-                        self.run_job(job);
-                    }
+                // A tap on a field brings the platform's keyboard back up, even for the field it
+                // was last shown for (the player may have closed it).
+                if matches!(other, BootAction::FocusField(_)) {
+                    self.keyboard_for = None;
+                }
+                self.act(event_loop, other);
+            }
+        }
+    }
+
+    /// A screen action through the controller, and the jobs it names.
+    fn act(&mut self, event_loop: &ActiveEventLoop, action: BootAction) {
+        let jobs = self.ctrl.action(action);
+        self.drain_side_effects();
+        for job in jobs {
+            if matches!(job, Job::Start) {
+                self.start_game(event_loop);
+            } else {
+                self.run_job(job);
+            }
+        }
+    }
+
+    /// The platform's own keyboard (`system_keyboard`), where the host gave one: up over the
+    /// field that has focus, with that field's text, and what it typed into the field. Enter
+    /// sends the form.
+    fn sync_system_keyboard(&mut self, event_loop: &ActiveEventLoop) {
+        if !horizon_client::system_keyboard::platform_keyboard() || self.app.is_some() {
+            return;
+        }
+        let wanted = match &self.ctrl.phase {
+            Phase::Ely(form) => Some((
+                KeyboardFor::Ely(form.focus),
+                match form.focus {
+                    ElyField::Login => form.login.clone(),
+                    ElyField::Password => form.password.clone(),
+                    ElyField::Otp => form.otp.clone().unwrap_or_default(),
+                },
+                form.focus == ElyField::Password,
+            )),
+            Phase::OfflineName { name, .. } => Some((KeyboardFor::Offline, name.clone(), false)),
+            _ => None,
+        };
+        match wanted {
+            Some((field, text, secret)) => {
+                if self.keyboard_for != Some(field) {
+                    horizon_client::system_keyboard::show(&text, secret);
+                    self.keyboard_for = Some(field);
                 }
             }
+            None => {
+                if self.keyboard_for.take().is_some() {
+                    horizon_client::system_keyboard::hide();
+                }
+                return;
+            }
+        }
+        for edit in horizon_client::system_keyboard::poll(false) {
+            use horizon_client::system_keyboard::Edit;
+            let action = match edit {
+                Edit::Text(text) => BootAction::Typed(Output::Text(text)),
+                Edit::Backspace => BootAction::Typed(Output::Backspace),
+                Edit::Enter => BootAction::Submit,
+            };
+            self.act(event_loop, action);
         }
     }
 
@@ -1038,8 +1150,12 @@ impl ApplicationHandler for Boot {
         if let Some(app) = &mut self.app {
             return app.resumed(event_loop);
         }
+        // Back from the background the platform's keyboard is down: shown again for the field.
+        self.keyboard_for = None;
         if let Some(window) = &self.window {
-            // Back from the background: the window stayed, its surface is made again.
+            // Back from the background: the window stayed, its surface is made again, and the
+            // screen drawn on it at once (a sign-in may have finished meanwhile).
+            window.request_redraw();
             if let Some(renderer) = self.renderer.as_mut().filter(|r| r.suspended) {
                 if let Err(error) = renderer.recreate_surface() {
                     log::error!("The window's surface could not be made again: {error}");
@@ -1138,6 +1254,7 @@ impl ApplicationHandler for Boot {
             event_loop.exit();
             return;
         }
+        self.sync_system_keyboard(event_loop);
         while let Ok((attempt, event)) = self.rx.try_recv() {
             let jobs = self.ctrl.apply(attempt, event);
             self.drain_side_effects();

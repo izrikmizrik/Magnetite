@@ -122,6 +122,17 @@ pub trait Clipboard {
     fn set(&mut self, text: &str);
 }
 
+/// The platform's own clipboard, given by a host that has one arboard can't reach (Android's
+/// `ClipboardManager`, iOS's `UIPasteboard`): read, then write.
+type PlatformClipboard = (fn() -> Option<String>, fn(&str));
+
+static PLATFORM: std::sync::OnceLock<PlatformClipboard> = std::sync::OnceLock::new();
+
+/// Give the game the platform's clipboard, before the game starts. The first call wins.
+pub fn set_platform_clipboard(get: fn() -> Option<String>, set: fn(&str)) {
+    let _ = PLATFORM.set((get, set));
+}
+
 /// The system clipboard (`ClipboardManager`). On Wayland, arboard uses the
 /// data-control protocol and falls back to X11 (XWayland) on compositors
 /// without it. When no system clipboard can be reached, text copied in the
@@ -152,6 +163,9 @@ impl SystemClipboard {
     }
     /// `KeyboardHandler.getClipboard`: empty when there is no text.
     pub fn text(&self) -> String {
+        if let Some((get, _)) = PLATFORM.get() {
+            return get().unwrap_or_else(|| self.copied().unwrap_or_default());
+        }
         #[cfg(any(target_os = "android", target_os = "ios"))]
         return self.copied().unwrap_or_default();
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -177,6 +191,10 @@ impl SystemClipboard {
             return;
         }
         *self.copied.borrow_mut() = Some(text.to_owned());
+        if let Some((_, set)) = PLATFORM.get() {
+            set(text);
+            return;
+        }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             let mut system = self.system();

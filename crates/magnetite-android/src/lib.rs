@@ -8,10 +8,13 @@
 //! controls and the in-game launcher come in later stages.
 #![cfg(target_os = "android")]
 
+mod clipboard;
+mod ime;
+
 use std::sync::OnceLock;
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
-use winit::platform::android::activity::{AndroidApp, WindowManagerFlags};
+use winit::platform::android::activity::{AndroidApp, OnCreateState, WindowManagerFlags};
 
 /// The logcat sink. The core's own logger stays the process logger (its log file and crash
 /// reports); every line it keeps is also written here (`logging::set_platform_sink`).
@@ -145,6 +148,28 @@ impl Drop for ExitOnReturn {
     }
 }
 
+/// android-activity's optional onCreate entry point: the Java UI thread, before `android_main`.
+/// The keyboard's hidden EditText belongs to that thread (View operations check their thread),
+/// so its initialize runs here, as the fork's `android_on_create` does. A panic inside this JNI
+/// callback would abort the process, so it is caught and logged instead.
+#[unsafe(no_mangle)]
+fn android_on_create(state: &OnCreateState<'_>) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        ime::initialize(state.vm_as_ptr().cast(), state.activity_as_ptr().cast())
+    }));
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => early(
+            log::Level::Error,
+            &format!("Android system keyboard initialization: {error}"),
+        ),
+        Err(_) => early(
+            log::Level::Error,
+            "Android system keyboard initialization panicked",
+        ),
+    }
+}
+
 /// android-activity's entry point.
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -198,6 +223,15 @@ fn android_main(app: AndroidApp) {
             horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
         }),
     };
+    // The platform's keyboard and clipboard for the core, as the iOS host gives them: the
+    // hidden EditText the system keyboard types into, and the ClipboardManager.
+    horizon_client::window::set_platform_keyboard(horizon_client::window::PlatformKeyboard {
+        show: ime::show,
+        hide: ime::hide,
+        text: ime::text,
+        set_text: ime::set_text,
+    });
+    horizon_client::clipboard::set_platform_clipboard(clipboard::get, clipboard::set);
     if let Err(error) = horizon_client::boot::run(config) {
         early(
             log::Level::Error,

@@ -18,6 +18,8 @@ fn main() {
     });
     // UIKit's window is the screen; its inner area is the safe area, and touches come in points.
     horizon_client::window::set_outer_is_screen(true);
+    // The system clipboard: the sign-in code and the game's copy and paste.
+    horizon_client::clipboard::set_platform_clipboard(clipboard_get, clipboard_set);
     let Some(container) = std::env::var_os("HOME").map(PathBuf::from) else {
         eprintln!("Magnetite: iOS gave the app no container folder");
         return;
@@ -91,6 +93,25 @@ fn open_link(url: &str) {
     unsafe {
         app.openURL_options_completionHandler(&link, &options, None);
     }
+}
+
+/// The general pasteboard's text (`UIPasteboard.generalPasteboard.string`).
+#[cfg(target_os = "ios")]
+fn clipboard_get() -> Option<String> {
+    use objc2_ui_kit::UIPasteboard;
+    // SAFETY: UIKit's documented class method and property; the pasteboard is thread-safe.
+    let text = unsafe { UIPasteboard::generalPasteboard().string() }?;
+    Some(text.to_string())
+}
+
+/// Puts `text` on the general pasteboard.
+#[cfg(target_os = "ios")]
+fn clipboard_set(text: &str) {
+    use objc2_foundation::NSString;
+    use objc2_ui_kit::UIPasteboard;
+    let text = NSString::from_str(text);
+    // SAFETY: UIKit's documented class method and setter, with a string this call owns.
+    unsafe { UIPasteboard::generalPasteboard().setString(Some(&text)) };
 }
 
 /// Keeps the screen on while the files download (`UIApplication.idleTimerDisabled`).
