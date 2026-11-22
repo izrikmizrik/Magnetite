@@ -800,11 +800,7 @@ impl Opt {
                 "options.textureFiltering.rgss",
                 "options.textureFiltering.anisotropic",
             ][s.file.int("textureFiltering").clamp(0, 2) as usize]),
-            Opt::GraphicsBackend => tr(match s.horizon.api {
-                crate::graphics::GraphicsApi::OpenGl => "options.graphicsApi.opengl",
-                crate::graphics::GraphicsApi::Vulkan => "options.graphicsApi.vulkan",
-                _ => "options.graphicsApi.default",
-            }),
+            Opt::GraphicsBackend => tr(s.horizon.api.label_key()),
             Opt::SmoothLighting => on_off(s.smooth_lighting),
             Opt::Clouds => tr(match s.clouds.as_str() {
                 "false" => "options.off",
@@ -1371,10 +1367,20 @@ fn graphics_api_tooltip(s: &Settings) -> Text {
         lines.push(line("options.needsRestart"));
         lines.push(String::new());
     }
+    if crate::graphics::GraphicsApi::choices().len() < 2 {
+        // Apple systems draw with Metal only: nothing to choose.
+        lines.push(line("horizon.options.graphicsApi.metalOnly"));
+        return Text::literal(lines.join("\n"));
+    }
     lines.push(line("options.graphicsApi.tooltip"));
     if s.horizon.api == crate::graphics::GraphicsApi::Vulkan {
         lines.push(String::new());
         lines.push(line("options.graphicsApi.tooltip.vulkan"));
+    }
+    if cfg!(target_os = "android") {
+        // OpenGL ES, and the switch the game makes itself after a crash (`graphics::RENDER_MARKER`).
+        lines.push(String::new());
+        lines.push(line("horizon.options.graphicsApi.tooltip.opengles"));
     }
     Text::literal(lines.join("\n"))
 }

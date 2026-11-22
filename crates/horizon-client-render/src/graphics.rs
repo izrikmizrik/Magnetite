@@ -351,6 +351,17 @@ impl GraphicsApi {
             GraphicsApi::OpenGl => "OpenGL",
         }
     }
+    /// The setting's label key in the options: OpenGL is OpenGL ES on Android.
+    pub fn label_key(self) -> &'static str {
+        match self {
+            GraphicsApi::OpenGl if cfg!(target_os = "android") => {
+                "horizon.options.graphicsApi.opengles"
+            }
+            GraphicsApi::OpenGl => "options.graphicsApi.opengl",
+            GraphicsApi::Vulkan => "options.graphicsApi.vulkan",
+            _ => "options.graphicsApi.default",
+        }
+    }
     /// The API a name stands for, ignoring case; `None` for anything else.
     pub fn from_name(s: &str) -> Option<Self> {
         Self::ALL
