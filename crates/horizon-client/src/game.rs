@@ -4,8 +4,12 @@ use key_codes::{
     container_key_clones, drop_held_behind_dialog, follow_named_keymap, gameplay_has_keyboard,
     glfw_button, glfw_modifiers, keyboard_button,
 };
+/// The application a host that owns the process's event loop runs, and the seam that hands it
+/// over: a phone starts the one `EventLoop` winit allows on the activity it was handed, and the
+/// game then runs inside that loop instead of opening its own (`docs/unification/mobile-boot.md`).
+pub use loading_screen::{App, set_app_sink, take_app_sink};
 use loading_screen::{
-    App, Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
+    Loading, leave_fullscreen_after, missing_resources, run_event_loop, unclean_start_recovery,
 };
 use motion_ids::{motion_at, motion_block_entity};
 use resource_load::{Progress, launch_world, load_resources, named_scope, synchronous_startup};
@@ -11278,9 +11282,13 @@ pub(crate) fn run_with(
     } else {
         Audio::with_device(&loaded.pack.source, &early_settings.sound_device)
     };
-    let resources = loaded.resources;
+    // The game borrows its shared resources for the process's lifetime, as the
+    // ordinary launch's handoff keeps them (`Loading::finish`: "the single copy
+    // an integrated server would share"): a host that owns the event loop runs
+    // the app, `Game` and all, until the process ends.
+    let resources: &'static Arc<Resources> = Box::leak(Box::new(loaded.resources));
     let game = start_game(
-        &resources,
+        resources,
         loaded.pack,
         gui,
         options,

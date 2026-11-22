@@ -19,7 +19,7 @@ pub(super) fn leave_fullscreen_after(
     }
 }
 
-pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
+pub(super) fn run_event_loop(mut game: Game<'static>) -> Result<()> {
     if game.options.headless {
         // No display to open winit's loop on: the game's own loop.
         game.run_headless();
@@ -32,9 +32,19 @@ pub(super) fn run_event_loop(mut game: Game<'_>) -> Result<()> {
         }
         return result;
     }
-    let mut split = split::Split::new(game);
-    let result = horizon_client::window::new_event_loop()?.run_app(&mut split);
-    game = split.host;
+    let mut app = App::Ready(Box::new(split::Split::new(game)));
+    if let Some(sink) = take_app_sink() {
+        // The caller owns the process's one event loop (a phone starts it on the activity it was
+        // handed): the app runs there, and the report is the caller's too.
+        sink(app);
+        return Ok(());
+    }
+    let result = horizon_client::window::new_event_loop()?.run_app(&mut app);
+    let App::Ready(split) = app else {
+        // Nothing else wraps a running game here.
+        return result.map_err(Into::into);
+    };
+    game = (*split).host;
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     let result = result
@@ -91,7 +101,16 @@ impl Loading {
             || self.ui_at.is_none_or(|at| at.elapsed() >= TITLE_FRAME_WAIT)
     }
     pub(super) fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background: the window stayed, its surface is made again.
+            if let Some(renderer) = self.renderer.as_mut().filter(|r| r.suspended) {
+                if let Err(error) = renderer.recreate_surface() {
+                    log::error!("The window's surface could not be made again: {error}");
+                } else {
+                    let size = window.inner_size();
+                    renderer.resize(size.width, size.height);
+                }
+            }
             return;
         }
         // The Window constructor: created fullscreen when options.txt or --fullscreen says so.
@@ -187,6 +206,13 @@ impl Loading {
         }
 
         self.window = Some(window);
+    }
+    /// The app went to the background (phones: winit sends this on Android and iOS only). The
+    /// loading screen's surface goes; the loader on its worker carries on.
+    pub(super) fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.suspend_surface();
+        }
     }
     pub(super) fn window_event(
         &mut self,
@@ -425,22 +451,66 @@ impl Loading {
 }
 
 /// The application: the loading screen until the resources are ready, then
-/// the game itself, on the same event loop and window.
-pub(super) enum App {
+/// the game itself, on the same event loop and window; without prepared files,
+/// the screen that says where to get them. A host takes it whole and forwards
+/// its events; its phases stay the engine's.
+#[allow(
+    private_interfaces,
+    reason = "a host runs the app for `ApplicationHandler`'s events; it never names a phase"
+)]
+pub enum App {
     Loading(Box<Loading>),
     Ready(Box<split::Split<'static>>),
+    Missing(Box<no_resources::Missing>),
 }
+
+/// `None` until a sink is given; `Some(None)` once it was taken. A process has one event loop, so
+/// the caller takes the app at most once.
+type AppSinkSlot = std::sync::Mutex<Option<Option<fn(App)>>>;
+
+static APP_SINK: std::sync::OnceLock<AppSinkSlot> = std::sync::OnceLock::new();
+
+/// Where the app goes when the caller owns the event loop: a phone starts the process's one loop
+/// on the activity it was handed, and the app then runs in that loop instead of one opened here. A
+/// second call keeps the first sink; none is taken after the app was given.
+pub fn set_app_sink(sink: fn(App)) {
+    let slot = APP_SINK.get_or_init(|| std::sync::Mutex::new(None));
+    let mut given = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if given.is_none() {
+        *given = Some(Some(sink));
+    }
+}
+
+/// The sink given to [`set_app_sink`], if one was given and is not used yet: the app runs in the
+/// caller's event loop.
+pub fn take_app_sink() -> Option<fn(App)> {
+    let slot = APP_SINK.get()?;
+    let mut given = slot.lock().unwrap_or_else(|e| e.into_inner());
+    given.as_mut()?.take()
+}
+
 impl ApplicationHandler for App {
+    /// The app went to the background (phones: winit sends this on Android and iOS only). The
+    /// surface goes, in whichever phase the app is.
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        match self {
+            App::Loading(loading) => loading.suspended(event_loop),
+            App::Ready(game) => game.suspended(event_loop),
+            App::Missing(missing) => missing.suspended(event_loop),
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         match self {
             App::Loading(loading) => loading.resumed(event_loop),
             App::Ready(game) => game.resumed(event_loop),
+            App::Missing(missing) => missing.resumed(event_loop),
         }
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match self {
             App::Loading(loading) => loading.window_event(event_loop, id, event),
             App::Ready(game) => game.window_event(event_loop, id, event),
+            App::Missing(missing) => missing.window_event(event_loop, id, event),
         }
     }
     fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
@@ -458,6 +528,10 @@ impl ApplicationHandler for App {
         let step = match self {
             App::Ready(game) => {
                 game.about_to_wait(event_loop);
+                return;
+            }
+            App::Missing(missing) => {
+                missing.about_to_wait(event_loop);
                 return;
             }
             App::Loading(loading) => {

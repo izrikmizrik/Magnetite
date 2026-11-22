@@ -598,6 +598,17 @@ impl<'a> Split<'a> {
 }
 
 impl ApplicationHandler for Split<'_> {
+    /// The app went to the background: P1's and every other player's surface go with it, each
+    /// player in its turn.
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        for i in 0..self.players() {
+            if let Some((player, _)) = self.player(i) {
+                player.suspended(event_loop);
+            }
+        }
+        self.turn(0);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.host.resumed(event_loop);
         if !self.surfaces.is_empty() {

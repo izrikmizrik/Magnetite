@@ -1,5 +1,26 @@
 use super::*;
 
+/// A sink is the game's once: a second one is refused, and none comes back after the first was
+/// taken. A process has one event loop, and the app runs in the caller's it is handed to.
+#[test]
+fn the_app_sink_is_registered_once_and_taken_once() {
+    fn first(_app: App) {}
+    fn second(_app: App) {}
+    fn later(_app: App) {}
+    assert!(take_app_sink().is_none(), "none given yet");
+    set_app_sink(first);
+    // The first sink stays the game's; the second is never the one taken.
+    set_app_sink(second);
+    let taken = take_app_sink().expect("the sink given");
+    assert!(
+        std::ptr::fn_addr_eq(taken, first as fn(App)),
+        "the first sink is the game's, not a later one"
+    );
+    assert!(take_app_sink().is_none(), "taken once");
+    set_app_sink(later);
+    assert!(take_app_sink().is_none(), "not after the app was given");
+}
+
 #[test]
 fn a_folder_without_prepared_files_is_named_before_loading() {
     let root = std::env::temp_dir().join(format!("horizon-unprepared-{}", std::process::id()));

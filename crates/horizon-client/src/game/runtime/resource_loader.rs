@@ -295,12 +295,23 @@ pub(super) fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = horizon_client::window::new_event_loop()?.run_app(&mut app);
+    let result = match loading_screen::take_app_sink() {
+        // The caller owns the process's one event loop (a phone starts it on the activity it was
+        // handed): the app runs there, and this call ends once it has the app.
+        Some(sink) => {
+            sink(app);
+            return Ok(());
+        }
+        None => horizon_client::window::new_event_loop()?.run_app(&mut app),
+    };
     narrator::stop();
     match &mut app {
         // Ready: splitscreen around P1's game.
         App::Ready(split) => leave_fullscreen_after(&result, &mut split.host.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
+        // The loader started only after the prepared files were found, so the app never shows
+        // the missing-resources screen on this path; it takes no report either.
+        App::Missing(_) => {}
     }
     result?;
     match app {
@@ -315,6 +326,7 @@ pub(super) fn run_loading(
                 return Err(e);
             }
         }
+        App::Missing(_) => {}
     }
     Ok(())
 }

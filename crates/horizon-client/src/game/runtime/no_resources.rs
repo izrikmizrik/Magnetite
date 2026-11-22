@@ -6,9 +6,9 @@ use super::*;
 use horizon_client::no_resources::{Action, NoResources};
 use winit::event::MouseButton;
 
-struct Missing {
-    window: Option<Arc<Window>>,
-    renderer: Option<Renderer>,
+pub(super) struct Missing {
+    pub(super) window: Option<Arc<Window>>,
+    pub(super) renderer: Option<Renderer>,
     gui: UiResources,
     screen: NoResources,
     /// The pointer in physical pixels.
@@ -25,7 +25,7 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         &[],
         &settings.language,
     ));
-    let mut app = Missing {
+    let mut missing = Missing {
         window: None,
         renderer: None,
         gui: UiResources {
@@ -42,8 +42,14 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         error: None,
     };
 
-    horizon_client::window::new_event_loop()?.run_app(&mut app)?;
-    app.error.map_or(Ok(()), Err)
+    if let Some(sink) = loading_screen::take_app_sink() {
+        // The caller owns the process's one event loop (a phone starts it on the activity it was
+        // handed): another loop here would be a second one in the process.
+        sink(loading_screen::App::Missing(Box::new(missing)));
+        return Ok(());
+    }
+    horizon_client::window::new_event_loop()?.run_app(&mut missing)?;
+    missing.error.map_or(Ok(()), Err)
 }
 
 impl Missing {
@@ -99,8 +105,25 @@ impl Missing {
 }
 
 impl ApplicationHandler for Missing {
+    /// The app went to the background (phones: winit sends this on Android and iOS only). The
+    /// screen's surface goes; nothing else here holds the window.
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(renderer) = &mut self.renderer {
+            renderer.suspend_surface();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if let Some(window) = &self.window {
+            // Back from the background: the window stayed, its surface is made again.
+            if let Some(renderer) = self.renderer.as_mut().filter(|r| r.suspended) {
+                if let Err(error) = renderer.recreate_surface() {
+                    log::error!("The window's surface could not be made again: {error}");
+                } else {
+                    let size = window.inner_size();
+                    renderer.resize(size.width, size.height);
+                }
+            }
             return;
         }
         let attributes =

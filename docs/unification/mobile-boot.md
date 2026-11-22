@@ -44,7 +44,8 @@
 IOS стартует цикл сразу из-за watchdog (`ios_boot.rs:1-7`), игра стартует внутри цикла: `HANDED`/`hand_over` (`:16-19,34-42`), `Boot::start` (`:1106-1146`) вызывает `run_with`, забирает `App`, делает `app.resumed(event_loop)` + `ControlFlow::Poll`. В MAIN повторяем хуком из `ios-entry.md` (б.1):
 
 ```rust
-// crates/horizon-client/src/game/runtime/mod.rs
+// crates/horizon-client/src/game/runtime/loading_screen.rs (у области game/runtime нет mod.rs;
+// всё public вынесено реэкспортом `horizon_client::game::{App, set_app_sink, take_app_sink}`)
 pub fn set_app_sink(sink: fn(App));          // One-shot, как window-фабрика
 pub fn take_app_sink() -> Option<fn(App)>;
 // App сделать pub (loading_screen.rs:429), реэкспорт horizon_client::game::App
@@ -127,8 +128,8 @@ AND делает то же иначе: живой `version_manifest_v2` + пин
 
 | # | Коммит | Файлы / сигнатуры | Кто делает |
 |---|---|---|---|
-| 1 | **App sink (hand-over)** | `game/runtime/mod.rs`: `pub fn set_app_sink(fn(App))`, `pub fn take_app_sink() -> Option<fn(App)>`; `App` pub (`loading_screen.rs:429`); замены `resource_loader.rs:298`, `loading_screen.rs:37`, `no_resources.rs:45`; тест «sink получает App, цикл не открывается» | Средняя модель (механика, образец — `window.rs:730-745`) |
-| 2 | **Жизненный цикл экрана** | `fn suspended` в `Loading`/`App` (`loading_screen.rs:433`) и forwarding в `Split`; `suspend_surface` уже есть (`window_handler.rs:389`) | Средняя модель |
+| 1 | **App sink (hand-over)** | сделано: `game/runtime/loading_screen.rs` — `pub fn set_app_sink(fn(App))`, `pub fn take_app_sink() -> Option<fn(App)>`, `pub enum App` (+ `Missing`, чтобы sink закрывал и путь «нет ресурсов»); реэкспорт `horizon_client::game::{App, set_app_sink, take_app_sink}`; замены `resource_loader.rs` (`run_loading`), `loading_screen.rs` (`run_event_loop` для `Split`), `no_resources.rs` (`show`); тест `the_app_sink_is_registered_once_and_taken_once` | сделано |
+| 2 | **Жизненный цикл экрана** | сделано: `Loading::suspended` (`loading_screen.rs`) и `Loading::resumed` восстанавливает поверхность (если окно есть и `renderer.suspended` — `recreate_surface()` + `resize(inner_size)`); `App::suspended` пересылает текущей фазе; `Split::suspended` — P1 и каждому игроку по очереди; `Missing::{suspended, resumed}` по тому же образцу; `suspend_surface` уже есть (`window_handler.rs:389`) | сделано |
 | 3 | **Подключение horizon-account** | зависимость в `horizon-client/Cargo.toml`; `horizon_look::give` доступ из boot; **проверить `tools/check_layers.py`** (правило слоёв `AGENTS.md:31-35` — новый крейт должен лечь в разрешённый слой) | Средняя модель, но layers-проверка обязательна |
 | 4 | **Экран входа (статика)** | `crates/horizon-client/src/boot_screen.rs` по образцу `no_resources.rs` (layout/draw/click + тесты паритета); состояния Choose/Code/Signed/Failed/Offline; строки в `assets/horizon/lang/{en_us,ru_ru}.json`; Touch-клик (`ios_boot.rs:1240-1252`) | Средняя модель под ревью (образец с тестами есть) |
 | 5 | **Форма Ely + offline-имя + тап-OSK** | поля по образцу AND `login.rs:27-44`; тап-хиттест сетки `osk.rs`; 2FA через `NEEDS_2FA` (`ely.rs:16`) | **Аккуратно** (ввод текста на мобиле без IME — новая механика) |
