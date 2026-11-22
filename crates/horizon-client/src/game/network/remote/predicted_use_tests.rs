@@ -90,6 +90,7 @@ fn matrix(mods: mod_api::Mods) {
                         game.native_block_entity_tick(
                             &mut mod_api::BlockEntityTickReply::Changed,
                             [0, 64, 0],
+                            game.level_ref(game.lend_epoch(), game.dim.key()),
                             &mut control,
                         );
                         assert!(control.data.is_empty());
@@ -104,6 +105,7 @@ fn matrix(mods: mod_api::Mods) {
                         game.native_block_entity_tick(
                             &mut mod_api::BlockEntityTickReply::Changed,
                             [0, 64, 0],
+                            game.level_ref(game.lend_epoch(), game.dim.key()),
                             &mut control,
                         );
                         let stops = !server_only && (consumes || (path == 1 && answer == 4));

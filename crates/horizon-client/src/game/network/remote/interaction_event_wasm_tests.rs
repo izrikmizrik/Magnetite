@@ -282,6 +282,7 @@ fn matrix(mods: mod_api::Mods) {
                         game.native_block_entity_tick(
                             &mut mod_api::BlockEntityTickReply::Changed,
                             [0, 64, 0],
+                            game.level_ref(game.lend_epoch(), game.dim.key()),
                             &mut control,
                         );
                         assert!(
@@ -322,6 +323,7 @@ fn matrix(mods: mod_api::Mods) {
                         game.native_block_entity_tick(
                             &mut mod_api::BlockEntityTickReply::Changed,
                             [0, 64, 0],
+                            game.level_ref(game.lend_epoch(), game.dim.key()),
                             &mut control,
                         );
                         let expected: Vec<i32> = case

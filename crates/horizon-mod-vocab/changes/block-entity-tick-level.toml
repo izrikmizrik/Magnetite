@@ -1,0 +1,3 @@
+ids = ["hook:block_entity_tick", "type:BlockEntityTickEvent.level"]
+why = "BlockEntityTickEvent gains `level`, the level the block entity ticks in. A port no longer has to assume `minecraft:overworld` or the level in place: a cooking station ticks the same in the Nether and the End."
+migrate = "Rebuild listeners against hook version 2 and reach the world through `event.level` (its dimension is `event.level.dimension()`) instead of `host.level(\"minecraft:overworld\")`."

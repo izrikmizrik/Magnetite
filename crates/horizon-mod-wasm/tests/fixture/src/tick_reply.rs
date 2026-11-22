@@ -31,7 +31,8 @@ impl BlockEntityPart for Ticker {
         event.entity.data[1] = 999;
         event.entity.nbt.insert("discarded".into(), Tag::Int(999));
         if mode == 2 {
-            let level = host.level("minecraft:overworld").unwrap();
+            // The event names the level it ticks in: no fixed dimension.
+            let level = event.level;
             let replacement = host.block_state_id("minecraft:chest").unwrap();
             assert!(
                 level
@@ -44,7 +45,8 @@ impl BlockEntityPart for Ticker {
                     .unwrap()
             );
         } else if mode == 3 {
-            let level = host.level("minecraft:overworld").unwrap();
+            // The event names the level it ticks in: no fixed dimension.
+            let level = event.level;
             let sink = host.block_entity(level, [2, 64, 1]).unwrap();
             let value = sink.data_slots(host).unwrap()[1];
             assert!(sink.set_data_slot(host, 1, value + 1).unwrap());

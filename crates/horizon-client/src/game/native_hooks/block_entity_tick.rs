@@ -3,13 +3,15 @@ use mod_api::ModBlockEntity;
 
 impl Game<'_> {
     /// Tick the existing individual block entity moment. Unchosen replies use full write-back.
+    /// `level` is the level the block entity ticks in: its dimension is `level.dimension()`.
     pub(in crate::game) fn native_block_entity_tick(
         &mut self,
         reply: &mut mod_api::BlockEntityTickReply,
         pos: [i32; 3],
+        level: mod_api::LevelRef,
         entity: &mut ModBlockEntity,
     ) {
-        self.fire_block_entity_tick(reply, pos, entity);
+        self.fire_block_entity_tick(reply, pos, level, entity);
     }
 
     /// The tick of the mod block entity at `pos`.

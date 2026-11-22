@@ -2,8 +2,10 @@
 // catalog-order: 0024
 
 pub trait Hooks {
-    /// A server tick of the block entity at `pos`, in vanilla's order among
-    /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
+    /// A server tick of the block entity at `pos` in `level`, in vanilla's order among
+    /// the others (`Level.tickBlockEntities`), when its `id` is yours. `level` is the
+    /// level it ticks in, whatever the dimension (`level.dimension()`): read and write
+    /// the world through it rather than a fixed dimension's handle. Read
     /// and change its saved compound `nbt`, its item slots `items` (keep
     /// their count: as many as its container has, none without one) and the
     /// data slots its menu shows (`data`). It is out of the world during the
@@ -26,6 +28,7 @@ pub trait Hooks {
         contract = "listen",
         scope = "block_entity",
         key = "entity",
+        version = 2,
         neoforge = "none (vanilla BlockEntityTicker; NeoForge adds no event or extension for it)"
     )]
     fn block_entity_tick();
