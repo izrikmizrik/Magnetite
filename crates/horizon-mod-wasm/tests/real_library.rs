@@ -85,7 +85,10 @@ fn real_library_dependency() {
                 &mut Quiet,
                 &mut mod_api::BlockEntityTickReply::Changed,
                 [0, 64, 0],
-                mod_api::LevelRef::new(mod_api::WorldEpoch::new(1), mod_api::DimensionKey::OVERWORLD),
+                mod_api::LevelRef::new(
+                    mod_api::WorldEpoch::new(1),
+                    mod_api::DimensionKey::OVERWORLD,
+                ),
                 &mut entity,
             );
             assert_eq!(&entity.data[..2], [37, 1], "library call and owned Drop");
@@ -98,7 +101,10 @@ fn real_library_dependency() {
                 &mut Quiet,
                 &mut mod_api::BlockEntityTickReply::Changed,
                 [0, 64, 0],
-                mod_api::LevelRef::new(mod_api::WorldEpoch::new(1), mod_api::DimensionKey::OVERWORLD),
+                mod_api::LevelRef::new(
+                    mod_api::WorldEpoch::new(1),
+                    mod_api::DimensionKey::OVERWORLD,
+                ),
                 &mut observer,
             );
             assert_eq!(

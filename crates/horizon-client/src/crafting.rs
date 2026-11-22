@@ -1434,6 +1434,43 @@ impl PropertyAdditions {
         self.get(key).is_some_and(|set| set.contains(item))
     }
 }
+/// The mods' load-time transforms of the recipe files (`DataFiles::RECIPE`) over `sources`: a
+/// transform sees vanilla's bare names as `minecraft:` ids, and its files come back keyed as the
+/// loader keys them. A file it leaves that isn't JSON is dropped with a line in the log.
+fn transformed_recipes(sources: Vec<(String, Value)>) -> Vec<(String, Value)> {
+    if !mod_api::__private::has_data_transforms(mod_api::DataFiles::RECIPE) {
+        return sources;
+    }
+    let files = sources
+        .into_iter()
+        .map(|(name, file)| {
+            let id = if name.contains(':') {
+                name
+            } else {
+                format!("minecraft:{name}")
+            };
+            (id, file.to_string())
+        })
+        .collect();
+    let data = mod_api::DataFiles::new(mod_api::DataFiles::RECIPE, files);
+    mod_api::__private::run_data_transforms(data)
+        .files
+        .into_iter()
+        .filter_map(|(id, text)| match serde_json::from_str(&text) {
+            Ok(file) => {
+                let name = id
+                    .strip_prefix("minecraft:")
+                    .map_or(id.clone(), str::to_owned);
+                Some((name, file))
+            }
+            Err(e) => {
+                log::warn!("recipes: {id} from a transform is not JSON: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
 impl ResolvedSources {
     pub(crate) fn station_recipes(
         &self,
@@ -1462,7 +1499,7 @@ impl ResolvedSources {
     ) -> Result<Self> {
         let context = context.with_fluid_tags(horizon_items::items::fluid_tag_list(root, overlay)?);
         Self::resolve(
-            horizon_items::recipe_sources::sources(root, overlay)?,
+            transformed_recipes(horizon_items::recipe_sources::sources(root, overlay)?),
             &context,
         )
     }
@@ -3379,3 +3416,7 @@ mod crafting_remainder_tests {
         assert_eq!(written.pages, ["page"]);
     }
 }
+
+#[cfg(test)]
+#[path = "crafting/data_transform_tests.rs"]
+mod data_transform_tests;
