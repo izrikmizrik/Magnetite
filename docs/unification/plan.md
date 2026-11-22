@@ -35,6 +35,11 @@
   не в Magnetite: если их попросят убрать, основной проект не затронут. Телефон качает их после входа
   (установщик — `crates/horizon-client/src/game_files.rs`, адрес и sha256 — `MAGNETITE_TABLES_URL` /
   `MAGNETITE_TABLES_SHA256`; сборка без них не предлагает скачивание).
+- Таблицы выпущены: https://github.com/izrikmizrik/magnetite-tables (workflow `tables`, копия — `packaging/tables`).
+  Первый релиз `tables-181c7032ad4b`: 56 файлов, 4,5 МБ; телефон качает с Mojang ~530 МБ и копирует 1 511 записей
+  (шаблоны структур) из своего jar. Переменные Magnetite `MAGNETITE_TABLES_URL`/`_SHA256` указывают на него.
+  **Перевыпускать таблицы** (запуск workflow `tables` с новой ревизией + обновить обе переменные) при каждом изменении
+  `horizon-prepare`, экспортёров или формата ресурсов — иначе телефон поставит устаревшие таблицы.
 - Microsoft client ID: только **своё** Azure-приложение Magnetite + одобрение Mojang (App ID review,
   https://aka.ms/mce-reviewappid). ID Horizon запрещён его docs/forking.md («Microsoft sign-in in a fork»),
   чужие ID (Cazza из iOS-форка, официального лаунчера) — тоже (docs/microsoft-account.md). ID — переменная
