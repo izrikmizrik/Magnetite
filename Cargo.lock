@@ -1860,6 +1860,7 @@ dependencies = [
  "fs4",
  "gilrs",
  "glam",
+ "horizon-account",
  "horizon-anticheat",
  "horizon-assets",
  "horizon-bench",

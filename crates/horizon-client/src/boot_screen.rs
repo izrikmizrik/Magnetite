@@ -90,6 +90,8 @@ pub enum BootAction {
 pub enum BootState {
     /// No account yet: sign in with Microsoft, with Ely.by, or play offline.
     Choose,
+    /// Signing a kept account in again, without asking for its code or password.
+    Resuming { name: String },
     /// Microsoft's device code, waiting for the player to enter it elsewhere.
     Code {
         /// The code, drawn large.
@@ -109,8 +111,14 @@ pub enum BootState {
         focus: ElyField,
         error: Option<String>,
     },
-    /// An account is signed in.
-    Signed { name: String, kind: AccountKind },
+    /// An account is signed in. `note` is an extra line under the name: the
+    /// boot loop's own words, already translated (a kept account played offline
+    /// until the connection returns).
+    Signed {
+        name: String,
+        kind: AccountKind,
+        note: Option<String>,
+    },
     /// The game files' download.
     Files {
         done_bytes: u64,
@@ -119,6 +127,9 @@ pub enum BootState {
     },
     /// A step did not work.
     Failed { message: String },
+    /// Choosing the offline name: one field, typed on the same keys as the
+    /// Ely.by form.
+    OfflineName { name: String, error: Option<String> },
     /// Playing as an offline name.
     Offline { name: String },
 }
@@ -377,7 +388,8 @@ impl BootScreen {
                 color::muted(),
                 caption,
             );
-            let focused = matches!(&self.state, BootState::Ely { focus, .. } if focus == field);
+            let focused = matches!(&self.state, BootState::Ely { focus, .. } if focus == field)
+                || matches!(&self.state, BootState::OfflineName { .. });
             ui.rounded(
                 rect.x,
                 rect.y,
@@ -445,7 +457,10 @@ impl BootScreen {
 
     /// The room the on-screen keyboard will take, which the form keeps out of.
     fn keyboard_room(&self, h: f32) -> f32 {
-        if matches!(self.state, BootState::Ely { .. }) {
+        if matches!(
+            self.state,
+            BootState::Ely { .. } | BootState::OfflineName { .. }
+        ) {
             (h * KEYBOARD).min(KEYBOARD_MAX)
         } else {
             0.0
@@ -690,6 +705,12 @@ impl BootScreen {
                 ],
                 ..Content::default()
             },
+            BootState::Resuming { name } => Content {
+                title: lang::get("horizon.boot.resuming.title"),
+                lines: vec![lang::tr("horizon.boot.resuming.line", &[name])],
+                buttons: vec![(lang::get("horizon.boot.cancel"), BootAction::Cancel)],
+                ..Content::default()
+            },
             BootState::Code {
                 code,
                 url,
@@ -750,18 +771,22 @@ impl BootScreen {
                     ..Content::default()
                 }
             }
-            BootState::Signed { name, kind } => Content {
-                title: lang::get("horizon.boot.signed.title"),
-                lines: vec![lang::tr(
+            BootState::Signed { name, kind, note } => {
+                let mut lines = vec![lang::tr(
                     "horizon.boot.signed.line",
                     &[name, &kind_label(*kind)],
-                )],
-                buttons: vec![
-                    (lang::get("horizon.boot.continue"), BootAction::Continue),
-                    (lang::get("horizon.boot.sign_out"), BootAction::SignOut),
-                ],
-                ..Content::default()
-            },
+                )];
+                lines.extend(note.clone());
+                Content {
+                    title: lang::get("horizon.boot.signed.title"),
+                    lines,
+                    buttons: vec![
+                        (lang::get("horizon.boot.continue"), BootAction::Continue),
+                        (lang::get("horizon.boot.sign_out"), BootAction::SignOut),
+                    ],
+                    ..Content::default()
+                }
+            }
             BootState::Files {
                 done_bytes,
                 total_bytes,
@@ -790,6 +815,24 @@ impl BootScreen {
                 lines: vec![message.clone(), lang::get("horizon.boot.failed.hint")],
                 buttons: vec![
                     (lang::get("horizon.boot.retry"), BootAction::Retry),
+                    (lang::get("horizon.boot.back"), BootAction::Back),
+                ],
+                ..Content::default()
+            },
+            BootState::OfflineName { name, error } => Content {
+                title: lang::get("horizon.boot.offline.name.title"),
+                lines: vec![lang::get("horizon.boot.offline.name.about")],
+                error: error.clone(),
+                fields: vec![(
+                    ElyField::Login,
+                    lang::get("horizon.boot.offline.name.field"),
+                    name.clone(),
+                )],
+                buttons: vec![
+                    (
+                        lang::get("horizon.boot.offline.name.play"),
+                        BootAction::Submit,
+                    ),
                     (lang::get("horizon.boot.back"), BootAction::Back),
                 ],
                 ..Content::default()
@@ -1009,6 +1052,9 @@ mod tests {
     fn states() -> Vec<BootState> {
         vec![
             BootState::Choose,
+            BootState::Resuming {
+                name: "Steve".into(),
+            },
             BootState::Code {
                 code: "ABCD1234".into(),
                 url: "microsoft.com/link".into(),
@@ -1031,6 +1077,12 @@ mod tests {
             BootState::Signed {
                 name: "Steve".into(),
                 kind: AccountKind::Microsoft,
+                note: None,
+            },
+            BootState::Signed {
+                name: "Steve".into(),
+                kind: AccountKind::Ely,
+                note: Some("Offline for now.".into()),
             },
             BootState::Files {
                 done_bytes: 130_000_000,
@@ -1039,6 +1091,14 @@ mod tests {
             },
             BootState::Failed {
                 message: "No connection".into(),
+            },
+            BootState::OfflineName {
+                name: "Steve".into(),
+                error: None,
+            },
+            BootState::OfflineName {
+                name: String::new(),
+                error: Some("A name is 1-16 letters, digits or _.".into()),
             },
             BootState::Offline {
                 name: "Steve".into(),
@@ -1051,10 +1111,12 @@ mod tests {
         use BootAction::*;
         match state {
             BootState::Choose => vec![SignInMicrosoft, SignInEly, PlayOffline],
+            BootState::Resuming { .. } => vec![Cancel],
             BootState::Code { .. } => vec![OpenLink, CopyCode, Cancel],
             BootState::Ely { .. } => vec![Submit, Back],
             BootState::Signed { .. } => vec![Continue, SignOut],
             BootState::Failed { .. } => vec![Retry, Back],
+            BootState::OfflineName { .. } => vec![Submit, Back],
             BootState::Files { .. } | BootState::Offline { .. } => Vec::new(),
         }
     }
@@ -1328,11 +1390,11 @@ mod tests {
     }
 
     #[test]
-    fn only_the_ely_form_has_keys() {
+    fn only_the_forms_have_keys() {
         for state in states() {
             let screen = BootScreen::new(state.clone());
             let layout = screen.layout([2400.0, 1080.0], 3.0);
-            let form = matches!(state, BootState::Ely { .. });
+            let form = matches!(state, BootState::Ely { .. } | BootState::OfflineName { .. });
             assert_eq!(layout.keyboard.is_some(), form, "{state:?}");
         }
     }

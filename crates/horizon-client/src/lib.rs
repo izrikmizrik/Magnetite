@@ -16,4 +16,8 @@ pub mod entry;
 #[global_allocator]
 static ALLOCATOR: horizon_threads::GameAllocator = horizon_threads::GAME_ALLOCATOR;
 pub mod game;
+/// The boot loop a phone (or a PC without a launcher) runs before the game: sign-in, the game
+/// files, then the hand-over (`docs/unification/mobile-boot.md`). It lives in the game area
+/// (`game::boot`) because it draws with the game's own loading renderer; this is its public path.
+pub use game::boot;
 pub mod orb_limits;

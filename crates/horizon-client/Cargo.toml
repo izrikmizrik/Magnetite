@@ -27,6 +27,9 @@ horizon-client-lib = { path = "../horizon-client-lib", default-features = false 
 horizon-gameplay = { path = "../horizon-gameplay" }
 horizon-client-gameplay = { path = "../horizon-client-gameplay" }
 horizon-assets = { path = "../horizon-assets" }
+# Sign-in before the game starts (game/runtime/boot.rs): Microsoft device code and Ely.by,
+# the session file the core reads and the refresh-secret store (docs/unification/mobile-boot.md).
+horizon-account = { path = "../horizon-account" }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render", default-features = false }

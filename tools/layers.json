@@ -20,6 +20,7 @@
     "crates/horizon-telemetry-server/Cargo.toml"
   ],
   "crates": {
+    "horizon-account": "engine",
     "horizon-assets": "engine",
     "horizon-game-discovery": "engine",
     "horizon-bench": "engine",
@@ -96,6 +97,8 @@
     "horizon-modding-examples": "tool",
     "horizon-hooks": "engine",
     "horizon-game": "platform",
+    "magnetite-android": "platform",
+    "magnetite-ios": "platform",
     "horizon-mod-host": "platform",
     "horizon-telemetry": "horizon",
     "horizon-telemetry-server": "horizon",
@@ -150,7 +153,6 @@
     "horizon-client -> horizon-chat-filter",
     "horizon-client -> horizon-dualsense",
     "horizon-client -> horizon-friends",
-    "horizon-client -> horizon-hdr",
     "horizon-client -> horizon-optifine",
     "horizon-client -> horizon-shader-api",
     "horizon-client -> horizon-shaders",

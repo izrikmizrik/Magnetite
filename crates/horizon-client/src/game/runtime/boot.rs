@@ -1,0 +1,1577 @@
+// game-module-visibility: pub
+//! What runs before the game on a phone (or a PC without a launcher): the sign-in, the game
+//! files, then the hand-over to the game itself (`docs/unification/mobile-boot.md` §1.4, §3).
+//! The process's one event loop opens here at once — iOS's watchdog ends an app that takes too
+//! long to start — and a screen of its own (`horizon_client::boot_screen`) draws while the
+//! sign-in and the download run on threads beside it. When the files are there and an account
+//! (or an offline name) is ready, the session file is written fresh, the game is started through
+//! the host's `start` closure, and its [`App`] is taken from the sink and run on this same loop.
+//!
+//! Platform-neutral: no `#[cfg(target_os)]`. The host (`magnetite-android`, `magnetite-ios`)
+//! supplies the paths, the secret store, the link opener, the keep-awake switch, the installer
+//! and the `start` closure; the event-loop factory is already set (`window::set_event_loop_factory`).
+//!
+//! The sign-in controller (`Controller`) is a pure state machine: `Controller::action` and
+//! `Controller::apply` turn taps and thread results into transitions and `Job`s, and never
+//! touch a network, a thread or a file themselves. `Boot` runs the jobs, keeps the secrets and
+//! draws. That split is what the tests exercise without a window.
+use super::*;
+use horizon_account::{
+    Account, DeviceCode, Endpoints, Kind, NEEDS_2FA, REFUSED, SecretStore, Stored, client_id,
+    device_code, ely_sign_in, refresh_account, sign_in,
+};
+use horizon_client::boot_screen::{AccountKind, BootAction, BootScreen, BootState, ElyField};
+use horizon_client::clipboard::SystemClipboard;
+use horizon_client::osk::Output;
+use std::cell::RefCell;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use winit::event::TouchPhase;
+
+/// The game files' download progress, shared with the installer's thread. `done` and `total` are
+/// byte counts (0 total until the whole size is known); `step` is the name of what is downloading
+/// now — a word, not a number, so it sits behind a short lock rather than an atomic.
+pub struct InstallProgress {
+    pub done: AtomicU64,
+    pub total: AtomicU64,
+    step: Mutex<String>,
+}
+
+impl InstallProgress {
+    pub fn new() -> Self {
+        Self {
+            done: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            step: Mutex::new(String::new()),
+        }
+    }
+
+    /// What the download is doing now (`client.jar`, `assets`, ...), drawn over the bar.
+    pub fn set_step(&self, name: &str) {
+        *self.step.lock().unwrap_or_else(|e| e.into_inner()) = name.to_owned();
+    }
+
+    /// `(done_bytes, total_bytes, step)` for one frame.
+    pub fn snapshot(&self) -> (u64, u64, String) {
+        (
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+            self.step.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        )
+    }
+}
+
+impl Default for InstallProgress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Everything the host hands the boot loop. `start` receives the game's ready command line and
+/// starts the core (`entry::prepare_with_args` + `horizon_mod_host::main_with`); the core hands
+/// its [`App`] back through the sink instead of opening a second loop. `install` is the game
+/// files' installer (a later commit): `None` means this build cannot download them, so without
+/// files the screen explains and offline play is unavailable. It is called once, on its own
+/// thread; a failed download resumes by content hash on the next run.
+pub struct BootConfig {
+    /// The player's folder: saves, `options.txt`, logs (`--game-dir`).
+    pub game_dir: PathBuf,
+    /// The prepared game files' folder (`--resources`).
+    pub resources: PathBuf,
+    /// Where the fresh session file is written, beside the secrets (the core reads and deletes
+    /// it; it must be under 120 s old and, on Unix, 0600).
+    pub session_dir: PathBuf,
+    /// The kept refresh secret (never an access token).
+    pub secrets: Box<dyn SecretStore + Send>,
+    /// Open the device-code page in the platform's browser; a no-op leaves the code and URL on
+    /// the screen to type by hand.
+    pub open_link: fn(&str),
+    /// Keep the screen on while the files download.
+    pub keep_awake: fn(bool),
+    /// The game files' installer, run on a thread after any sign-in when the files are missing.
+    pub install:
+        Option<Box<dyn FnOnce(&InstallProgress) -> std::result::Result<(), String> + Send>>,
+    /// Start the core with these arguments; it hands its app to the sink.
+    pub start: Box<dyn FnOnce(Vec<String>)>,
+}
+
+/// Run the boot loop until the game takes over (or the player leaves). One event loop per
+/// process: the host sets the factory before calling this.
+pub fn run(config: BootConfig) -> Result<()> {
+    // The strings compiled in, in the default language: there are no prepared ones yet, and the
+    // game reads the player's own settings after the hand-over.
+    horizon_client::lang::set(horizon_client::lang::Language::load(
+        &[],
+        &Settings::default().language,
+    ));
+    // The fonts and the icon, before the first window: the screen draws in the design system's
+    // look, not the engine's neutral one. `entry::start` gives it again later; that is harmless.
+    crate::entry::horizon_look::give();
+    let mut boot = Boot::new(config);
+    let event_loop = horizon_client::window::new_event_loop()?;
+    event_loop.run_app(&mut boot)?;
+    boot.error.map_or(Ok(()), Err)
+}
+
+thread_local! {
+    /// The game's app, handed back on this thread while `start` runs inside the loop.
+    static HANDED: RefCell<Option<App>> = const { RefCell::new(None) };
+}
+
+/// The sink the core hands its app to (`set_app_sink` takes a plain `fn`, so the app waits in a
+/// thread-local the loop thread reads right after `start` returns).
+fn hand_over(app: App) {
+    HANDED.with(|handed| *handed.borrow_mut() = Some(app));
+}
+
+/// Whether an error is the network being unreachable rather than a service refusing: the
+/// transport message `horizon-account` gives for every service. A refused token is forgotten;
+/// no network keeps the account for the next start (the iOS fork's rule).
+fn no_connection(error: &str) -> bool {
+    error.contains("Check your internet connection")
+}
+
+/// Epoch seconds now, for the device code's remaining life.
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn kind_of(kind: Kind) -> AccountKind {
+    match kind {
+        Kind::Microsoft => AccountKind::Microsoft,
+        Kind::Ely => AccountKind::Ely,
+    }
+}
+
+/// A service's own words, under a translated label: the error text is the service's data, the
+/// label is the screen's (`horizon.boot.*`).
+fn detail(error: &str) -> String {
+    horizon_client::lang::tr("horizon.boot.service_said", &[&error])
+}
+
+/// The game's command line: the folders, then the session file for a signed-in account or the
+/// name for an offline one.
+fn game_args(
+    game_dir: &Path,
+    resources: &Path,
+    session: Option<&Path>,
+    name: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "--game-dir".to_owned(),
+        game_dir.to_string_lossy().into_owned(),
+        "--resources".to_owned(),
+        resources.to_string_lossy().into_owned(),
+    ];
+    if let Some(path) = session {
+        args.push("--session-file".to_owned());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    if let Some(name) = name {
+        args.push("--name".to_owned());
+        args.push(name.to_owned());
+    }
+    args
+}
+
+/// Write the session file the core reads at startup: private (0600 on Unix), synced, fresh. The
+/// core refuses one older than 120 s and deletes it after reading, so this is written immediately
+/// before the game starts, not at sign-in (the download can take minutes).
+fn write_session(path: &Path, json: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    std::io::Write::write_all(&mut file, json.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The mode above only applies to a file this call creates; an old one keeps its bits.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// A thread to run, or the game to start. The controller asks; [`Boot`] does.
+enum Job {
+    /// Sign a kept account in again.
+    Resume(Stored),
+    /// Microsoft's device code, then the wait for the player.
+    Microsoft,
+    /// Ely.by authenticate.
+    Ely {
+        login: String,
+        password: String,
+        otp: String,
+    },
+    /// The game files' installer.
+    Install,
+    /// Hand over to the game (on the loop thread, not a worker).
+    Start,
+}
+
+/// What a worker sends back, with the sign-in attempt it belongs to.
+enum Event {
+    Resume(std::result::Result<Account, String>),
+    Code(std::result::Result<DeviceCode, String>),
+    SignIn(std::result::Result<Account, String>),
+    Ely(std::result::Result<Account, String>),
+    Install(std::result::Result<(), String>),
+}
+
+/// The Ely.by form's values: the controller keeps them, never the screen. The password is used
+/// for one request and never stored or drawn as text.
+#[derive(Clone)]
+struct ElyForm {
+    login: String,
+    password: String,
+    /// `Some` once Ely.by asked for a two-factor code.
+    otp: Option<String>,
+    focus: ElyField,
+    error: Option<String>,
+}
+
+impl Default for ElyForm {
+    fn default() -> Self {
+        Self {
+            login: String::new(),
+            password: String::new(),
+            otp: None,
+            focus: ElyField::Login,
+            error: None,
+        }
+    }
+}
+
+/// Where the account side stands.
+enum Phase {
+    Choose,
+    Resuming {
+        stored: Stored,
+    },
+    /// Asking Microsoft for a code (brief; the screen stays on the choice).
+    Asking,
+    Code {
+        code: DeviceCode,
+    },
+    Ely(ElyForm),
+    Signed {
+        account: Account,
+        restored: bool,
+    },
+    /// No network at resume: the kept identity stands, the token comes when the connection does.
+    SavedOffline {
+        stored: Stored,
+    },
+    OfflineName {
+        name: String,
+        error: Option<String>,
+    },
+    Offline {
+        name: String,
+    },
+}
+
+/// What the Retry button does after a failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Retry {
+    /// Ask Microsoft for a new code.
+    Microsoft,
+    /// Run the installer again (while this run still has it).
+    Install,
+    /// Back to the sign-in choice.
+    Choose,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Failure {
+    message: String,
+    retry: Retry,
+}
+
+/// The sign-in and files state machine. Pure: it transitions and names jobs; it never spawns a
+/// thread, opens a file or touches a network. [`Boot`] drains its side effects (`take_save`,
+/// `take_forget`) and runs its jobs.
+struct Controller {
+    /// Counts the sign-ins started: a result whose attempt is no longer the latest changes
+    /// nothing. Shared with the workers so a cancelled one stops polling.
+    attempt: Arc<AtomicU64>,
+    phase: Phase,
+    files_ready: bool,
+    /// Whether this run still has an installer to call (it is `FnOnce`: one call per run).
+    has_installer: bool,
+    installing: bool,
+    failure: Option<Failure>,
+    client_id: Option<String>,
+    pending_save: Option<String>,
+    pending_forget: bool,
+    /// Bumped at every change, for the screen to draw again.
+    version: u64,
+}
+
+impl Controller {
+    fn new(files_ready: bool, has_installer: bool, client_id: Option<String>) -> Self {
+        Self {
+            attempt: Arc::new(AtomicU64::new(0)),
+            phase: Phase::Choose,
+            files_ready,
+            has_installer,
+            installing: false,
+            failure: None,
+            client_id,
+            pending_save: None,
+            pending_forget: false,
+            version: 0,
+        }
+    }
+
+    fn current_attempt(&self) -> u64 {
+        self.attempt.load(Ordering::SeqCst)
+    }
+
+    /// A new sign-in: the ones before it stop and their results are ignored.
+    fn begin_attempt(&mut self) -> u64 {
+        let attempt = self.attempt.fetch_add(1, Ordering::SeqCst) + 1;
+        self.version += 1;
+        attempt
+    }
+
+    fn take_save(&mut self) -> Option<String> {
+        self.pending_save.take()
+    }
+
+    fn take_forget(&mut self) -> bool {
+        std::mem::take(&mut self.pending_forget)
+    }
+
+    /// The installer was called: this run has none left (it is `FnOnce`).
+    fn installer_taken(&mut self) {
+        self.has_installer = false;
+    }
+
+    fn fail(&mut self, message: String, retry: Retry) {
+        self.failure = Some(Failure { message, retry });
+    }
+
+    /// A signed-in account: keep its refresh secret, and download the files if they are missing
+    /// (the owner's rule: files come after any sign-in, Microsoft or Ely.by).
+    fn signed_in(&mut self, account: Account, restored: bool) -> Vec<Job> {
+        self.pending_save = Some(account.stored_json());
+        self.phase = Phase::Signed { account, restored };
+        self.failure = None;
+        self.start_install()
+    }
+
+    /// The files step: ready already, or the installer runs, or this build has none.
+    fn start_install(&mut self) -> Vec<Job> {
+        if self.files_ready {
+            return Vec::new();
+        }
+        if self.has_installer {
+            self.installing = true;
+            vec![Job::Install]
+        } else {
+            self.fail(
+                horizon_client::lang::get("horizon.boot.files.no_installer"),
+                Retry::Choose,
+            );
+            Vec::new()
+        }
+    }
+
+    /// A restored sign-in or a confirmed offline name, with the files here: start without a tap.
+    fn ready_to_start(&self) -> bool {
+        self.files_ready
+            && !self.installing
+            && self.failure.is_none()
+            && matches!(
+                self.phase,
+                Phase::Signed { restored: true, .. } | Phase::Offline { .. }
+            )
+    }
+
+    /// The screen's state for this moment: a failure over everything, the download over the
+    /// account, then the account phase.
+    fn screen_state(&self, progress: &InstallProgress) -> BootState {
+        if let Some(failure) = &self.failure {
+            return BootState::Failed {
+                message: failure.message.clone(),
+            };
+        }
+        if self.installing {
+            let (done_bytes, total_bytes, step) = progress.snapshot();
+            return BootState::Files {
+                done_bytes,
+                total_bytes,
+                step,
+            };
+        }
+        match &self.phase {
+            Phase::Choose | Phase::Asking => BootState::Choose,
+            Phase::Resuming { stored } => BootState::Resuming {
+                name: stored.name.clone(),
+            },
+            Phase::Code { code } => BootState::Code {
+                code: code.user_code.clone(),
+                url: code.verification_uri.clone(),
+                expires_in_secs: code.expires_at.saturating_sub(now_secs()),
+            },
+            Phase::Ely(form) => BootState::Ely {
+                login: form.login.clone(),
+                password_len: form.password.chars().count(),
+                otp: form.otp.clone(),
+                focus: form.focus,
+                error: form.error.clone(),
+            },
+            Phase::Signed { account, .. } => BootState::Signed {
+                name: account.name.clone(),
+                kind: kind_of(account.kind),
+                note: None,
+            },
+            Phase::SavedOffline { stored } => BootState::Signed {
+                name: stored.name.clone(),
+                kind: kind_of(stored.kind),
+                note: Some(horizon_client::lang::get(
+                    "horizon.boot.signed.offline_note",
+                )),
+            },
+            Phase::OfflineName { name, error } => BootState::OfflineName {
+                name: name.clone(),
+                error: error.clone(),
+            },
+            Phase::Offline { name } => BootState::Offline { name: name.clone() },
+        }
+    }
+
+    /// A tap's action: the transitions and the jobs it asks for. `OpenLink` and `CopyCode` are
+    /// the host's own (they need its callbacks) and do nothing here.
+    fn action(&mut self, action: BootAction) -> Vec<Job> {
+        let jobs = match action {
+            BootAction::SignInMicrosoft => {
+                if self.client_id.is_none() {
+                    self.phase = Phase::Choose;
+                    self.fail(
+                        horizon_client::lang::get("horizon.boot.microsoft.not_configured"),
+                        Retry::Choose,
+                    );
+                    Vec::new()
+                } else {
+                    self.begin_attempt();
+                    self.phase = Phase::Asking;
+                    self.failure = None;
+                    vec![Job::Microsoft]
+                }
+            }
+            BootAction::SignInEly => {
+                self.begin_attempt();
+                self.phase = Phase::Ely(ElyForm::default());
+                self.failure = None;
+                Vec::new()
+            }
+            BootAction::PlayOffline => {
+                if self.files_ready {
+                    self.phase = Phase::OfflineName {
+                        name: String::new(),
+                        error: None,
+                    };
+                    self.failure = None;
+                } else {
+                    self.phase = Phase::Choose;
+                    self.fail(
+                        horizon_client::lang::get("horizon.boot.offline.need_files"),
+                        Retry::Choose,
+                    );
+                }
+                Vec::new()
+            }
+            BootAction::Cancel => {
+                self.begin_attempt();
+                self.phase = Phase::Choose;
+                self.failure = None;
+                Vec::new()
+            }
+            BootAction::Back => {
+                if self.failure.is_some() {
+                    self.failure = None;
+                } else {
+                    self.begin_attempt();
+                    self.phase = Phase::Choose;
+                }
+                Vec::new()
+            }
+            BootAction::Submit => match &mut self.phase {
+                Phase::Ely(form) => {
+                    form.error = None;
+                    let job = Job::Ely {
+                        login: form.login.clone(),
+                        password: form.password.clone(),
+                        otp: form.otp.clone().unwrap_or_default(),
+                    };
+                    self.begin_attempt();
+                    vec![job]
+                }
+                Phase::OfflineName { name, error } => {
+                    if valid_offline_name(name) {
+                        let chosen = name.clone();
+                        self.phase = Phase::Offline { name: chosen };
+                    } else {
+                        *error = Some(horizon_client::lang::get(
+                            "horizon.boot.offline.name.invalid",
+                        ));
+                    }
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
+            BootAction::Continue => {
+                if matches!(
+                    self.phase,
+                    Phase::Signed { .. } | Phase::SavedOffline { .. }
+                ) {
+                    if self.files_ready {
+                        vec![Job::Start]
+                    } else {
+                        self.start_install()
+                    }
+                } else {
+                    Vec::new()
+                }
+            }
+            BootAction::SignOut => {
+                self.begin_attempt();
+                self.pending_forget = true;
+                self.phase = Phase::Choose;
+                self.failure = None;
+                Vec::new()
+            }
+            BootAction::Retry => {
+                let retry = self.failure.take().map_or(Retry::Choose, |f| f.retry);
+                match retry {
+                    Retry::Microsoft => {
+                        self.begin_attempt();
+                        self.phase = Phase::Asking;
+                        vec![Job::Microsoft]
+                    }
+                    Retry::Install => {
+                        if self.files_ready {
+                            Vec::new()
+                        } else if self.has_installer {
+                            self.installing = true;
+                            vec![Job::Install]
+                        } else {
+                            self.fail(
+                                horizon_client::lang::get("horizon.boot.files.retry_restart"),
+                                Retry::Choose,
+                            );
+                            Vec::new()
+                        }
+                    }
+                    Retry::Choose => {
+                        self.phase = Phase::Choose;
+                        Vec::new()
+                    }
+                }
+            }
+            BootAction::FocusField(field) => {
+                if let Phase::Ely(form) = &mut self.phase {
+                    form.focus = field;
+                }
+                Vec::new()
+            }
+            BootAction::Typed(output) => {
+                self.type_into_field(&output);
+                Vec::new()
+            }
+            BootAction::OpenLink | BootAction::CopyCode => Vec::new(),
+        };
+        self.version += 1;
+        jobs
+    }
+
+    /// A key of the on-screen keyboard into the field that has focus.
+    fn type_into_field(&mut self, output: &Output) {
+        let text = match &mut self.phase {
+            Phase::Ely(form) => match form.focus {
+                ElyField::Login => Some(&mut form.login),
+                ElyField::Password => Some(&mut form.password),
+                ElyField::Otp => form.otp.as_mut(),
+            },
+            Phase::OfflineName { name, .. } => Some(name),
+            _ => None,
+        };
+        let Some(text) = text else {
+            return;
+        };
+        match output {
+            Output::Text(typed) => text.push_str(typed),
+            Output::Backspace => {
+                text.pop();
+            }
+            // One-line fields: Done is the form's Submit (the screen maps it), the rest is no-op.
+            _ => {}
+        }
+    }
+
+    /// A worker's result. A sign-in result whose attempt is stale changes nothing; the installer
+    /// is not tied to a sign-in attempt (it outlives a sign-out).
+    fn apply(&mut self, attempt: u64, event: Event) -> Vec<Job> {
+        let installing = matches!(event, Event::Install(_));
+        if !installing && attempt != self.current_attempt() {
+            return Vec::new();
+        }
+        let jobs = match event {
+            Event::Resume(Ok(account)) => self.signed_in(account, true),
+            Event::Resume(Err(error)) => {
+                let stored = match &self.phase {
+                    Phase::Resuming { stored } => Some(stored.clone()),
+                    _ => None,
+                };
+                match stored {
+                    Some(stored) if no_connection(&error) => {
+                        self.phase = Phase::SavedOffline { stored };
+                    }
+                    _ => {
+                        // A refused token is gone for good; no network keeps it for next time.
+                        self.pending_forget = true;
+                        self.phase = Phase::Choose;
+                    }
+                }
+                Vec::new()
+            }
+            Event::Code(Ok(code)) => {
+                self.phase = Phase::Code { code };
+                Vec::new()
+            }
+            Event::Code(Err(error)) => {
+                self.phase = Phase::Choose;
+                self.fail(detail(&error), Retry::Microsoft);
+                Vec::new()
+            }
+            Event::SignIn(Ok(account)) => self.signed_in(account, false),
+            Event::SignIn(Err(error)) => {
+                self.phase = Phase::Choose;
+                self.fail(detail(&error), Retry::Microsoft);
+                Vec::new()
+            }
+            Event::Ely(Ok(account)) => self.signed_in(account, false),
+            Event::Ely(Err(error)) => {
+                if let Phase::Ely(form) = &mut self.phase {
+                    if error == NEEDS_2FA {
+                        form.otp = Some(String::new());
+                        form.focus = ElyField::Otp;
+                        form.error = Some(horizon_client::lang::get("horizon.boot.ely.needs_2fa"));
+                    } else if error == REFUSED {
+                        form.error = Some(horizon_client::lang::get("horizon.boot.ely.refused"));
+                    } else {
+                        form.error = Some(detail(&error));
+                    }
+                }
+                Vec::new()
+            }
+            Event::Install(Ok(())) => {
+                self.installing = false;
+                self.files_ready = true;
+                self.failure = None;
+                Vec::new()
+            }
+            Event::Install(Err(error)) => {
+                self.installing = false;
+                self.fail(detail(&error), Retry::Install);
+                Vec::new()
+            }
+        };
+        self.version += 1;
+        jobs
+    }
+}
+
+/// An offline player name: 1-16 letters, digits or `_`, as the core's session parser accepts.
+fn valid_offline_name(name: &str) -> bool {
+    let len = name.chars().count();
+    (1..=16).contains(&len) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+struct Boot {
+    ctrl: Controller,
+    screen: BootScreen,
+    tx: Sender<(u64, Event)>,
+    rx: Receiver<(u64, Event)>,
+    progress: Arc<InstallProgress>,
+    install: Option<Box<dyn FnOnce(&InstallProgress) -> std::result::Result<(), String> + Send>>,
+    start: Option<Box<dyn FnOnce(Vec<String>)>>,
+    secrets: Box<dyn SecretStore + Send>,
+    open_link: fn(&str),
+    keep_awake: fn(bool),
+    game_dir: PathBuf,
+    resources: PathBuf,
+    session_dir: PathBuf,
+    ep: Endpoints,
+    window: Option<Arc<Window>>,
+    renderer: Option<Renderer>,
+    gui: UiResources,
+    settings: Settings,
+    /// The pointer in physical pixels.
+    pointer: (f64, f64),
+    clipboard: SystemClipboard,
+    awake: bool,
+    drawn: u64,
+    /// The game's app once it is handed over: every event goes to it from then on.
+    app: Option<App>,
+    error: Option<Box<dyn std::error::Error>>,
+}
+
+impl Boot {
+    fn new(config: BootConfig) -> Self {
+        // The core's own check: the marker and the top-level files' health.
+        let files_ready = loading_screen::missing_resources(&config.resources, None).is_none();
+        let ctrl = Controller::new(files_ready, config.install.is_some(), client_id());
+        let (tx, rx) = channel();
+        let mut boot = Self {
+            ctrl,
+            screen: BootScreen::new(BootState::Choose),
+            tx,
+            rx,
+            progress: Arc::new(InstallProgress::new()),
+            install: config.install,
+            start: Some(config.start),
+            secrets: config.secrets,
+            open_link: config.open_link,
+            keep_awake: config.keep_awake,
+            game_dir: config.game_dir,
+            resources: config.resources,
+            session_dir: config.session_dir,
+            ep: Endpoints::live(),
+            window: None,
+            renderer: None,
+            gui: UiResources {
+                atlas: HudAtlas::boot(),
+                panorama: Arc::new(horizon_client::gfx::panorama::Faces::colour([0; 4])),
+                splashes: Arc::from(""),
+            },
+            // Defaults: the player's own settings are read by the game after the hand-over.
+            settings: Settings::default(),
+            pointer: (0.0, 0.0),
+            clipboard: SystemClipboard::default(),
+            awake: false,
+            drawn: 0,
+            app: None,
+            error: None,
+        };
+        boot.resume_saved();
+        boot
+    }
+
+    /// Sign the kept account in again on a thread: success restores it, a refused token forgets
+    /// it, no network keeps it to play offline.
+    fn resume_saved(&mut self) {
+        let json = match self.secrets.load() {
+            Ok(json) => json,
+            Err(e) => {
+                log::warn!("Horizon: the account store could not be read: {e}");
+                return;
+            }
+        };
+        let Some(json) = json else {
+            return;
+        };
+        match Account::from_stored_json(&json) {
+            Ok(stored) => {
+                self.ctrl.begin_attempt();
+                self.ctrl.phase = Phase::Resuming {
+                    stored: stored.clone(),
+                };
+                self.run_job(Job::Resume(stored));
+            }
+            Err(e) => {
+                log::warn!("Horizon: the kept account is unreadable: {e}");
+                let _ = self.secrets.clear();
+            }
+        }
+    }
+
+    fn try_spawn(&self, name: &str, job: impl FnOnce() + Send + 'static) -> bool {
+        match std::thread::Builder::new().name(name.to_owned()).spawn(job) {
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("Horizon: no {name} thread: {e}");
+                false
+            }
+        }
+    }
+
+    /// Run a job the controller asked for. The workers send their result back with the current
+    /// attempt; a stale one is ignored when it arrives.
+    fn run_job(&mut self, job: Job) {
+        let attempt = self.ctrl.current_attempt();
+        let tx = self.tx.clone();
+        match job {
+            Job::Start => {} // handled by `start_game`, which needs the event loop
+            Job::Resume(stored) => {
+                let ep = self.ep.clone();
+                if !self.try_spawn("Sign-in resume", move || {
+                    let result = refresh_account(&ep, &stored);
+                    let _ = tx.send((attempt, Event::Resume(result)));
+                }) {
+                    let _ = self
+                        .tx
+                        .send((attempt, Event::Resume(Err("no resume thread".into()))));
+                }
+            }
+            Job::Microsoft => {
+                let ep = self.ep.clone();
+                let id = self.ctrl.client_id.clone().unwrap_or_default();
+                let current = self.ctrl.attempt.clone();
+                if !self.try_spawn("Microsoft sign-in", move || {
+                    let code = match device_code(&ep, &id) {
+                        Ok(code) => code,
+                        Err(e) => {
+                            let _ = tx.send((attempt, Event::SignIn(Err(e))));
+                            return;
+                        }
+                    };
+                    let _ = tx.send((attempt, Event::Code(Ok(code.clone()))));
+                    let cancelled = || current.load(Ordering::SeqCst) != attempt;
+                    let result = sign_in(&ep, &id, &code, &cancelled);
+                    let _ = tx.send((attempt, Event::SignIn(result)));
+                }) {
+                    let _ = self
+                        .tx
+                        .send((attempt, Event::SignIn(Err("no sign-in thread".into()))));
+                }
+            }
+            Job::Ely {
+                login,
+                password,
+                otp,
+            } => {
+                let ep = self.ep.clone();
+                if !self.try_spawn("Ely.by sign-in", move || {
+                    let result = ely_sign_in(&ep, &login, &password, &otp);
+                    let _ = tx.send((attempt, Event::Ely(result)));
+                }) {
+                    let _ = self
+                        .tx
+                        .send((attempt, Event::Ely(Err("no sign-in thread".into()))));
+                }
+            }
+            Job::Install => {
+                let Some(install) = self.install.take() else {
+                    return;
+                };
+                self.ctrl.installer_taken();
+                let progress = self.progress.clone();
+                if !self.try_spawn("Game files", move || {
+                    let result = install(&progress);
+                    let _ = tx.send((attempt, Event::Install(result)));
+                }) {
+                    let _ = self
+                        .tx
+                        .send((attempt, Event::Install(Err("no install thread".into()))));
+                }
+            }
+        }
+    }
+
+    /// Keep or forget the account after a transition that asked for it.
+    fn drain_side_effects(&mut self) {
+        if let Some(json) = self.ctrl.take_save()
+            && let Err(e) = self.secrets.save(&json)
+        {
+            log::warn!("Horizon: the account could not be kept: {e}");
+        }
+        if self.ctrl.take_forget()
+            && let Err(e) = self.secrets.clear()
+        {
+            log::warn!("Horizon: the account could not be forgotten: {e}");
+        }
+    }
+
+    fn sync_screen(&mut self) {
+        let state = self.ctrl.screen_state(&self.progress);
+        if self.screen.state() != &state {
+            self.screen.set_state(state);
+        }
+    }
+
+    fn size(&self) -> [u32; 2] {
+        self.renderer
+            .as_ref()
+            .map_or([1280, 720], |r| [r.config.width, r.config.height])
+    }
+
+    /// `f` over a Ui of the window's size, the cursor where the pointer is.
+    fn with_ui<R>(
+        &self,
+        batch: &mut HudBatch,
+        f: impl FnOnce(&mut horizon_client::ui_theme::Ui) -> R,
+    ) -> R {
+        let cursor = (
+            self.pointer.0 as f32 / batch.scale,
+            self.pointer.1 as f32 / batch.scale,
+        );
+        let mut ui = horizon_client::ui_theme::Ui::new(&self.gui.atlas, batch, cursor);
+        let result = f(&mut ui);
+        ui.finish();
+        result
+    }
+
+    fn draw(&mut self) {
+        let mut batch = HudBatch::new(self.size(), self.settings.gui_scale_inputs());
+        self.with_ui(&mut batch, |ui| self.screen.draw(ui));
+        let Some(renderer) = &mut self.renderer else {
+            return;
+        };
+        match renderer.render(&loading_frame(&batch)) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => log::warn!("Horizon: boot frame failed: {e}"),
+        }
+        // The frame was not shown: its rasterized glyphs never reached the atlas, so draw again.
+        horizon_client::ui_theme::reset_atlas();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn click(&mut self, event_loop: &ActiveEventLoop) {
+        // The layout the last draw made: a tap reads the same boxes the finger saw.
+        let Some(action) = self
+            .screen
+            .click((self.pointer.0 as f32, self.pointer.1 as f32))
+        else {
+            return;
+        };
+        match action {
+            BootAction::OpenLink => {
+                if let Phase::Code { code } = &self.ctrl.phase {
+                    (self.open_link)(&code.verification_uri);
+                }
+            }
+            BootAction::CopyCode => {
+                if let Phase::Code { code } = &self.ctrl.phase {
+                    self.clipboard.set_text(&code.user_code);
+                }
+            }
+            other => {
+                let jobs = self.ctrl.action(other);
+                self.drain_side_effects();
+                for job in jobs {
+                    if matches!(job, Job::Start) {
+                        self.start_game(event_loop);
+                    } else {
+                        self.run_job(job);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start the game: write the fresh session file, close this screen's window and renderer (the
+    /// game makes its own in `resumed`), hand the sink over, run the host's `start`, then take the
+    /// app and run it on this loop.
+    fn start_game(&mut self, event_loop: &ActiveEventLoop) {
+        let args = match &self.ctrl.phase {
+            Phase::Signed { account, .. } => {
+                let path = self.session_dir.join("session.json");
+                match write_session(&path, &account.session_json()) {
+                    Ok(()) => {
+                        game_args(&self.game_dir, &self.resources, Some(path.as_path()), None)
+                    }
+                    Err(e) => {
+                        self.error = Some(format!("session file {}: {e}", path.display()).into());
+                        event_loop.exit();
+                        return;
+                    }
+                }
+            }
+            Phase::SavedOffline { stored } => game_args(
+                &self.game_dir,
+                &self.resources,
+                None,
+                Some(stored.name.as_str()),
+            ),
+            Phase::Offline { name } => {
+                game_args(&self.game_dir, &self.resources, None, Some(name.as_str()))
+            }
+            _ => return,
+        };
+        // The game opens its own window: this one goes first, the renderer before the window it
+        // holds, so the surface and the device are freed before the game builds its own.
+        self.renderer = None;
+        self.window = None;
+        self.awake = false;
+        (self.keep_awake)(false);
+        set_app_sink(hand_over);
+        let Some(start) = self.start.take() else {
+            return;
+        };
+        start(args);
+        let app = HANDED.with(|handed| handed.borrow_mut().take());
+        match app {
+            Some(mut app) => {
+                // The loop's own `resumed` came before there was an app to hear it.
+                app.resumed(event_loop);
+                self.app = Some(app);
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
+            None => {
+                self.error = Some("the game did not start (are its resources in place?)".into());
+                event_loop.exit();
+            }
+        }
+    }
+}
+
+impl ApplicationHandler for Boot {
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = &mut self.app {
+            return app.suspended(event_loop);
+        }
+        if let Some(renderer) = &mut self.renderer {
+            renderer.suspend_surface();
+        }
+    }
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = &mut self.app {
+            return app.resumed(event_loop);
+        }
+        if let Some(window) = &self.window {
+            // Back from the background: the window stayed, its surface is made again.
+            if let Some(renderer) = self.renderer.as_mut().filter(|r| r.suspended) {
+                if let Err(error) = renderer.recreate_surface() {
+                    log::error!("The window's surface could not be made again: {error}");
+                } else {
+                    let size = window.inner_size();
+                    renderer.resize(size.width, size.height);
+                }
+            }
+            return;
+        }
+        let attributes =
+            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"))
+                .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
+        let made = event_loop
+            .create_window(attributes)
+            .map_err(Into::into)
+            .and_then(|window| {
+                let window = Arc::new(window);
+                let renderer = loading_renderer(
+                    window.clone(),
+                    false,
+                    Some(&self.gui.atlas),
+                    Some(&self.gui.panorama),
+                    None,
+                    self.settings.horizon.api,
+                    false,
+                )?;
+                Ok((window, renderer))
+            });
+        match made {
+            Ok((window, renderer)) => {
+                window.request_redraw();
+                self.window = Some(window);
+                self.renderer = Some(renderer);
+            }
+            Err(e) => {
+                self.error = Some(e);
+                event_loop.exit();
+            }
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(app) = &mut self.app {
+            return app.window_event(event_loop, id, event);
+        }
+        let Some(window) = self.window.clone().filter(|w| w.id() == id) else {
+            return;
+        };
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => {
+                if let Some(r) = &mut self.renderer {
+                    r.resize(size.width, size.height);
+                }
+                window.request_redraw();
+            }
+            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = (position.x, position.y);
+                window.request_redraw();
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.click(event_loop),
+            WindowEvent::Touch(touch) => {
+                self.pointer = (touch.location.x, touch.location.y);
+                window.request_redraw();
+                if touch.phase == TouchPhase::Ended {
+                    self.click(event_loop);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape) =>
+            {
+                event_loop.exit()
+            }
+            _ => {}
+        }
+    }
+
+    fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
+        if let Some(app) = &mut self.app {
+            app.device_event(event_loop, id, event);
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = &mut self.app {
+            return app.about_to_wait(event_loop);
+        }
+        if horizon_threads::stop_requests() > 0 {
+            event_loop.exit();
+            return;
+        }
+        while let Ok((attempt, event)) = self.rx.try_recv() {
+            let jobs = self.ctrl.apply(attempt, event);
+            self.drain_side_effects();
+            for job in jobs {
+                if matches!(job, Job::Start) {
+                    self.start_game(event_loop);
+                } else {
+                    self.run_job(job);
+                }
+            }
+        }
+        // Keep the screen on while the files download.
+        let want_awake = self.ctrl.installing;
+        if want_awake != self.awake {
+            self.awake = want_awake;
+            (self.keep_awake)(want_awake);
+        }
+        // A restored sign-in or a confirmed offline name, with the files here: start at once.
+        if self.ctrl.ready_to_start() {
+            self.start_game(event_loop);
+            if self.app.is_some() {
+                return;
+            }
+        }
+        self.sync_screen();
+        if self.ctrl.version != self.drawn || self.ctrl.installing {
+            self.drawn = self.ctrl.version;
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_millis(100),
+        ));
+    }
+
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = &mut self.app {
+            app.exiting(event_loop);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    #[derive(Default)]
+    struct MemStore(Mutex<Option<String>>);
+
+    impl SecretStore for MemStore {
+        fn load(&self) -> io::Result<Option<String>> {
+            Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        }
+        fn save(&self, json: &str) -> io::Result<()> {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(json.to_owned());
+            Ok(())
+        }
+        fn clear(&self) -> io::Result<()> {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Ok(())
+        }
+    }
+
+    fn ctrl(files_ready: bool, has_installer: bool) -> Controller {
+        Controller::new(files_ready, has_installer, Some("test-client".into()))
+    }
+
+    fn account() -> Account {
+        Account::new(
+            Kind::Microsoft,
+            "Steve",
+            "00000000000000000000000000000001",
+            "access",
+            "refresh",
+            u64::MAX,
+        )
+    }
+
+    fn stored() -> Stored {
+        Stored {
+            kind: Kind::Ely,
+            name: "Steve".into(),
+            uuid: "00000000000000000000000000000001".into(),
+            refresh_secret: "refresh".into(),
+            client_token: "client".into(),
+        }
+    }
+
+    /// The current attempt, for applying a result that belongs to it.
+    fn attempt(ctrl: &mut Controller) -> u64 {
+        ctrl.begin_attempt()
+    }
+
+    #[test]
+    fn microsoft_asks_for_a_code_or_explains_it_cannot() {
+        let mut c = ctrl(true, false);
+        let jobs = c.action(BootAction::SignInMicrosoft);
+        assert!(matches!(c.phase, Phase::Asking));
+        assert!(matches!(jobs.as_slice(), [Job::Microsoft]));
+        // No Azure app configured: the screen explains, no thread starts.
+        let mut none = Controller::new(true, false, None);
+        let jobs = none.action(BootAction::SignInMicrosoft);
+        assert!(jobs.is_empty());
+        assert!(matches!(none.phase, Phase::Choose));
+        assert_eq!(none.failure.as_ref().unwrap().retry, Retry::Choose);
+    }
+
+    #[test]
+    fn a_sign_in_keeps_the_account_and_downloads_missing_files() {
+        let mut c = ctrl(false, true);
+        let a = attempt(&mut c);
+        let jobs = c.apply(a, Event::SignIn(Ok(account())));
+        assert!(matches!(
+            c.phase,
+            Phase::Signed {
+                restored: false,
+                ..
+            }
+        ));
+        assert!(c.pending_save.is_some(), "the refresh secret is kept");
+        assert!(c.installing);
+        assert!(matches!(jobs.as_slice(), [Job::Install]));
+        // With the files already there, no download starts.
+        let mut ready = ctrl(true, true);
+        let a = attempt(&mut ready);
+        let jobs = ready.apply(a, Event::SignIn(Ok(account())));
+        assert!(jobs.is_empty());
+        assert!(!ready.installing);
+    }
+
+    #[test]
+    fn a_stale_attempt_changes_nothing() {
+        let mut c = ctrl(true, false);
+        let old = attempt(&mut c);
+        let _new = attempt(&mut c);
+        let jobs = c.apply(old, Event::SignIn(Ok(account())));
+        assert!(jobs.is_empty());
+        assert!(
+            matches!(c.phase, Phase::Choose),
+            "the stale sign-in was ignored"
+        );
+        assert!(c.pending_save.is_none());
+    }
+
+    #[test]
+    fn resume_restores_forgets_or_keeps_offline() {
+        // Success: a restored sign-in.
+        let mut c = ctrl(true, false);
+        let a = attempt(&mut c);
+        c.phase = Phase::Resuming { stored: stored() };
+        c.apply(a, Event::Resume(Ok(account())));
+        assert!(matches!(c.phase, Phase::Signed { restored: true, .. }));
+        assert!(
+            c.ready_to_start(),
+            "restored with the files here: start at once"
+        );
+        // A refused token is forgotten.
+        let mut refused = ctrl(true, false);
+        let a = attempt(&mut refused);
+        refused.phase = Phase::Resuming { stored: stored() };
+        refused.apply(a, Event::Resume(Err("Ely.by sign-in was refused.".into())));
+        assert!(matches!(refused.phase, Phase::Choose));
+        assert!(refused.pending_forget);
+        // No network keeps the account, played offline until it returns.
+        let mut offline = ctrl(true, false);
+        let a = attempt(&mut offline);
+        offline.phase = Phase::Resuming { stored: stored() };
+        offline.apply(
+            a,
+            Event::Resume(Err(
+                "Could not reach Ely.by. Check your internet connection.".into(),
+            )),
+        );
+        assert!(matches!(offline.phase, Phase::SavedOffline { .. }));
+        assert!(!offline.pending_forget);
+        let state = offline.screen_state(&InstallProgress::new());
+        assert!(matches!(state, BootState::Signed { note: Some(_), .. }));
+    }
+
+    #[test]
+    fn typing_edits_the_focused_field() {
+        let mut c = ctrl(true, false);
+        c.action(BootAction::SignInEly);
+        c.action(BootAction::Typed(Output::Text("me".into())));
+        c.action(BootAction::FocusField(ElyField::Password));
+        c.action(BootAction::Typed(Output::Text("pw".into())));
+        c.action(BootAction::Typed(Output::Backspace));
+        let Phase::Ely(form) = &c.phase else {
+            panic!("the form is open");
+        };
+        assert_eq!(form.login, "me");
+        assert_eq!(form.password, "p");
+        assert_eq!(form.focus, ElyField::Password);
+    }
+
+    #[test]
+    fn ely_two_factor_opens_the_code_field_and_refusal_stays_on_the_form() {
+        let mut c = ctrl(true, false);
+        c.action(BootAction::SignInEly);
+        let a = attempt(&mut c);
+        c.apply(a, Event::Ely(Err(NEEDS_2FA.into())));
+        let Phase::Ely(form) = &c.phase else {
+            panic!("the form stays");
+        };
+        assert_eq!(form.otp.as_deref(), Some(""));
+        assert_eq!(form.focus, ElyField::Otp);
+        assert!(form.error.is_some());
+        // A refusal keeps the form's values for another try.
+        let a = attempt(&mut c);
+        c.apply(a, Event::Ely(Err(REFUSED.into())));
+        assert!(matches!(c.phase, Phase::Ely(_)));
+        // Success signs in.
+        let a = attempt(&mut c);
+        c.apply(a, Event::Ely(Ok(account())));
+        assert!(matches!(c.phase, Phase::Signed { .. }));
+    }
+
+    #[test]
+    fn the_offline_name_is_validated_then_plays() {
+        let mut c = ctrl(true, false);
+        c.action(BootAction::PlayOffline);
+        assert!(matches!(c.phase, Phase::OfflineName { .. }));
+        c.action(BootAction::Typed(Output::Text("Bad Name!".into())));
+        c.action(BootAction::Submit);
+        assert!(matches!(c.phase, Phase::OfflineName { error: Some(_), .. }));
+        // Clear it and type a valid name.
+        if let Phase::OfflineName { name, .. } = &mut c.phase {
+            name.clear();
+        }
+        c.action(BootAction::Typed(Output::Text("Steve_2".into())));
+        c.action(BootAction::Submit);
+        assert!(matches!(c.phase, Phase::Offline { .. }));
+        assert!(c.ready_to_start());
+        // Without the files, offline is unavailable and the screen explains.
+        let mut no_files = ctrl(false, false);
+        no_files.action(BootAction::PlayOffline);
+        assert!(matches!(no_files.phase, Phase::Choose));
+        assert_eq!(no_files.failure.as_ref().unwrap().retry, Retry::Choose);
+    }
+
+    #[test]
+    fn install_failure_retries_while_it_can_then_explains_a_restart() {
+        let mut c = ctrl(false, true);
+        let a = attempt(&mut c);
+        c.apply(a, Event::SignIn(Ok(account())));
+        assert!(c.installing);
+        c.installer_taken(); // the FnOnce was called
+        let a = c.current_attempt();
+        c.apply(a, Event::Install(Err("No space left on device".into())));
+        assert!(!c.installing);
+        assert_eq!(c.failure.as_ref().unwrap().retry, Retry::Install);
+        // This run has no installer left: Retry explains the restart instead of looping.
+        c.action(BootAction::Retry);
+        assert_eq!(c.failure.as_ref().unwrap().retry, Retry::Choose);
+        assert!(!c.installing);
+        // A successful install marks the files ready.
+        let mut ok = ctrl(false, true);
+        let a = attempt(&mut ok);
+        ok.apply(a, Event::Install(Ok(())));
+        assert!(ok.files_ready);
+        assert!(!ok.installing);
+    }
+
+    #[test]
+    fn continue_starts_when_ready_and_downloads_when_missing() {
+        let mut ready = ctrl(true, false);
+        let a = attempt(&mut ready);
+        ready.apply(a, Event::SignIn(Ok(account())));
+        let jobs = ready.action(BootAction::Continue);
+        assert!(matches!(jobs.as_slice(), [Job::Start]));
+        let mut missing = ctrl(false, true);
+        let a = attempt(&mut missing);
+        missing.apply(a, Event::SignIn(Ok(account())));
+        missing.installer_taken();
+        missing.apply(
+            missing.current_attempt(),
+            Event::Install(Err("dropped".into())),
+        );
+        // Continue with the files still missing and no installer left: the screen explains.
+        let jobs = missing.action(BootAction::Continue);
+        assert!(jobs.is_empty());
+        assert!(missing.failure.is_some());
+    }
+
+    #[test]
+    fn sign_out_forgets_the_account() {
+        let mut c = ctrl(true, false);
+        let a = attempt(&mut c);
+        c.apply(a, Event::SignIn(Ok(account())));
+        c.action(BootAction::SignOut);
+        assert!(matches!(c.phase, Phase::Choose));
+        assert!(c.take_forget());
+    }
+
+    #[test]
+    fn the_command_line_carries_the_folders_and_the_session_or_name() {
+        let dir = Path::new("/game");
+        let res = Path::new("/game/resources");
+        let session = Path::new("/game/session.json");
+        assert_eq!(
+            game_args(dir, res, Some(session), None),
+            vec![
+                "--game-dir",
+                "/game",
+                "--resources",
+                "/game/resources",
+                "--session-file",
+                "/game/session.json",
+            ]
+        );
+        assert_eq!(
+            game_args(dir, res, None, Some("Steve")),
+            vec![
+                "--game-dir",
+                "/game",
+                "--resources",
+                "/game/resources",
+                "--name",
+                "Steve"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_session_file_is_private_and_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("session.json");
+        let json = account().session_json();
+        write_session(&path, &json).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), json);
+        let meta = std::fs::metadata(&path).unwrap();
+        let age = meta.modified().unwrap().elapsed().unwrap();
+        assert!(
+            age < std::time::Duration::from_secs(120),
+            "fresh for the core"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+            // An existing file with loose bits is tightened too.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            write_session(&path, &json).unwrap();
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn only_a_transport_error_counts_as_no_connection() {
+        assert!(no_connection(
+            "Could not reach Microsoft. Check your internet connection."
+        ));
+        assert!(!no_connection(
+            "Your Microsoft sign-in expired. Sign in again."
+        ));
+        assert!(!no_connection(REFUSED));
+    }
+
+    #[test]
+    fn the_new_states_say_their_strings_in_both_languages() {
+        let keys = [
+            "horizon.boot.resuming.title",
+            "horizon.boot.resuming.line",
+            "horizon.boot.signed.offline_note",
+            "horizon.boot.offline.name.title",
+            "horizon.boot.offline.name.about",
+            "horizon.boot.offline.name.field",
+            "horizon.boot.offline.name.play",
+            "horizon.boot.offline.name.invalid",
+            "horizon.boot.offline.need_files",
+            "horizon.boot.ely.needs_2fa",
+            "horizon.boot.ely.refused",
+            "horizon.boot.service_said",
+            "horizon.boot.files.no_installer",
+            "horizon.boot.files.retry_restart",
+            "horizon.boot.microsoft.not_configured",
+        ];
+        for code in ["en_us", "ru_ru"] {
+            let (said, missed) = horizon_client::lang::scoped(
+                horizon_client::lang::Language::load(&[], code),
+                || {
+                    keys.iter()
+                        .map(|k| horizon_client::lang::get(k))
+                        .collect::<Vec<_>>()
+                },
+            );
+            assert_eq!(missed, Vec::<String>::new(), "{code}");
+            for text in &said {
+                assert!(
+                    !text.starts_with("horizon.boot."),
+                    "{code}: {text} is a key"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_screen_state_follows_the_phase_and_the_download() {
+        let mut c = ctrl(false, true);
+        assert_eq!(c.screen_state(&InstallProgress::new()), BootState::Choose);
+        let a = attempt(&mut c);
+        c.apply(a, Event::SignIn(Ok(account())));
+        // The download covers the account while it runs.
+        let progress = InstallProgress::new();
+        progress.done.store(10, Ordering::Relaxed);
+        progress.total.store(100, Ordering::Relaxed);
+        progress.set_step("client.jar");
+        assert!(matches!(
+            c.screen_state(&progress),
+            BootState::Files {
+                done_bytes: 10,
+                total_bytes: 100,
+                ..
+            }
+        ));
+        c.installer_taken();
+        c.apply(c.current_attempt(), Event::Install(Ok(())));
+        assert!(matches!(
+            c.screen_state(&progress),
+            BootState::Signed { note: None, .. }
+        ));
+    }
+}

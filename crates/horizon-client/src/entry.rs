@@ -1,6 +1,6 @@
 //! Startup shared by the gameplay library and its executable.
 #[path = "horizon_look.rs"]
-mod horizon_look;
+pub(crate) mod horizon_look;
 use crate::{crash, game, logging};
 use horizon_mod_package::selection::{Argument, LaunchArguments};
 pub(crate) mod dedicated_arguments;
