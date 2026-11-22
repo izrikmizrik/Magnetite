@@ -3,7 +3,7 @@
 //! The flows mirror the desktop launcher's `launcher/src/account.rs`, minus its keychain and
 //! proxy layers, so a phone's game runs the same sign-in as the PC launcher.
 
-use crate::{Account, Body, Endpoints, Kind, SCOPE, agent, now, send, str_field};
+use crate::{Account, Body, Endpoints, Kind, SCOPE, agent, now, send, str_field, unreachable};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -192,10 +192,14 @@ pub fn wait_for_sign_in(
         if now() > code.expires_at {
             return Err("The sign-in code expired. Start again.".into());
         }
-        match poll(ep, client_id, code)? {
-            Poll::Pending => {}
-            Poll::SlowDown => interval = (interval + 5).min(60),
-            Poll::Done(tokens) => return Ok(tokens),
+        // Unreachable is asked again until the code expires: the player is in a browser
+        // meanwhile, and a phone holds back a backgrounded app's network now and then.
+        match poll(ep, client_id, code) {
+            Ok(Poll::Pending) => {}
+            Ok(Poll::SlowDown) => interval = (interval + 5).min(60),
+            Ok(Poll::Done(tokens)) => return Ok(tokens),
+            Err(e) if unreachable(&e) => {}
+            Err(e) => return Err(e),
         }
     }
 }
@@ -391,7 +395,18 @@ pub fn sign_in(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Account, String> {
     let ms = wait_for_sign_in(ep, client_id, code, cancelled)?;
-    let (mc, profile) = finish_sign_in(ep, &ms.access)?;
+    // Xbox, XSTS and Minecraft right after the approval, often with the app still behind the
+    // browser: a step that could not reach its service is tried again a few times.
+    let mut tries = 0;
+    let (mc, profile) = loop {
+        match finish_sign_in(ep, &ms.access) {
+            Err(e) if unreachable(&e) && tries < 5 && !cancelled() => {
+                tries += 1;
+                std::thread::sleep(Duration::from_secs(3));
+            }
+            other => break other?,
+        }
+    };
     Ok(Account {
         kind: Kind::Microsoft,
         name: profile.name,

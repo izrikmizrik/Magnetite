@@ -60,6 +60,7 @@ fn main() {
             let startup = horizon_client::entry::prepare_with_args(args);
             horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
         }),
+        language: system_language(),
     };
     if let Err(error) = horizon_client::boot::run(config) {
         eprintln!("Magnetite: the boot loop stopped: {error}");
@@ -93,6 +94,22 @@ fn open_link(url: &str) {
     unsafe {
         app.openURL_options_completionHandler(&link, &options, None);
     }
+}
+
+/// The system's first preferred language as a game language code: `ru-RU` becomes `ru_ru`.
+#[cfg(target_os = "ios")]
+fn system_language() -> Option<String> {
+    use objc2_foundation::NSLocale;
+    // SAFETY: Foundation's documented class property.
+    let languages = unsafe { NSLocale::preferredLanguages() };
+    let first = languages.firstObject()?.to_string();
+    let code = first.replace('-', "_").to_lowercase();
+    // "zh_hans_cn" style: script codes are not in the game's names; keep language and region.
+    let mut parts = code.split('_').filter(|p| p.len() == 2);
+    let language = parts.next()?;
+    // A language with no region has no game code to match (`ru` alone): the default stays.
+    let region = parts.next()?;
+    Some(format!("{language}_{region}"))
 }
 
 /// The general pasteboard's text (`UIPasteboard.generalPasteboard.string`).

@@ -5,7 +5,7 @@
   "horizon.boot.choose.ely": "Войти через Ely.by",
   "horizon.boot.choose.offline": "Играть офлайн",
   "horizon.boot.code.title": "Вход через Microsoft",
-  "horizon.boot.code.about": "Откройте страницу на любом устройстве и введите этот код. Так это устройство войдёт в аккаунт Microsoft, которому принадлежит Minecraft: Java Edition.",
+  "horizon.boot.code.about": "Код впустит это устройство в аккаунт Microsoft, которому принадлежит Minecraft: Java Edition.",
   "horizon.boot.code.open": "Откройте %s на любом устройстве и введите этот код:",
   "horizon.boot.code.expires": "Код действует ещё около %s секунд.",
   "horizon.boot.code.open_page": "Открыть страницу",

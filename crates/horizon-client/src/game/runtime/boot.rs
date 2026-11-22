@@ -77,17 +77,18 @@ pub struct BootConfig {
     pub install: Option<Installer>,
     /// Start the core with these arguments; it hands its app to the sink.
     pub start: Box<dyn FnOnce(Vec<String>)>,
+    /// The system's language as a game language code (`ru_ru`), or `None`. A first start, with
+    /// no language chosen yet, takes it: the boot screen and the game both speak it.
+    pub language: Option<String>,
 }
 
 /// Run the boot loop until the game takes over (or the player leaves). One event loop per
 /// process: the host sets the factory before calling this.
 pub fn run(mut config: BootConfig) -> Result<()> {
-    // The strings compiled in, in the default language: there are no prepared ones yet, and the
-    // game reads the player's own settings after the hand-over.
-    horizon_client::lang::set(horizon_client::lang::Language::load(
-        &[],
-        &Settings::default().language,
-    ));
+    // The game's own log from the first screen on (`logs/latest.log` in the game folder, and the
+    // host's platform sink): the game's start later keeps the same one.
+    horizon_client::logging::init(&config.game_dir, "Render thread");
+    log::info!("Horizon boot screen in {}", config.game_dir.display());
     // The fonts and the icon, before the first window: the screen draws in the design system's
     // look, not the engine's neutral one. `entry::start` gives it again later; that is harmless.
     crate::entry::horizon_look::give();
@@ -101,6 +102,12 @@ pub fn run(mut config: BootConfig) -> Result<()> {
     // start the boot window leaves unfinished is found by the game's options (`RENDER_MARKER`).
     std::env::set_current_dir(&config.game_dir)?;
     let mut boot = Boot::new(config);
+    // The strings compiled in, in the player's language: there are no prepared ones yet, and the
+    // game reads the player's own settings again after the hand-over.
+    horizon_client::lang::set(horizon_client::lang::Language::load(
+        &[],
+        &boot.settings.language,
+    ));
     let event_loop = horizon_client::window::new_event_loop()?;
     event_loop.run_app(&mut boot)?;
     boot.error.map_or(Ok(()), Err)
@@ -193,6 +200,21 @@ fn write_session(path: &Path, json: &str) -> std::io::Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+/// The game language closest to the system's (`ru_ua`): the same code if the game has it, else
+/// the language in its own country (`ru_ru`, `de_de`); `None` leaves the default.
+fn game_language(system: &str) -> Option<String> {
+    let system = system.trim().to_lowercase().replace('-', "_");
+    let language = system.split('_').next().filter(|l| !l.is_empty())?;
+    let fallback = horizon_client::lang::Language::load(&[], horizon_client::lang::DEFAULT);
+    let has = |code: &str| {
+        code == horizon_client::lang::DEFAULT
+            || horizon_client::lang::Language::load(&[], code).map() != fallback.map()
+    };
+    [system.clone(), format!("{language}_{language}")]
+        .into_iter()
+        .find(|code| has(code))
 }
 
 /// The Microsoft code the player was asked to type, kept in the session folder while the game
@@ -411,6 +433,7 @@ impl Controller {
         if let Some(failure) = &self.failure {
             return BootState::Failed {
                 message: failure.message.clone(),
+                resumes: matches!(failure.retry, Retry::Install),
             };
         }
         if self.installing {
@@ -745,7 +768,21 @@ impl Boot {
         // The player's own options, for the graphics API: reading them also switches it after a
         // driver crash at the last start's renderer (`Settings::load`), before the boot window
         // opens a device. The game reads them again after the hand-over.
-        let settings = Settings::load(&config.game_dir.join("options.txt"));
+        let options = config.game_dir.join("options.txt");
+        let mut settings = Settings::load(&options);
+        // A first start (no options yet) speaks the system's language, and the game keeps it; a
+        // kept code the game has no file for (`ru_ua`) becomes the closest one it has.
+        let wanted = if options.exists() {
+            Some(settings.language.clone())
+        } else {
+            config.language.clone()
+        };
+        if let Some(language) = wanted.as_deref().and_then(game_language)
+            && (language != settings.language || !options.exists())
+        {
+            settings.language = language;
+            settings.save(&options);
+        }
         let mut boot = Self {
             ctrl,
             screen: BootScreen::new(BootState::Choose),
@@ -1042,23 +1079,30 @@ impl Boot {
         if !horizon_client::system_keyboard::platform_keyboard() || self.app.is_some() {
             return;
         }
+        use horizon_client::system_keyboard::Mode;
         let wanted = match &self.ctrl.phase {
-            Phase::Ely(form) => Some((
-                KeyboardFor::Ely(form.focus),
-                match form.focus {
-                    ElyField::Login => form.login.clone(),
-                    ElyField::Password => form.password.clone(),
-                    ElyField::Otp => form.otp.clone().unwrap_or_default(),
-                },
-                form.focus == ElyField::Password,
-            )),
-            Phase::OfflineName { name, .. } => Some((KeyboardFor::Offline, name.clone(), false)),
+            Phase::Ely(form) => Some(match form.focus {
+                ElyField::Login => (KeyboardFor::Ely(form.focus), form.login.clone(), Mode::Literal),
+                ElyField::Password => (
+                    KeyboardFor::Ely(form.focus),
+                    form.password.clone(),
+                    Mode::Secret,
+                ),
+                ElyField::Otp => (
+                    KeyboardFor::Ely(form.focus),
+                    form.otp.clone().unwrap_or_default(),
+                    Mode::Literal,
+                ),
+            }),
+            Phase::OfflineName { name, .. } => {
+                Some((KeyboardFor::Offline, name.clone(), Mode::Literal))
+            }
             _ => None,
         };
         match wanted {
-            Some((field, text, secret)) => {
+            Some((field, text, mode)) => {
                 if self.keyboard_for != Some(field) {
-                    horizon_client::system_keyboard::show(&text, secret);
+                    horizon_client::system_keyboard::show(&text, mode);
                     self.keyboard_for = Some(field);
                 }
             }
@@ -1451,6 +1495,15 @@ mod tests {
         assert_eq!(form.login, "me");
         assert_eq!(form.password, "p");
         assert_eq!(form.focus, ElyField::Password);
+    }
+
+    #[test]
+    fn the_system_language_becomes_the_closest_game_language() {
+        assert_eq!(game_language("ru-UA").as_deref(), Some("ru_ru"));
+        assert_eq!(game_language("uk_UA").as_deref(), Some("uk_ua"));
+        assert_eq!(game_language("fr_BE").as_deref(), Some("fr_fr"));
+        assert_eq!(game_language("en_US").as_deref(), Some("en_us"));
+        assert_eq!(game_language("xx_YY"), None);
     }
 
     #[test]

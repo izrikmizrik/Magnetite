@@ -6,12 +6,24 @@
 //! edits a keyboard would make ([`edits`]): text, backspaces and Enter.
 use std::sync::{Mutex, OnceLock};
 
+/// What a field takes, which sets how the keyboard types into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Prose (chat, a sign, a book): the keyboard's suggestions and capitals help.
+    Text,
+    /// Typed exactly as keyed (a login, an e-mail, a name, a code): no suggestions, no capitals
+    /// the keyboard adds by itself.
+    Literal,
+    /// A password: as `Literal`, and hidden.
+    Secret,
+}
+
 /// The host's keyboard: plain functions, callable from the game's thread.
 #[derive(Clone, Copy)]
 pub struct PlatformKeyboard {
-    /// Show the keyboard over a box holding `text` with the caret at its end; `secret` for a
-    /// password (no suggestions, hidden). False when it can't be shown.
-    pub show: fn(&str, bool) -> bool,
+    /// Show the keyboard over a box holding `text` with the caret at its end, typing as `Mode`
+    /// says. False when it can't be shown.
+    pub show: fn(&str, Mode) -> bool,
     /// Hide the keyboard.
     pub hide: fn(),
     /// The box's text now; `None` while the keyboard is not up.
@@ -44,12 +56,12 @@ pub enum Edit {
 }
 
 /// Show the keyboard for a field holding `text` (its own text, so a backspace has something to
-/// take); `secret` for a password. False with no platform keyboard or when it failed.
-pub fn show(text: &str, secret: bool) -> bool {
+/// take), typing as `mode` says. False with no platform keyboard or when it failed.
+pub fn show(text: &str, mode: Mode) -> bool {
     let Some(keyboard) = KEYBOARD.get() else {
         return false;
     };
-    let shown = (keyboard.show)(text, secret);
+    let shown = (keyboard.show)(text, mode);
     *SHOWN.lock().unwrap_or_else(|e| e.into_inner()) = shown.then(|| text.to_owned());
     shown
 }

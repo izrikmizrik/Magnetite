@@ -129,7 +129,11 @@ pub enum BootState {
         step: String,
     },
     /// A step did not work.
-    Failed { message: String },
+    Failed {
+        message: String,
+        /// Try again picks up where the step stopped (a download), so the screen says so.
+        resumes: bool,
+    },
     /// Choosing the offline name: one field, typed on the same keys as the
     /// Ely.by form.
     OfflineName { name: String, error: Option<String> },
@@ -834,9 +838,13 @@ impl BootScreen {
                 }),
                 ..Content::default()
             },
-            BootState::Failed { message } => Content {
+            BootState::Failed { message, resumes } => Content {
                 title: lang::get("horizon.boot.failed.title"),
-                lines: vec![message.clone(), lang::get("horizon.boot.failed.hint")],
+                lines: if *resumes {
+                    vec![message.clone(), lang::get("horizon.boot.failed.hint")]
+                } else {
+                    vec![message.clone()]
+                },
                 buttons: vec![
                     (lang::get("horizon.boot.retry"), BootAction::Retry),
                     (lang::get("horizon.boot.back"), BootAction::Back),
@@ -1115,6 +1123,7 @@ mod tests {
             },
             BootState::Failed {
                 message: "No connection".into(),
+                resumes: true,
             },
             BootState::OfflineName {
                 name: "Steve".into(),

@@ -16,6 +16,8 @@ horizon-client = { path = "../horizon-client", default-features = false, feature
 horizon-mod-host = { path = "../horizon-mod-host", default-features = false, features = ["mobile"] }
 # The refresh-secret store the boot loop keeps (a private file in the app's own folder).
 horizon-account = { path = "../horizon-account" }
+# The game's thread stack size, for the android_main thread (`android_on_create`).
+horizon-guest-stack = { path = "../horizon-guest-stack" }
 # The workspace patches this to third_party/winit (the Android input patch).
 winit = { version = "0.30.13", features = ["android-native-activity"] }
 android_logger = { version = "0.15", default-features = false }

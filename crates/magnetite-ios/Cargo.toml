@@ -27,7 +27,7 @@ version = "0.5.3"
 [target.'cfg(target_os = "ios")'.dependencies.objc2-foundation]
 version = "0.2.2"
 default-features = false
-features = ["std", "NSThread", "NSString", "NSURL", "NSDictionary"]
+features = ["std", "NSThread", "NSString", "NSURL", "NSDictionary", "NSLocale", "NSArray"]
 
 [target.'cfg(target_os = "ios")'.dependencies.objc2-ui-kit]
 version = "0.2.2"

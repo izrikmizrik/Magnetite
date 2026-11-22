@@ -13,6 +13,8 @@ serde_json = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # The Ely.by client token: 16 random bytes.
 getrandom = "0.3"
+# Why a service could not be reached, for the game's log.
+log = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

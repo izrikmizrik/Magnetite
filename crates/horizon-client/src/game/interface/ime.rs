@@ -74,7 +74,7 @@ impl Game<'_> {
                 (Screen::Chat, Some(chat)) => chat.value().to_owned(),
                 _ => String::new(),
             };
-            keyboard::show(&text, false);
+            keyboard::show(&text, keyboard::Mode::Text);
         } else if !want && keyboard::shown() {
             keyboard::hide();
             return;

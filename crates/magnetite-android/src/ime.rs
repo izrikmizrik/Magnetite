@@ -47,10 +47,12 @@ unsafe extern "C" {
 }
 
 enum Command {
-    Show(String, bool),
+    Show(String, horizon_client::system_keyboard::Mode),
     SetText(String),
     Hide,
     Poll(u64),
+    /// Keep the screen on, or let it sleep again (`View.setKeepScreenOn` on the native view).
+    KeepScreenOn(bool),
 }
 
 struct Ui {
@@ -275,16 +277,25 @@ impl Ui {
 
     fn apply(&self, env: &mut JNIEnv<'_>, c: Command) -> jni::errors::Result<()> {
         match c {
-            Command::Show(text, secret) => {
-                // Multiline in both modes so the Enter key types '\n' (the core's Enter).
-                // 0x20001: text, multiline; 0x80000: no suggestions. A secret box is masked
-                // with PasswordTransformationMethod, not the password variation: that
-                // variation gives the keyboard a Done action instead of an Enter key.
+            Command::Show(text, mode) => {
+                use horizon_client::system_keyboard::Mode;
+                let secret = mode == Mode::Secret;
+                // Text: 0x20001, text and multiline, so the Enter key types '\n' (the core's
+                // Enter). A login and a password take the password variations instead (0x91
+                // visible, 0x81 hidden, with 0x80000 no suggestions): only those keep every
+                // keyboard (SwiftKey included, tried on a phone) from capitalising or
+                // correcting what is typed. Their Enter key is a Done action that types
+                // nothing; the form's own button sends it.
+                let input_type = match mode {
+                    Mode::Text => 0x20001,
+                    Mode::Literal => 0x80091,
+                    Mode::Secret => 0x80081,
+                };
                 env.call_method(
                     &self.edit,
                     "setInputType",
                     "(I)V",
-                    &[JValue::Int(if secret { 0xA0001 } else { 0x20001 })],
+                    &[JValue::Int(input_type)],
                 )?;
                 let mask = if secret {
                     env.call_static_method(
@@ -363,6 +374,14 @@ impl Ui {
                     .text
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
+            }
+            Command::KeepScreenOn(on) => {
+                env.call_method(
+                    &self.native,
+                    "setKeepScreenOn",
+                    "(Z)V",
+                    &[JValue::Bool(u8::from(on))],
+                )?;
             }
             Command::Hide => {
                 *self
@@ -456,18 +475,33 @@ fn callback_inner(ui: &Ui) -> i32 {
     1
 }
 
-/// Show the system keyboard over the hidden box holding `text`, the caret at its end; `secret`
-/// masks the box and turns suggestions off. False when the keyboard cannot be shown.
-pub fn show(text: &str, secret: bool) -> bool {
+/// Show the system keyboard over the hidden box holding `text`, the caret at its end, typing as
+/// `mode` says (a secret box is masked; a literal or secret one has no suggestions). False when
+/// the keyboard cannot be shown.
+pub fn show(text: &str, mode: horizon_client::system_keyboard::Mode) -> bool {
     if let Some(ui) = UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) {
         winit::platform::android::set_native_text_input_active(true);
         // Do not diff an earlier editor buffer while Show is queued on the UI thread.
         ui.ready.store(false, Ordering::Release);
         ui.active.store(true, Ordering::Release);
-        ui.enqueue(Command::Show(text.into(), secret));
+        ui.enqueue(Command::Show(text.into(), mode));
         true
     } else {
         false
+    }
+}
+
+/// Keep the screen on while `on` (the files' download), through the native view on the UI
+/// thread. Not `AndroidApp::set_window_flags`: android-activity 0.6.1 takes its state for
+/// writing there while the event loop holds it for reading around every callback, so a call from
+/// the game's loop never returns. False when the UI thread can't be reached.
+pub fn keep_screen_on(on: bool) -> bool {
+    match UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) {
+        Some(ui) => {
+            ui.enqueue(Command::KeepScreenOn(on));
+            true
+        }
+        None => false,
     }
 }
 

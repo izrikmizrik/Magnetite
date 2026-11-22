@@ -282,6 +282,14 @@ pub fn agent() -> ureq::Agent {
 
 /// One request's result: the status and the JSON body (null when there is none). Transport
 /// errors name the service, never the URL's query or the request.
+/// The start of the message for a service the request never reached (`send`).
+pub(crate) const UNREACHABLE: &str = "Could not reach ";
+
+/// Whether `error` says a service could not be reached, not that it refused: worth asking again.
+pub(crate) fn unreachable(error: &str) -> bool {
+    error.starts_with(UNREACHABLE)
+}
+
 pub(crate) fn send(
     request: ureq::Request,
     body: Option<Body>,
@@ -304,9 +312,11 @@ pub(crate) fn send(
     let response = match result {
         Ok(r) => r,
         Err(ureq::Error::Status(_, r)) => r,
-        Err(ureq::Error::Transport(_)) => {
+        Err(ureq::Error::Transport(e)) => {
+            // The kind only: a transport error's own text carries the address.
+            log::warn!("{service} could not be reached: {}", e.kind());
             return Err(format!(
-                "Could not reach {service}. Check your internet connection."
+                "{UNREACHABLE}{service}. Check your internet connection."
             ));
         }
     };

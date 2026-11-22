@@ -14,7 +14,7 @@ mod ime;
 use std::sync::OnceLock;
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
-use winit::platform::android::activity::{AndroidApp, OnCreateState, WindowManagerFlags};
+use winit::platform::android::activity::{AndroidApp, OnCreateState};
 
 /// The logcat sink. The core's own logger stays the process logger (its log file and crash
 /// reports); every line it keeps is also written here (`logging::set_platform_sink`).
@@ -118,23 +118,56 @@ fn open_link(url: &str) {
     }
 }
 
+/// The system's language as a game language code (`ru_ru`): `java.util.Locale.getDefault()`'s
+/// language and country, lower case. `None` when Java can't be reached.
+fn system_language() -> Option<String> {
+    let app = ACTIVITY.get()?;
+    // SAFETY: `AndroidApp` keeps the VM alive for this call.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let code = env.with_local_frame(8, |env| -> jni::errors::Result<String> {
+        let locale = env
+            .call_static_method(
+                "java/util/Locale",
+                "getDefault",
+                "()Ljava/util/Locale;",
+                &[],
+            )?
+            .l()?;
+        let mut part = |name: &str| -> jni::errors::Result<String> {
+            let value = env
+                .call_method(&locale, name, "()Ljava/lang/String;", &[])?
+                .l()?;
+            Ok(env.get_string(&jni::objects::JString::from(value))?.into())
+        };
+        let language = part("getLanguage")?;
+        let country = part("getCountry")?;
+        Ok(format!("{language}_{country}").to_lowercase())
+    });
+    match code {
+        Ok(code) if code.len() > 1 && !code.ends_with('_') => Some(code),
+        Ok(_) => None,
+        Err(error) => {
+            let _ = env.exception_clear();
+            early(
+                log::Level::Warn,
+                &format!("Android gave no language: {error}"),
+            );
+            None
+        }
+    }
+}
+
 /// Keeps the screen on while the files download (`Window`'s flag, the boot loop's switch).
 fn keep_awake(on: bool) {
-    let Some(app) = ACTIVITY.get() else {
-        return;
-    };
-    let (add, remove) = if on {
-        (
-            WindowManagerFlags::KEEP_SCREEN_ON,
-            WindowManagerFlags::empty(),
-        )
-    } else {
-        (
-            WindowManagerFlags::empty(),
-            WindowManagerFlags::KEEP_SCREEN_ON,
-        )
-    };
-    app.set_window_flags(add, remove);
+    // Through the UI thread (`ime::keep_screen_on`): the window flags' own call deadlocks when
+    // made from the event loop's callbacks, which is where the boot loop runs.
+    if !ime::keep_screen_on(on) {
+        early(
+            log::Level::Warn,
+            "Android cannot keep the screen on: no UI thread",
+        );
+    }
 }
 
 /// Ends the process when the game returns. winit allows one event loop per process and Android
@@ -147,6 +180,24 @@ impl Drop for ExitOnReturn {
         std::process::exit(0);
     }
 }
+
+/// Sizes the stack of every Rust thread spawned without a size, `android_main` included, as the
+/// library loads: android-activity spawns `android_main` with `std::thread::spawn`, and the game's
+/// loop runs there and builds the game on it (`Game::new` overflows the 2 MiB default), as a
+/// desktop runs it on a thread of the guest stack's size (`horizon_guest_stack::builder`).
+/// `RUST_MIN_STACK` is read once, at the first spawn, and android-activity spawns its stdio
+/// forwarder before `android_on_create`: only a load-time constructor comes first. It reserves
+/// address space, not memory.
+extern "C" fn size_rust_threads() {
+    let stack = horizon_guest_stack::GUEST_STACK_BYTES + horizon_guest_stack::HOST_HEADROOM;
+    // SAFETY: runs while the dynamic loader loads this library, before any of its code or
+    // threads; nothing else in the process reads this variable.
+    unsafe { std::env::set_var("RUST_MIN_STACK", stack.to_string()) };
+}
+
+#[used]
+#[unsafe(link_section = ".init_array")]
+static SIZE_RUST_THREADS: extern "C" fn() = size_rust_threads;
 
 /// android-activity's optional onCreate entry point: the Java UI thread, before `android_main`.
 /// The keyboard's hidden EditText belongs to that thread (View operations check their thread),
@@ -222,6 +273,7 @@ fn android_main(app: AndroidApp) {
             let startup = horizon_client::entry::prepare_with_args(args);
             horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
         }),
+        language: system_language(),
     };
     // The platform's keyboard and clipboard for the core, as the iOS host gives them: the
     // hidden EditText the system keyboard types into, and the ClipboardManager.

@@ -14,7 +14,7 @@
   "horizon.boot.choose.ely": "Sign in with Ely.by",
   "horizon.boot.choose.offline": "Play offline",
   "horizon.boot.code.title": "Sign in with Microsoft",
-  "horizon.boot.code.about": "Open the page on any device and enter this code. It signs this device in to the Microsoft account that owns Minecraft: Java Edition.",
+  "horizon.boot.code.about": "The code signs this device in to the Microsoft account that owns Minecraft: Java Edition.",
   "horizon.boot.code.open": "Open %s on any device and enter this code:",
   "horizon.boot.code.expires": "The code works for about %s more seconds.",
   "horizon.boot.code.open_page": "Open the page",
