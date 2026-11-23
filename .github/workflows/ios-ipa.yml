@@ -19,6 +19,10 @@ env:
   MAGNETITE_TABLES_SHA256: ${{ vars.MAGNETITE_TABLES_SHA256 }}
   IPHONEOS_DEPLOYMENT_TARGET: '16.0'
 
+# A tag's run attaches the IPA to the tag's GitHub release.
+permissions:
+  contents: write
+
 jobs:
   ipa:
     name: IPA (arm64, ad hoc)
@@ -26,6 +30,14 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+      - name: The version (the tag's, or a numbered dev build)
+        run: |
+          case "$GITHUB_REF_NAME" in
+            v*) version="${GITHUB_REF_NAME#v}" ;;
+            e4mc-v*) version="${GITHUB_REF_NAME#e4mc-v}" ;;
+            *) version="0.1.0-dev.${GITHUB_RUN_NUMBER}" ;;
+          esac
+          echo "MAGNETITE_VERSION=$version" >> "$GITHUB_ENV"
       - name: Rust with the iOS target
         run: |
           rustup toolchain install stable --profile minimal --target aarch64-apple-ios
@@ -40,11 +52,25 @@ jobs:
         run: cargo build --locked -p magnetite-ios --target aarch64-apple-ios --profile fast
       - name: Package the .ipa
         env:
-          MAGNETITE_IOS_VERSION: 0.1.0
           MAGNETITE_IOS_BUILD: ${{ github.run_number }}
-        run: bash packaging/ios/package.sh target/aarch64-apple-ios/fast/magnetite dist/Magnetite-unsigned.ipa
+        # The bundle's short version is digits and dots only: a dev build's suffix stays out.
+        run: |
+          export MAGNETITE_IOS_VERSION="${MAGNETITE_VERSION%%-*}"
+          bash packaging/ios/package.sh target/aarch64-apple-ios/fast/magnetite "dist/Magnetite-$MAGNETITE_VERSION-ios-unsigned.ipa"
       - uses: actions/upload-artifact@v4
         with:
           name: magnetite-ios
-          path: dist/Magnetite-unsigned.ipa
+          path: dist/*.ipa
           if-no-files-found: error
+      - name: Attach to the tag's GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Magnetite $MAGNETITE_VERSION"
+          case "$GITHUB_REF_NAME" in e4mc-v*) title="$title (e4mc)";; esac
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --prerelease --title "$title" \
+                 --notes-file packaging/release-notes.md \
+            || gh release view "$GITHUB_REF_NAME" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" "dist/Magnetite-$MAGNETITE_VERSION-ios-unsigned.ipa" --clobber
