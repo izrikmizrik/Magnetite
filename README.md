@@ -58,6 +58,43 @@ trades).
 | Lua (LuaJIT) | yes | yes | yes (interpreted) |
 | Native Rust | built by the launcher | prebuilt by the mod farm (planned) | with JIT (planned) |
 
+### Lua mods
+
+A Lua mod needs no build: scripts in `data/<id>/scripts/`, one line in `horizon-mod.toml`, and it runs on every
+platform (LuaJIT; on iOS without its JIT compiler). `/reload` reads the scripts again.
+
+```toml
+[lua]
+entry = "main.lua"
+```
+
+```lua
+-- A global hook: one more pool in the dungeon chest.
+horizon.on("loot_table_load", function(id, table)
+  if id == "minecraft:chests/simple_dungeon" then
+    table.pools[#table.pools + 1] = { rolls = 1,
+      entries = { { type = "minecraft:item", name = "mymod:onion" } } }
+  end
+  return table
+end)
+
+-- A block's Part: an egg used on the skillet turns into a filled skillet.
+horizon.block("mymod:skillet", {
+  use_item_on = function(ctx)
+    if ctx.stack and ctx.stack.id == "minecraft:egg" then
+      ctx.used = { id = "mymod:skillet_with_egg", count = 1 }
+      return "success"
+    end
+  end,
+})
+```
+
+Lua has `loot_table_load`, `tags_updated`, `use_item_on` and `block_entity_tick` today, plus data transforms
+(`horizon.data_transform`) and crafting kinds (`horizon.crafting_recipe`); more hooks will follow. A script's error
+is logged with its file and line and the game goes on; a hook that keeps failing or runs too long is switched off
+until `/reload` (limits in `config/horizon-lua.json`). The whole API is in the guide's
+[Lua section](docs/magnetite/modding.en.md#lua-mods).
+
 ## Building
 
 The workspace builds as Horizon's does ([build guide](docs/native-client.md#run-from-a-checkout)); the phones'
