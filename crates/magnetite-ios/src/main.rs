@@ -127,7 +127,10 @@ fn system_language() -> Option<String> {
     Some(format!("{language}_{region}"))
 }
 
-/// The launcher upright, the game on its side: the window's own orientations.
+/// The launcher upright, the game on its side: the window's own orientations, and on iOS 16 and
+/// later a request to turn the screen to them now. winit only asks UIKit to rotate the old way
+/// (`attemptRotationToDeviceOrientation`), which iOS 16 ignores: the window stayed as it was and
+/// drew the launcher on its side. Info.plist lists both, so either one is the app's to ask for.
 #[cfg(target_os = "ios")]
 fn set_orientation(window: &winit::window::Window, upright: bool) {
     use winit::platform::ios::{ValidOrientations, WindowExtIOS};
@@ -136,6 +139,57 @@ fn set_orientation(window: &winit::window::Window, upright: bool) {
     } else {
         ValidOrientations::Landscape
     });
+    request_geometry(window, upright);
+}
+
+/// iOS 16's way to turn the screen: the view controller rereads its orientations, the window
+/// scene is asked for them.
+#[cfg(target_os = "ios")]
+fn request_geometry(window: &winit::window::Window, upright: bool) {
+    use objc2::ClassType;
+    use objc2::rc::Retained;
+    use objc2_ui_kit::{
+        UIInterfaceOrientationMask, UIView, UIViewController, UIWindowSceneGeometryPreferencesIOS,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    // Before iOS 16 the class is missing, and winit's own request is the one that works.
+    if objc2::runtime::AnyClass::get("UIWindowSceneGeometryPreferencesIOS").is_none() {
+        return;
+    }
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::UiKit(handle) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: winit's handle points at its live UIView and view controller, used here on the
+    // main thread that the window's callbacks run on.
+    let view: &UIView = unsafe { handle.ui_view.cast::<UIView>().as_ref() };
+    if let Some(controller) = handle.ui_view_controller {
+        // SAFETY: as the view above: winit's live view controller, on the main thread.
+        let controller: &UIViewController = unsafe { controller.cast().as_ref() };
+        // SAFETY: UIKit's documented iOS 16 method (checked above), on the main thread.
+        unsafe { controller.setNeedsUpdateOfSupportedInterfaceOrientations() };
+    }
+    // SAFETY: UIKit's documented property, on the main thread.
+    let Some(scene) = view.window().and_then(|w| unsafe { w.windowScene() }) else {
+        return;
+    };
+    let mask = if upright {
+        UIInterfaceOrientationMask::Portrait
+    } else {
+        UIInterfaceOrientationMask::Landscape
+    };
+    // SAFETY: the documented initializer and request, on the main thread; no error handler means
+    // there is no block to outlive the call.
+    unsafe {
+        let preferences: Retained<UIWindowSceneGeometryPreferencesIOS> =
+            UIWindowSceneGeometryPreferencesIOS::initWithInterfaceOrientations(
+                UIWindowSceneGeometryPreferencesIOS::alloc(),
+                mask,
+            );
+        scene.requestGeometryUpdateWithPreferences_errorHandler(&preferences, None);
+    }
 }
 
 /// The general pasteboard's text (`UIPasteboard.generalPasteboard.string`).

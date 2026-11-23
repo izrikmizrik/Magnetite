@@ -695,6 +695,9 @@ fn decode_icon(png: &[u8]) -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(bytes, info.width, info.height).ok()
 }
 
+/// The name on the game's windows (title bar, taskbar, the window switcher).
+pub const TITLE: &str = "Magnetite";
+
 /// Apply the icon given to [`set_icon_png`] and the vanilla minimum inner size (320x240) to a window.
 /// Windows has a separate taskbar icon slot from the small window icon; requiring a given icon to
 /// decode there prevents a generic taskbar icon from appearing.

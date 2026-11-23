@@ -901,6 +901,9 @@ struct Boot {
     renaming: Option<String>,
     confirm_remove_profile: bool,
     drawn: u64,
+    /// The last frame did not reach the screen (a minimized window, a screen gone dark): drawn
+    /// again on the next tick, not at once, which would spin a core while nothing can show.
+    frame_missed: bool,
     /// The game's app once it is handed over: every event goes to it from then on.
     app: Option<App>,
     error: Option<Box<dyn std::error::Error>>,
@@ -982,6 +985,7 @@ impl Boot {
             renaming: None,
             confirm_remove_profile: false,
             drawn: 0,
+            frame_missed: false,
             app: None,
             error: None,
         };
@@ -1233,15 +1237,17 @@ impl Boot {
             return;
         };
         match renderer.render(&loading_frame(&batch)) {
-            Ok(true) => return,
+            Ok(true) => {
+                self.frame_missed = false;
+                return;
+            }
             Ok(false) => {}
             Err(e) => log::warn!("Horizon: boot frame failed: {e}"),
         }
-        // The frame was not shown: its rasterized glyphs never reached the atlas, so draw again.
+        // The frame was not shown: its rasterized glyphs never reached the atlas, so it is drawn
+        // again, on the next tick (`about_to_wait`).
         horizon_client::ui_theme::reset_atlas();
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
+        self.frame_missed = true;
     }
 
     /// Whether the phone launcher owns the screen: it is on, and Play was not pressed yet. The
@@ -2205,7 +2211,7 @@ impl ApplicationHandler for Boot {
             return;
         }
         let attributes =
-            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"))
+            horizon_client::window::with_icon(Window::default_attributes().with_title(TITLE))
                 .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
         let made = event_loop
             .create_window(attributes)
@@ -2360,8 +2366,9 @@ impl ApplicationHandler for Boot {
             }
         }
         self.sync_screen();
-        if self.ctrl.version != self.drawn || self.ctrl.installing {
+        if self.ctrl.version != self.drawn || self.ctrl.installing || self.frame_missed {
             self.drawn = self.ctrl.version;
+            self.frame_missed = false;
             if let Some(window) = &self.window {
                 window.request_redraw();
             }

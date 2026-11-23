@@ -49,6 +49,13 @@ features = [
     "UIWindow",
     "UIPopoverPresentationController",
     "UIPresentationController",
+    # Turning the screen between the launcher (upright) and the game (on its side) on iOS 16 and
+    # later: the window scene's geometry request (`set_orientation`).
+    "UIScene",
+    "UIWindowScene",
+    "UIWindowSceneGeometryPreferences",
+    "UIWindowSceneGeometryPreferencesIOS",
+    "UIOrientation",
 ]
 
 [lints]

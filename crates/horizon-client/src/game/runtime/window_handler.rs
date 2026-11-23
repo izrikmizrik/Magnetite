@@ -411,7 +411,14 @@ impl ApplicationHandler for Game<'_> {
         let size = self.options.window_size.map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
         let attributes =
-            horizon_client::window::with_icon(Window::default_attributes().with_title("Horizon"));
+            horizon_client::window::with_icon(Window::default_attributes().with_title(TITLE));
+        // The game lies on its side on a phone or tablet; the launcher before it stood upright
+        // (Info.plist allows both, so the window says which it takes).
+        #[cfg(target_os = "ios")]
+        let attributes = winit::platform::ios::WindowAttributesExtIOS::with_valid_orientations(
+            attributes,
+            winit::platform::ios::ValidOrientations::Landscape,
+        );
         // Wayland names the window by its app id, which the horizon.desktop entry matches.
         #[cfg(target_os = "linux")]
         let attributes = winit::platform::wayland::WindowAttributesExtWayland::with_name(
