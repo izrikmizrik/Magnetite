@@ -123,6 +123,7 @@ pub mod item_render;
 pub mod item_sync;
 pub mod item_tooltip;
 pub mod join_seq;
+pub mod launcher_mods;
 pub mod launcher_screen;
 pub mod move_gate;
 pub mod profiles;

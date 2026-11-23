@@ -36,6 +36,10 @@ pub enum Page {
     EditProfile,
     /// A setting's values, the chosen one checked.
     Pick(Setting),
+    /// The installed mods, each turned on or off.
+    Mods,
+    /// Magnetite's mod platform: what it offers, installing one.
+    BrowseMods,
 }
 
 /// A setting the settings page lists, by what it changes.
@@ -161,6 +165,29 @@ pub enum Action {
     Setting(Setting),
     /// The value at this index on the pick page.
     Choose(usize),
+    /// Turn the installed mod at this index on or off.
+    ToggleMod(usize),
+    /// Install (or update) the platform's mod at this index.
+    InstallMod(usize),
+}
+
+/// An installed mod's row: its name, its line under it ("1.2 · WebAssembly"), and whether it is
+/// on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModLine {
+    pub name: String,
+    pub detail: String,
+    pub enabled: bool,
+}
+
+/// A platform mod's row: its name, its summary, and its button ("Install", "Installed"...), which
+/// taps only when it installs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BrowseLine {
+    pub name: String,
+    pub summary: String,
+    pub button: String,
+    pub can_install: bool,
 }
 
 /// What the launcher shows: the boot loop fills it from the account, the profile and the game's
@@ -198,6 +225,11 @@ pub struct View {
     /// The pick page's values as shown, and the chosen one.
     pub choices: Vec<String>,
     pub chosen: Option<usize>,
+    /// The Mods page's rows, the platform's rows, and the platform page's note (loading, a
+    /// failure, nothing there yet).
+    pub mods: Vec<ModLine>,
+    pub browse: Vec<BrowseLine>,
+    pub browse_note: Option<String>,
 }
 
 /// A sign-in page (the boot screen's content), drawn in the launcher's look.
@@ -329,6 +361,14 @@ impl LauncherScreen {
                 self.draw_edit_profile(ui, &mut targets);
                 Some(("horizon.launcher.profile.edit", Action::Back))
             }
+            (None, Page::Mods) => {
+                self.draw_mods(ui, &mut targets);
+                Some(("horizon.launcher.mods", Action::Back))
+            }
+            (None, Page::BrowseMods) => {
+                self.draw_browse(ui, &mut targets);
+                Some(("horizon.launcher.browse", Action::Open(Page::Mods)))
+            }
             (None, Page::Pick(setting)) => {
                 self.draw_pick(ui, &mut targets);
                 // The settings page, not home, is where its back arrow goes.
@@ -434,7 +474,11 @@ impl LauncherScreen {
         y += 12.0;
         // The rows.
         for (icon, key, action) in [
-            ("launcher/mods", "horizon.launcher.mods", Action::Mods),
+            (
+                "launcher/mods",
+                "horizon.launcher.mods",
+                Action::Open(Page::Mods),
+            ),
             (
                 "launcher/controls",
                 "horizon.launcher.controls",
@@ -652,6 +696,115 @@ impl LauncherScreen {
             false,
         );
         targets.push((Action::NewProfile, add));
+    }
+
+    fn draw_mods(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let mut y = self.content_top();
+        let find = Rect::new(col.x, y, col.w, ROW);
+        row(
+            ui,
+            find,
+            "launcher/download",
+            &lang::get("horizon.launcher.mods.browse"),
+            None,
+            true,
+        );
+        targets.push((Action::Open(Page::BrowseMods), find));
+        y += ROW + 12.0;
+        let hint = if self.view.mods.is_empty() {
+            "horizon.launcher.mods.empty"
+        } else {
+            "horizon.launcher.mods.hint"
+        };
+        for line in wrap(ui, Face::Regular, 13.0, &lang::get(hint), col.w) {
+            ui.text(Face::Regular, 13.0, col.x + 2.0, y, color::muted(), &line);
+            y += 19.0;
+        }
+        y += 10.0;
+        let row_h = 60.0;
+        for (i, m) in self.view.mods.iter().enumerate() {
+            let rect = Rect::new(col.x, y, col.w, row_h);
+            ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, color::raised());
+            let room = rect.w - 16.0 - 70.0;
+            let name = first_line(ui, Face::Medium, 15.0, &m.name, room);
+            ui.text(
+                Face::Medium,
+                15.0,
+                rect.x + 16.0,
+                rect.y + 10.0,
+                color::text(),
+                &name,
+            );
+            let detail = first_line(ui, Face::Regular, 12.0, &m.detail, room);
+            ui.text(
+                Face::Regular,
+                12.0,
+                rect.x + 16.0,
+                rect.y + 32.0,
+                color::muted(),
+                &detail,
+            );
+            switch(ui, rect.x + rect.w - 62.0, rect.y + 16.0, m.enabled);
+            targets.push((Action::ToggleMod(i), rect));
+            y += row_h + GAP;
+        }
+    }
+
+    fn draw_browse(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let mut y = self.content_top();
+        if let Some(note) = &self.view.browse_note {
+            for line in wrap(ui, Face::Regular, 14.0, note, col.w) {
+                ui.text(Face::Regular, 14.0, col.x + 2.0, y, color::muted(), &line);
+                y += 20.0;
+            }
+            y += 12.0;
+        }
+        let row_h = 64.0;
+        for (i, m) in self.view.browse.iter().enumerate() {
+            let rect = Rect::new(col.x, y, col.w, row_h);
+            ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, color::raised());
+            let bw = ui.measure(Face::Medium, 13.0, &m.button) + 24.0;
+            let room = rect.w - 16.0 - bw - 24.0;
+            let name = first_line(ui, Face::Medium, 15.0, &m.name, room);
+            ui.text(
+                Face::Medium,
+                15.0,
+                rect.x + 16.0,
+                rect.y + 11.0,
+                color::text(),
+                &name,
+            );
+            let summary = first_line(ui, Face::Regular, 12.0, &m.summary, room);
+            ui.text(
+                Face::Regular,
+                12.0,
+                rect.x + 16.0,
+                rect.y + 35.0,
+                color::muted(),
+                &summary,
+            );
+            let button = Rect::new(rect.x + rect.w - bw - 12.0, rect.y + 16.0, bw, 32.0);
+            let (fill, ink) = if m.can_install {
+                (color::text(), color::bg())
+            } else {
+                (color::hover(), color::muted())
+            };
+            ui.rounded(button.x, button.y, button.w, button.h, 16.0, fill);
+            ui.text(
+                Face::Medium,
+                13.0,
+                button.x + 12.0,
+                button.y + 7.0,
+                ink,
+                &m.button,
+            );
+            if m.can_install {
+                targets.push((Action::InstallMod(i), rect));
+            }
+            y += row_h + GAP;
+        }
     }
 
     fn draw_pick(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
@@ -964,6 +1117,27 @@ fn draw_flow(ui: &mut Ui, flow: &Flow, targets: &mut Vec<(Action, Rect)>) {
         targets.push((Action::Boot(action.clone()), rect));
         y += ROW + GAP;
     }
+}
+
+/// The first line of `text` that fits `width`, with an ellipsis when there was more.
+fn first_line(ui: &Ui, face: Face, size: f32, text: &str, width: f32) -> String {
+    let lines = wrap(ui, face, size, text, width);
+    match lines.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, ..] => format!("{first}…"),
+    }
+}
+
+/// An on/off switch at (`x`, `y`), 46 by 28 dp: white with the knob right when on.
+fn switch(ui: &mut Ui, x: f32, y: f32, on: bool) {
+    let (track, knob, at) = if on {
+        (color::text(), color::bg(), x + 21.0)
+    } else {
+        (color::hover(), color::muted(), x + 3.0)
+    };
+    ui.rounded(x, y, 46.0, 28.0, 14.0, track);
+    ui.rounded(at, y + 3.0, 22.0, 22.0, 11.0, knob);
 }
 
 /// A plate row: an icon, a label, a value or a chevron on the right.

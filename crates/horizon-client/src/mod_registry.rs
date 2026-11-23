@@ -16,12 +16,17 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-/// Where the registry publishes its index (the launcher's `INDEX_URL`).
-pub const INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
+/// Where Magnetite's mod platform publishes its index (github.com/izrikmizrik/magnetite-mods,
+/// Horizon's index format). Horizon's own registry is not asked: its mods come only with its
+/// owners' leave (docs/unification/plan.md). A build may name another with `MAGNETITE_MOD_INDEX`.
+pub const INDEX_URL: &str = match option_env!("MAGNETITE_MOD_INDEX") {
+    Some(url) => url,
+    None => "https://izrikmizrik.github.io/magnetite-mods/index.json",
+};
 /// The Minecraft version this game is: the registry's `game`.
 pub const GAME: &str = horizon_core::version::VERSION_ID;
-/// The registry's pages on the website, `<SITE>/<id>`.
-pub const SITE: &str = "https://playhorizon.dev/mods";
+/// The platform's pages, `<SITE>/<id>`.
+pub const SITE: &str = "https://izrikmizrik.github.io/magnetite-mods";
 /// The last index fetched, beside `options.txt`: the launcher keeps its own copy there too.
 pub const CACHE: &str = "mod-browser/horizon-index.json";
 /// What the launcher's browser installed (`installed::MANIFEST`).
@@ -31,11 +36,7 @@ const DOWNLOADS: &str = "mod-browser/downloads";
 /// Larger than any index should be.
 const MAX_INDEX: u64 = 16 << 20;
 /// The game asks the registry by this name.
-const AGENT: &str = concat!(
-    "horizon-rust/horizon/",
-    env!("CARGO_PKG_VERSION"),
-    " (in-game mod browser)"
-);
+const AGENT: &str = concat!("Magnetite/", env!("CARGO_PKG_VERSION"), " (mod browser)");
 
 /// Where the index comes from: `HORIZON_MOD_INDEX` (a file or an `https://`
 /// address, for a test registry), else [`INDEX_URL`]; as the launcher reads it.
@@ -111,6 +112,29 @@ pub fn installable<'a>(index: &Index, p: &'a Project) -> Option<&'a Version> {
 /// mods this game installs, with the version installed in `home` when there is
 /// one.
 pub fn listings(index: &Index, home: &Path) -> Vec<Listing> {
+    listings_with(index, home, installable)
+}
+
+/// The version of mod `p` the phone launcher installs before the game starts: the newest for
+/// this Minecraft version, content or WebAssembly (a `.hmod` without native code), whose
+/// capabilities this build knows.
+pub fn installable_any<'a>(index: &Index, p: &'a Project) -> Option<&'a Version> {
+    if p.kind != Kind::Mod {
+        return None;
+    }
+    index.installable(p, GAME)
+}
+
+/// [`listings`] of every mod the launcher installs ([`installable_any`]).
+pub fn listings_any(index: &Index, home: &Path) -> Vec<Listing> {
+    listings_with(index, home, installable_any)
+}
+
+fn listings_with(
+    index: &Index,
+    home: &Path,
+    installable: for<'a> fn(&Index, &'a Project) -> Option<&'a Version>,
+) -> Vec<Listing> {
     let installed = Installed::load(home).unwrap_or_default();
     let mut out: Vec<Listing> = index
         .projects
@@ -160,9 +184,29 @@ pub fn install(
     id: &str,
     get: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
 ) -> Result<Done, String> {
+    install_with(index, home, id, get, installable)
+}
+
+/// [`install`] of any mod the launcher installs ([`installable_any`]).
+pub fn install_any(
+    index: &Index,
+    home: &Path,
+    id: &str,
+    get: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
+) -> Result<Done, String> {
+    install_with(index, home, id, get, installable_any)
+}
+
+fn install_with(
+    index: &Index,
+    home: &Path,
+    id: &str,
+    get: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
+    installable: for<'a> fn(&Index, &'a Project) -> Option<&'a Version>,
+) -> Result<Done, String> {
     let p = index
         .project(id)
-        .ok_or_else(|| format!("{id} isn't in Horizon's registry"))?;
+        .ok_or_else(|| format!("{id} isn't on Magnetite's mod platform"))?;
     let v = installable(index, p)
         .ok_or_else(|| format!("{} has no version this game can install", p.name))?;
     let relative = format!("{}/{id}.hmod", crate::mod_list::DIR);

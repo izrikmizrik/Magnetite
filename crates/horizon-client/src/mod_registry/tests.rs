@@ -74,7 +74,7 @@ fn the_browser_lists_only_content_mods_for_this_game() {
     let ids: Vec<&str> = listed.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(ids, ["ruby"], "no native mod, no mod for another version");
     assert_eq!(listed[0].version, "1.0");
-    assert_eq!(listed[0].page, "https://playhorizon.dev/mods/ruby");
+    assert_eq!(listed[0].page, format!("{SITE}/ruby"));
     assert_eq!(listed[0].installed, None);
     fs::remove_dir_all(&home).unwrap();
 }

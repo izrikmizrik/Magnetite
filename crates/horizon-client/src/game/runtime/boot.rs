@@ -28,6 +28,7 @@ use horizon_client::game_files::{
 use horizon_client::lang;
 use horizon_client::launcher_screen::{self, LauncherScreen};
 use horizon_client::osk::Output;
+use horizon_client::mod_registry;
 use horizon_client::profiles::Profiles;
 use std::cell::RefCell;
 use std::path::Path;
@@ -281,6 +282,41 @@ fn resign_label(left: i64) -> (String, bool) {
         lang::tr("horizon.launcher.resign.hours", &[&hours, &minutes])
     };
     (text, days == 0)
+}
+
+/// Magnetite's mod platform as the launcher has it: the index read last and what it offers, the
+/// page's note, the mod being installed, and the thread at work.
+#[derive(Default)]
+struct Platform {
+    index: Option<Arc<horizon_mod_package::index::Index>>,
+    listings: Vec<horizon_client::mod_browser::Listing>,
+    note: Option<String>,
+    installing: Option<String>,
+    job: Option<Receiver<PlatformJob>>,
+}
+
+/// What the platform's thread sends back.
+enum PlatformJob {
+    Index(
+        std::result::Result<
+            (
+                Arc<horizon_mod_package::index::Index>,
+                Vec<horizon_client::mod_browser::Listing>,
+            ),
+            String,
+        >,
+    ),
+    Installed(
+        std::result::Result<mod_registry::Done, String>,
+        Vec<horizon_client::mod_browser::Listing>,
+    ),
+}
+
+/// The platform's work on its own thread: reading the index and installing block on the network.
+fn spawn_mods_job(name: &str, work: impl FnOnce() + Send + 'static) {
+    if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(work) {
+        log::warn!("Horizon: no thread for the mod platform: {e}");
+    }
 }
 
 /// How far a finger moves, in physical pixels, before the launcher takes it as a scroll.
@@ -828,6 +864,9 @@ struct Boot {
     /// to scroll the page instead of tapping.
     touch_from: Option<(f64, f64)>,
     dragging: bool,
+    /// The Mods page's installed mods, read when it opens, and Magnetite's mod platform.
+    mod_rows: Vec<horizon_client::launcher_mods::ModRow>,
+    platform: Platform,
     /// The game's languages (`lang::available` over the prepared files), once they are there.
     languages: RefCell<Option<Vec<horizon_client::lang::LanguageInfo>>>,
     clipboard: SystemClipboard,
@@ -918,6 +957,8 @@ impl Boot {
             touch_from: None,
             dragging: false,
             languages: RefCell::new(None),
+            mod_rows: Vec::new(),
+            platform: Platform::default(),
             clipboard: SystemClipboard::default(),
             awake: false,
             keyboard_for: None,
@@ -1317,6 +1358,150 @@ impl Boot {
             confirm_remove_profile: self.confirm_remove_profile,
             choices,
             chosen,
+            mods: self
+                .mod_rows
+                .iter()
+                .map(|m| launcher_screen::ModLine {
+                    name: m.name.clone(),
+                    detail: format!(
+                        "{} · {}",
+                        m.version,
+                        lang::get(if m.wasm {
+                            "horizon.launcher.mods.wasm"
+                        } else {
+                            "horizon.launcher.mods.content"
+                        })
+                    ),
+                    enabled: self.settings.mods.enabled.contains(&m.id),
+                })
+                .collect(),
+            browse: self
+                .platform
+                .listings
+                .iter()
+                .map(|l| {
+                    let installing = self.platform.installing.as_deref() == Some(l.id.as_str());
+                    let (key, can_install) = match &l.installed {
+                        _ if installing => ("horizon.launcher.browse.installing", false),
+                        Some(v) if *v == l.version => ("horizon.launcher.browse.installed", false),
+                        Some(_) => ("horizon.launcher.browse.update", true),
+                        None => ("horizon.launcher.browse.install", true),
+                    };
+                    launcher_screen::BrowseLine {
+                        name: l.name.clone(),
+                        summary: l.summary.clone(),
+                        button: lang::get(key),
+                        can_install: can_install && self.platform.job.is_none(),
+                    }
+                })
+                .collect(),
+            browse_note: self.platform.note.clone(),
+        }
+    }
+
+    /// The Mods page opens: the installed mods read again.
+    fn read_mods(&mut self) {
+        self.mod_rows = horizon_client::launcher_mods::installed(&self.game_dir);
+    }
+
+    /// The platform's page opens: its index read on a thread (the kept copy offline).
+    fn browse_platform(&mut self) {
+        if self.platform.job.is_some() {
+            return;
+        }
+        if self.platform.listings.is_empty() {
+            self.platform.note = Some(lang::get("horizon.launcher.browse.loading"));
+        }
+        let home = self.game_dir.clone();
+        let (send, receive) = channel();
+        self.platform.job = Some(receive);
+        spawn_mods_job("mod-platform-index", move || {
+            let read = mod_registry::load_index(&home, &mod_registry::location()).map(|index| {
+                let listings = mod_registry::listings_any(&index, &home);
+                (Arc::new(index), listings)
+            });
+            let _ = send.send(PlatformJob::Index(read));
+        });
+    }
+
+    /// Install (or update) the platform's mod at `i` on a thread.
+    fn install_mod(&mut self, i: usize) {
+        let (Some(index), Some(listing), None) = (
+            self.platform.index.clone(),
+            self.platform.listings.get(i),
+            &self.platform.job,
+        ) else {
+            return;
+        };
+        let id = listing.id.clone();
+        self.platform.installing = Some(id.clone());
+        let home = self.game_dir.clone();
+        let (send, receive) = channel();
+        self.platform.job = Some(receive);
+        spawn_mods_job("mod-platform-install", move || {
+            let done = mod_registry::install_any(&index, &home, &id, &mod_registry::download);
+            let listings = mod_registry::listings_any(&index, &home);
+            let _ = send.send(PlatformJob::Installed(done, listings));
+        });
+    }
+
+    /// What the platform's thread finished: the list, or an install, which turns the mod on.
+    fn poll_platform(&mut self) {
+        let Some(job) = &self.platform.job else {
+            return;
+        };
+        let finished = match job.try_recv() {
+            Ok(finished) => finished,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.platform.job = None;
+                self.platform.installing = None;
+                return;
+            }
+        };
+        self.platform.job = None;
+        self.platform.installing = None;
+        match finished {
+            PlatformJob::Index(Ok((index, listings))) => {
+                self.platform.note = listings
+                    .is_empty()
+                    .then(|| lang::get("horizon.launcher.browse.empty"));
+                self.platform.index = Some(index);
+                self.platform.listings = listings;
+            }
+            PlatformJob::Index(Err(e)) => {
+                log::warn!("Horizon: Magnetite's mod platform: {e}");
+                self.platform.note = Some(lang::tr("horizon.launcher.browse.failed", &[&e]));
+            }
+            PlatformJob::Installed(done, listings) => {
+                self.platform.listings = listings;
+                match done {
+                    Ok(done) => {
+                        self.settings.mods.enabled.insert(done.id.clone());
+                        self.settings.save(&self.options_path());
+                        self.read_mods();
+                        let name = self
+                            .mod_rows
+                            .iter()
+                            .find(|m| m.id == done.id)
+                            .map_or(done.id.clone(), |m| m.name.clone());
+                        self.notice = Some((
+                            lang::tr("horizon.launcher.browse.done", &[&name]),
+                            Instant::now() + Duration::from_secs(3),
+                        ));
+                    }
+                    Err(e) => {
+                        log::warn!("Horizon: a mod from the platform did not install: {e}");
+                        self.notice = Some((
+                            lang::tr("horizon.launcher.browse.install_failed", &[&e]),
+                            Instant::now() + Duration::from_secs(4),
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 
@@ -1535,7 +1720,25 @@ impl Boot {
                     note(self, "horizon.launcher.wait");
                 }
             }
-            Action::Open(p) => page(self, p),
+            Action::Open(p) => {
+                match p {
+                    Page::Mods => self.read_mods(),
+                    Page::BrowseMods => self.browse_platform(),
+                    _ => {}
+                }
+                page(self, p);
+            }
+            Action::ToggleMod(i) => {
+                if let Some(id) = self.mod_rows.get(i).map(|m| m.id.clone()) {
+                    let enabled = &mut self.settings.mods.enabled;
+                    if !enabled.remove(&id) {
+                        enabled.insert(id);
+                    }
+                    let options = self.options_path();
+                    self.settings.save(&options);
+                }
+            }
+            Action::InstallMod(i) => self.install_mod(i),
             Action::Back => page(self, Page::Home),
             Action::AddAccount => {
                 page(self, Page::Home);
@@ -1661,7 +1864,11 @@ impl Boot {
                     note(self, "horizon.launcher.open_folder.failed");
                 }
             }
-            Action::Mods | Action::Controls | Action::Setting(_) => {
+            Action::Mods => {
+                self.read_mods();
+                page(self, Page::Mods);
+            }
+            Action::Controls | Action::Setting(_) => {
                 note(self, "horizon.launcher.soon.note")
             }
         }
@@ -2014,6 +2221,7 @@ impl ApplicationHandler for Boot {
             return;
         }
         self.sync_system_keyboard(event_loop);
+        self.poll_platform();
         while let Ok((attempt, event)) = self.rx.try_recv() {
             let jobs = self.ctrl.apply(attempt, event);
             self.drain_side_effects();
