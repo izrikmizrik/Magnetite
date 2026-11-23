@@ -11,6 +11,7 @@ members = [
     "crates/horizon-telemetry",
     "crates/horizon-hooks",
     "crates/horizon-mod-host",
+    "crates/horizon-mod-lua",
     "crates/horizon-game",
     "crates/horizon-official",
     "crates/horizon-heartbeat",

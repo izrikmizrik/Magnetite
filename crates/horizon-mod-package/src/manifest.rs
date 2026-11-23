@@ -100,6 +100,9 @@ pub struct Manifest {
     pub native: Option<Native>,
     /// A wasm mod's `mod.wasm`, its toolchain and what it was linked against.
     pub wasm: Option<Wasm>,
+    /// A Lua mod's scripts: `data/<id>/scripts/*.lua`, `entry` the one that runs first.
+    #[serde(default)]
+    pub lua: Option<Lua>,
     /// The linear memory, in MiB (1 to [`MAX_WASM_MEMORY_MIB`]), this wasm mod or library expects
     /// its dependency group to have. The group gets the largest any member declares, up to the
     /// instance's cap; with none declared it gets 1 GiB. Native mods are not wasm groups: they
@@ -114,6 +117,40 @@ pub struct Manifest {
     /// Free-form values other mods read through `PackageInfo::property`.
     #[serde(default)]
     pub properties: std::collections::BTreeMap<String, Property>,
+}
+
+/// `[lua]`: a mod whose code is Lua scripts (LuaJIT on every platform).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Lua {
+    /// The script that runs first, under `data/<id>/scripts/` (`main.lua`).
+    pub entry: String,
+}
+
+impl Lua {
+    /// Where a mod's scripts sit in its package.
+    pub fn scripts_dir(id: &str) -> String {
+        format!("data/{id}/scripts/")
+    }
+    /// `entry` is a plain `.lua` path of `[a-z0-9_]` parts under the scripts folder.
+    fn check(&self) -> Result<(), String> {
+        let name = self.entry.strip_suffix(".lua").unwrap_or("");
+        let plain = !name.is_empty()
+            && name.split('/').all(|part| {
+                !part.is_empty()
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            });
+        if plain {
+            Ok(())
+        } else {
+            Err(format!(
+                "{MANIFEST}: [lua] entry {:?} is not a .lua path of [a-z0-9_] parts",
+                self.entry
+            ))
+        }
+    }
 }
 
 /// The most `[properties]` keys a manifest may declare.
@@ -486,6 +523,14 @@ impl Manifest {
             return Err(format!(
                 "{MANIFEST}: wasm_memory_mib {mib} is not 1 to {MAX_WASM_MEMORY_MIB} (wasm32's 4 GiB)"
             ));
+        }
+        if let Some(lua) = &m.lua {
+            lua.check()?;
+            if m.native.is_some() || m.wasm.is_some() {
+                return Err(format!(
+                    "{MANIFEST}: a mod is [native], [wasm] or [lua], not two of them"
+                ));
+            }
         }
         if m.native.is_some() && m.wasm.is_some() {
             if let Some(refusal) = wasm_loop() {
@@ -1910,6 +1955,40 @@ capabilities = ["registries"]
         std::fs::create_dir(root.join("native")).unwrap();
         assert!(Package::read(&root).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `[lua] entry` names a plain `.lua` script, and a mod is one kind of code.
+    #[test]
+    fn a_lua_mod_names_its_entry_script() {
+        let with = |table: &str| {
+            Manifest::parse(&format!(
+                "{EXAMPLE}
+{table}
+"
+            ))
+        };
+        let m = with(
+            "[lua]
+entry = \"main.lua\"",
+        )
+        .unwrap();
+        assert_eq!(m.lua.unwrap().entry, "main.lua");
+        assert!(
+            with(
+                "[lua]
+entry = \"stations/pot.lua\""
+            )
+            .is_ok()
+        );
+        for bad in ["main", "../main.lua", "Main.lua", "/main.lua", "a//b.lua"] {
+            let e = with(&format!(
+                "[lua]
+entry = {bad:?}"
+            ))
+            .unwrap_err();
+            assert!(e.contains("[lua] entry"), "{bad}: {e}");
+        }
+        assert_eq!(Lua::scripts_dir("ruby"), "data/ruby/scripts/");
     }
 
     #[test]

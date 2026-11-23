@@ -89,6 +89,7 @@
     "horizon-mod-points": "platform",
     "horizon-mod-render": "platform",
     "horizon-mod-wasm": "platform",
+    "horizon-mod-lua": "platform",
     "horizon-server-launch": "platform",
     "horizon-mod-package": "engine",
     "horizon-mod-runtime": "engine",
