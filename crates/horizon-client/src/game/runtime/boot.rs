@@ -319,6 +319,9 @@ fn spawn_mods_job(name: &str, work: impl FnOnce() + Send + 'static) {
     }
 }
 
+/// How far one line of a mouse wheel scrolls the launcher, in dp.
+const WHEEL_LINE_DP: f32 = 48.0;
+
 /// How far a finger moves, in physical pixels, before the launcher takes it as a scroll.
 const DRAG_PIXELS: f64 = 24.0;
 
@@ -1211,10 +1214,15 @@ impl Boot {
                 launcher.set_notice(notice);
                 launcher.set_flow(flow);
             }
-            let width = self.size()[0] as f32;
+            let [width, height] = self.size();
+            let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
             if let Some(launcher) = &self.launcher {
                 self.with_ui(&mut batch, |ui| {
-                    ui.set_density(LauncherScreen::density_for(width));
+                    ui.set_density(LauncherScreen::density_for(
+                        width as f32,
+                        height as f32,
+                        scale,
+                    ));
                     launcher.draw(ui);
                 });
             }
@@ -1358,6 +1366,17 @@ impl Boot {
             confirm_remove_profile: self.confirm_remove_profile,
             choices,
             chosen,
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            files_line: lang::tr(
+                if self.ctrl.files_ready {
+                    "horizon.launcher.files.ready"
+                } else if self.ctrl.installing {
+                    "horizon.launcher.files.loading"
+                } else {
+                    "horizon.launcher.files.missing"
+                },
+                &[&GAME_VERSION],
+            ),
             mods: self
                 .mod_rows
                 .iter()
@@ -1986,6 +2005,87 @@ impl Boot {
         }
     }
 
+    /// A key pressed on a real keyboard. In the launcher Escape goes back a step (and, on a phone,
+    /// leaves the app from the home page, as before); without a system keyboard (a PC) the keys
+    /// type into the profile's name or the sign-in page's field. Before the launcher, Escape
+    /// leaves.
+    fn key_pressed(&mut self, event_loop: &ActiveEventLoop, event: &winit::event::KeyEvent) {
+        use horizon_client::system_keyboard::Edit;
+        use winit::keyboard::{Key, NamedKey};
+        let escape = event.physical_key == PhysicalKey::Code(KeyCode::Escape);
+        let system_keyboard = horizon_client::system_keyboard::platform_keyboard();
+        if !self.launcher_active() {
+            if escape {
+                event_loop.exit();
+            }
+            return;
+        }
+        if escape {
+            if !self.launcher_back() && system_keyboard {
+                event_loop.exit();
+            }
+            return;
+        }
+        if system_keyboard {
+            // A phone's typing comes through its system keyboard (`sync_system_keyboard`).
+            return;
+        }
+        let edit = match &event.logical_key {
+            Key::Named(NamedKey::Backspace) => Edit::Backspace,
+            Key::Named(NamedKey::Enter) => Edit::Enter,
+            _ => match event.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
+                Some(text) => Edit::Text(text.to_owned()),
+                None => return,
+            },
+        };
+        if self.renaming.is_some() {
+            return self.type_profile_name(edit);
+        }
+        if self.launcher_flow().is_some()
+            && matches!(self.ctrl.phase, Phase::Ely(_) | Phase::OfflineName { .. })
+        {
+            let action = match edit {
+                Edit::Text(text) => BootAction::Typed(Output::Text(text)),
+                Edit::Backspace => BootAction::Typed(Output::Backspace),
+                Edit::Enter => BootAction::Submit,
+            };
+            self.act(event_loop, action);
+        }
+    }
+
+    /// The launcher's step back (Escape, a phone's back): the name being typed is kept, a sign-in
+    /// started from a kept account goes back to it, a page goes to the one it came from. False
+    /// with nowhere to go back to: the home page, or a sign-in page that must finish.
+    fn launcher_back(&mut self) -> bool {
+        use launcher_screen::Page;
+        if self.renaming.is_some() {
+            self.finish_rename();
+            return true;
+        }
+        if self.launcher_flow().is_some() {
+            if self.signing_in
+                && let Some(current) = self.keyring.current
+            {
+                self.signing_in = false;
+                self.pick_account(current);
+                return true;
+            }
+            return false;
+        }
+        let Some(launcher) = self.launcher.as_mut() else {
+            return false;
+        };
+        let to = match launcher.page() {
+            Page::Home => return false,
+            Page::Pick(_) => Page::Settings,
+            Page::BrowseMods => Page::Mods,
+            Page::EditProfile => Page::Profiles,
+            _ => Page::Home,
+        };
+        launcher.set_page(to);
+        true
+    }
+
     /// A key of the system keyboard into the profile's name; Enter keeps it.
     fn type_profile_name(&mut self, edit: horizon_client::system_keyboard::Edit) {
         use horizon_client::system_keyboard::Edit;
@@ -2196,11 +2296,22 @@ impl ApplicationHandler for Boot {
                     TouchPhase::Moved => {}
                 }
             }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape) =>
-            {
-                event_loop.exit()
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                self.key_pressed(event_loop, &event);
+                window.request_redraw();
+            }
+            // A PC's wheel scrolls the launcher's page: a line is a row's height.
+            WindowEvent::MouseWheel { delta, .. } if self.launcher_active() => {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, lines) => {
+                        lines * WHEEL_LINE_DP * window.scale_factor() as f32
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(at) => at.y as f32,
+                };
+                if let Some(launcher) = &self.launcher {
+                    launcher.scroll_by(dy);
+                }
+                window.request_redraw();
             }
             _ => {}
         }

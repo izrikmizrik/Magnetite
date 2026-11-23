@@ -19,9 +19,26 @@ const GAP: f32 = 8.0;
 const ROW: f32 = 56.0;
 /// The status bar and the notch at the top (the window draws under them on a phone).
 const TOP: f32 = 36.0;
-/// Where a page's bar (back arrow, title, rule) ends, and where its content starts unscrolled.
-const BAR_BOTTOM: f32 = TOP + 57.0;
-const CONTENT_TOP: f32 = TOP + 72.0;
+/// A wide window (a PC's): the sidebar's width, and the widest the page column grows.
+const SIDEBAR: f32 = 232.0;
+const CONTENT_MAX: f32 = 760.0;
+/// The narrowest window, in dp, laid out wide.
+const WIDE_MIN: f32 = 640.0;
+
+/// Whether `ui` lays out wide: a window wider than tall and wide enough for the sidebar.
+fn wide(ui: &Ui) -> bool {
+    ui.w > ui.h && ui.w >= WIDE_MIN
+}
+
+/// The page column: the screen less its margins on a phone, right of the sidebar on a PC.
+fn area_for(ui: &Ui) -> Rect {
+    if wide(ui) {
+        let x = SIDEBAR + 28.0;
+        Rect::new(x, 20.0, (ui.w - x - 28.0).min(CONTENT_MAX), ui.h - 40.0)
+    } else {
+        Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN)
+    }
+}
 
 /// The launcher's pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,6 +239,9 @@ pub struct View {
     pub renaming: bool,
     pub profile_removable: bool,
     pub confirm_remove_profile: bool,
+    /// The app's version, and the game files' line on a wide home ("Minecraft 26.3 · ready").
+    pub version: String,
+    pub files_line: String,
     /// The pick page's values as shown, and the chosen one.
     pub choices: Vec<String>,
     pub chosen: Option<usize>,
@@ -259,6 +279,8 @@ pub struct LauncherScreen {
     /// How far the page is scrolled, in dp, and how far it can be (from the last draw).
     scroll: Cell<f32>,
     max_scroll: Cell<f32>,
+    /// The page column the last draw laid out (`area_for`).
+    area: Cell<Rect>,
 }
 
 impl LauncherScreen {
@@ -271,6 +293,7 @@ impl LauncherScreen {
             frame: RefCell::new(Layout::default()),
             scroll: Cell::new(0.0),
             max_scroll: Cell::new(0.0),
+            area: Cell::new(Rect::default()),
         }
     }
     pub fn page(&self) -> Page {
@@ -295,7 +318,7 @@ impl LauncherScreen {
 
     /// Where a scrolled page's content starts.
     fn content_top(&self) -> f32 {
-        CONTENT_TOP - self.scroll.get()
+        self.area.get().y + 72.0 - self.scroll.get()
     }
     pub fn set_view(&mut self, view: View) {
         self.view = view;
@@ -310,10 +333,16 @@ impl LauncherScreen {
         self.flow = flow;
     }
 
-    /// The physical pixels per dp for a screen `width` physical pixels across: a phone held upright
-    /// gets about its own density (a 1080-pixel-wide phone, about 2.6), never less than one.
-    pub fn density_for(width: f32) -> f32 {
-        (width / COLUMN_DP).max(1.0)
+    /// The physical pixels per dp for a window `width` by `height` physical pixels with the system's
+    /// `scale`: a phone held upright gets about its own density (a 1080-pixel-wide phone, about
+    /// 2.6), a PC's wide window the system's own scale; never less than one.
+    pub fn density_for(width: f32, height: f32, scale: f32) -> f32 {
+        let scale = scale.max(1.0);
+        if width > height && width / scale >= WIDE_MIN {
+            scale
+        } else {
+            (width / COLUMN_DP).max(1.0)
+        }
     }
 
     /// The action at `pos`, in the window's physical pixels, from the last draw.
@@ -334,11 +363,19 @@ impl LauncherScreen {
     pub fn draw(&self, ui: &mut Ui) {
         let mut targets = Vec::new();
         ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::bg());
+        let wide = wide(ui);
+        self.area.set(area_for(ui));
+        // A wide window lists the top pages in its sidebar: they have no back arrow.
+        let top = |back: Action| (!wide).then_some(back);
         // A page with a bar scrolls under it: its content first, then the bar over it, whose
         // targets come first so a row scrolled under the bar never takes its taps.
         let bar = match (&self.flow, self.page) {
             (Some(flow), _) => {
-                draw_flow(ui, flow, &mut targets);
+                draw_flow(ui, self.area.get(), flow, &mut targets);
+                None
+            }
+            (None, Page::Home) if wide => {
+                self.draw_home_wide(ui, &mut targets);
                 None
             }
             (None, Page::Home) => {
@@ -347,34 +384,39 @@ impl LauncherScreen {
             }
             (None, Page::Settings) => {
                 self.draw_settings(ui, &mut targets);
-                Some(("horizon.launcher.settings", Action::Back))
+                Some(("horizon.launcher.settings", top(Action::Back)))
             }
             (None, Page::Accounts) => {
                 self.draw_accounts(ui, &mut targets);
-                Some(("horizon.launcher.accounts", Action::Back))
+                Some(("horizon.launcher.accounts", top(Action::Back)))
             }
             (None, Page::Profiles) => {
                 self.draw_profiles(ui, &mut targets);
-                Some(("horizon.launcher.profiles", Action::Back))
+                Some(("horizon.launcher.profiles", top(Action::Back)))
             }
             (None, Page::EditProfile) => {
                 self.draw_edit_profile(ui, &mut targets);
-                Some(("horizon.launcher.profile.edit", Action::Back))
+                Some((
+                    "horizon.launcher.profile.edit",
+                    Some(Action::Open(Page::Profiles)),
+                ))
             }
             (None, Page::Mods) => {
                 self.draw_mods(ui, &mut targets);
-                Some(("horizon.launcher.mods", Action::Back))
+                Some(("horizon.launcher.mods", top(Action::Back)))
             }
             (None, Page::BrowseMods) => {
                 self.draw_browse(ui, &mut targets);
-                Some(("horizon.launcher.browse", Action::Open(Page::Mods)))
+                Some(("horizon.launcher.browse", Some(Action::Open(Page::Mods))))
             }
             (None, Page::Pick(setting)) => {
                 self.draw_pick(ui, &mut targets);
                 // The settings page, not home, is where its back arrow goes.
-                Some((setting.label_key(), Action::Open(Page::Settings)))
+                Some((setting.label_key(), Some(Action::Open(Page::Settings))))
             }
         };
+        let col = self.area.get();
+        let bar_bottom = col.y + 57.0;
         if let Some((title, back)) = bar {
             let bottom = targets
                 .iter()
@@ -386,22 +428,31 @@ impl LauncherScreen {
                 self.scroll.set(self.max_scroll.get());
             }
             let content = std::mem::take(&mut targets);
-            ui.rounded(0.0, 0.0, ui.w, BAR_BOTTOM, 0.0, color::bg());
-            let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
-            top_bar(ui, col, &lang::get(title), true, &mut targets);
-            if let Some(last) = targets.last_mut() {
+            ui.rounded(
+                col.x - MARGIN,
+                0.0,
+                col.w + 2.0 * MARGIN,
+                bar_bottom,
+                0.0,
+                color::bg(),
+            );
+            top_bar(ui, col, &lang::get(title), back.is_some(), &mut targets);
+            if let (Some(last), Some(back)) = (targets.last_mut(), back) {
                 last.0 = back;
             }
-            targets.extend(content.into_iter().filter(|(_, r)| r.y + r.h > BAR_BOTTOM));
+            targets.extend(content.into_iter().filter(|(_, r)| r.y + r.h > bar_bottom));
         } else {
             self.max_scroll.set(0.0);
             self.scroll.set(0.0);
         }
+        if wide {
+            self.draw_sidebar(ui, &mut targets);
+        }
         if let Some(note) = &self.notice {
             let nw = ui.measure(Face::Regular, 13.0, note) + 32.0;
             let (x, y) = (
-                (ui.w - nw) / 2.0,
-                ui.h - MARGIN - ROW - GAP - 64.0 - GAP - 44.0,
+                col.x + (col.w - nw) / 2.0,
+                col.y + col.h - ROW - GAP - 64.0 - GAP - 44.0,
             );
             ui.rounded(x, y, nw, 36.0, 18.0, color::hover());
             ui.text(Face::Regular, 13.0, x + 16.0, y + 8.0, color::text(), note);
@@ -413,8 +464,7 @@ impl LauncherScreen {
     }
 
     fn draw_home(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let (w, h) = (ui.w, ui.h);
-        let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, h - TOP - MARGIN);
+        let col = self.area.get();
         // The header: the account and the two buttons on its right.
         let head = 64.0;
         let avatar = 40.0;
@@ -470,7 +520,14 @@ impl LauncherScreen {
             targets.push((action, rect));
         }
         let mut y = col.y + head;
-        ui.rounded(0.0, y, w, 1.0, 0.0, color::border());
+        ui.rounded(
+            col.x - MARGIN,
+            y,
+            col.w + 2.0 * MARGIN,
+            1.0,
+            0.0,
+            color::border(),
+        );
         y += 12.0;
         // The rows.
         for (icon, key, action) in [
@@ -510,8 +567,13 @@ impl LauncherScreen {
         }
         // The foot: the profile and Play.
         let play = Rect::new(col.x, col.y + col.h - ROW, col.w, ROW);
-        let card_h = 64.0;
-        let card = Rect::new(col.x, play.y - GAP - card_h, col.w, card_h);
+        let card = Rect::new(col.x, play.y - GAP - 64.0, col.w, 64.0);
+        self.profile_card(ui, card, targets);
+        play_button(ui, play, targets);
+    }
+
+    /// The profile's card: its name and line; a tap picks another, its pencil edits it.
+    fn profile_card(&self, ui: &mut Ui, card: Rect, targets: &mut Vec<(Action, Rect)>) {
         ui.border(card.x, card.y, card.w, card.h, 10.0, color::border());
         ui.rounded(
             card.x + 12.0,
@@ -562,23 +624,210 @@ impl LauncherScreen {
         );
         targets.push((Action::Open(Page::EditProfile), edit));
         targets.push((Action::Open(Page::Profiles), pick));
-        ui.rounded(play.x, play.y, play.w, play.h, 10.0, color::text());
-        let label = lang::get("horizon.launcher.play");
-        let lw = ui.measure(Face::SemiBold, 16.0, &label);
+    }
+
+    /// A wide window's home: the game's state, what is new, the profile and Play.
+    fn draw_home_wide(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = self.area.get();
         ui.text(
             Face::SemiBold,
-            16.0,
-            play.x + (play.w - lw) / 2.0,
-            play.y + (ROW - 23.0) / 2.0,
-            color::bg(),
-            &label,
+            20.0,
+            col.x,
+            col.y + 4.0,
+            color::text(),
+            &lang::get("horizon.launcher.home"),
         );
-        targets.push((Action::Play, play));
+        ui.text(
+            Face::Regular,
+            13.0,
+            col.x,
+            col.y + 34.0,
+            color::muted(),
+            &self.view.files_line,
+        );
+        let foot = 64.0;
+        let news = Rect::new(col.x, col.y + 66.0, col.w, col.h - 66.0 - 16.0 - foot);
+        ui.border(news.x, news.y, news.w, news.h, 10.0, color::border());
+        let title = lang::tr("horizon.launcher.news.title", &[&self.view.version]);
+        ui.text(
+            Face::Medium,
+            15.0,
+            news.x + 16.0,
+            news.y + 14.0,
+            color::text(),
+            &title,
+        );
+        let mut y = news.y + 44.0;
+        for item in lang::get("horizon.launcher.news").split('\n') {
+            for line in wrap(ui, Face::Regular, 14.0, item, news.w - 32.0) {
+                if y + 20.0 > news.y + news.h - 8.0 {
+                    break;
+                }
+                ui.text(Face::Regular, 14.0, news.x + 16.0, y, color::muted(), &line);
+                y += 22.0;
+            }
+        }
+        let play_w = 220.0;
+        let bottom = col.y + col.h - foot;
+        let card = Rect::new(col.x, bottom, col.w - play_w - 12.0, foot);
+        self.profile_card(ui, card, targets);
+        play_button(
+            ui,
+            Rect::new(col.x + col.w - play_w, bottom, play_w, foot),
+            targets,
+        );
+    }
+
+    /// A wide window's sidebar: the account, the top pages, the game folder and the log.
+    fn draw_sidebar(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        ui.rounded(0.0, 0.0, SIDEBAR, ui.h, 0.0, color::raised());
+        ui.rounded(SIDEBAR, 0.0, 1.0, ui.h, 0.0, color::border());
+        let (x, w) = (14.0, SIDEBAR - 28.0);
+        let mut y = 20.0;
+        // The account: its plate opens the kept accounts, the people button signs another in.
+        let plate = Rect::new(x, y, w, 60.0);
+        ui.border(plate.x, plate.y, plate.w, plate.h, 10.0, color::border());
+        ui.rounded(
+            plate.x + 10.0,
+            plate.y + 12.0,
+            36.0,
+            36.0,
+            8.0,
+            color::hover(),
+        );
+        ui.icon(
+            "launcher/user",
+            plate.x + 18.0,
+            plate.y + 20.0,
+            20.0,
+            color::text(),
+        );
+        let (name, kind) = if self.view.signed_in {
+            (self.view.name.clone(), self.view.account_kind.clone())
+        } else {
+            (
+                lang::get("horizon.launcher.no_account"),
+                lang::get("horizon.launcher.no_account.hint"),
+            )
+        };
+        let room = plate.w - 56.0 - 40.0;
+        let name = first_line(ui, Face::Medium, 14.0, &name, room);
+        ui.text(
+            Face::Medium,
+            14.0,
+            plate.x + 56.0,
+            plate.y + 11.0,
+            color::text(),
+            &name,
+        );
+        let kind = first_line(ui, Face::Regular, 11.0, &kind, room);
+        ui.text(
+            Face::Regular,
+            11.0,
+            plate.x + 56.0,
+            plate.y + 33.0,
+            color::muted(),
+            &kind,
+        );
+        let add = Rect::new(plate.x + plate.w - 40.0, plate.y + 10.0, 36.0, 40.0);
+        ui.icon(
+            "launcher/accounts",
+            add.x + 8.0,
+            add.y + 10.0,
+            20.0,
+            color::muted(),
+        );
+        targets.push((Action::AddAccount, add));
+        targets.push((
+            if self.view.signed_in || !self.view.accounts.is_empty() {
+                Action::Open(Page::Accounts)
+            } else {
+                Action::AddAccount
+            },
+            plate,
+        ));
+        y += 60.0 + 20.0;
+        let current = match self.page {
+            Page::Home => 0,
+            Page::Mods | Page::BrowseMods => 1,
+            Page::Profiles | Page::EditProfile => 2,
+            Page::Settings | Page::Pick(_) | Page::Accounts => 3,
+        };
+        for (i, (icon, key, page)) in [
+            ("launcher/play", "horizon.launcher.home", Page::Home),
+            ("launcher/mods", "horizon.launcher.mods", Page::Mods),
+            (
+                "launcher/profile",
+                "horizon.launcher.profiles",
+                Page::Profiles,
+            ),
+            (
+                "launcher/settings",
+                "horizon.launcher.settings",
+                Page::Settings,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let rect = Rect::new(x, y, w, 40.0);
+            let on = i == current && self.flow.is_none();
+            if on {
+                ui.rounded(rect.x, rect.y, rect.w, rect.h, 8.0, color::hover());
+            }
+            let ink = if on { color::text() } else { color::muted() };
+            ui.icon(icon, rect.x + 12.0, rect.y + 10.0, 20.0, ink);
+            let face = if on { Face::Medium } else { Face::Regular };
+            ui.text(
+                face,
+                14.0,
+                rect.x + 44.0,
+                rect.y + 10.0,
+                ink,
+                &lang::get(key),
+            );
+            targets.push((Action::Open(page), rect));
+            y += 40.0 + 4.0;
+        }
+        // The foot: the game folder, the log, the version.
+        let mut y = ui.h - 20.0 - 18.0 - 2.0 * 36.0;
+        for (icon, key, action) in [
+            (
+                "launcher/folder",
+                "horizon.launcher.open_folder",
+                Action::OpenFolder,
+            ),
+            (
+                "launcher/share",
+                "horizon.launcher.share_log",
+                Action::ShareLog,
+            ),
+        ] {
+            let rect = Rect::new(x, y, w, 36.0);
+            ui.icon(icon, rect.x + 12.0, rect.y + 9.0, 18.0, color::muted());
+            ui.text(
+                Face::Regular,
+                13.0,
+                rect.x + 42.0,
+                rect.y + 9.0,
+                color::muted(),
+                &lang::get(key),
+            );
+            targets.push((action, rect));
+            y += 36.0;
+        }
+        ui.text(
+            Face::Regular,
+            11.0,
+            x + 12.0,
+            y + 6.0,
+            color::muted(),
+            &format!("Magnetite {}", self.view.version),
+        );
     }
 
     fn draw_accounts(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let w = ui.w;
-        let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top();
         let row_h = 60.0;
         for (i, (name, kind)) in self.view.accounts.iter().enumerate() {
@@ -668,7 +917,7 @@ impl LauncherScreen {
     }
 
     fn draw_profiles(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top();
         for (i, name) in self.view.profiles.iter().enumerate() {
             let rect = Rect::new(col.x, y, col.w, ROW);
@@ -699,7 +948,7 @@ impl LauncherScreen {
     }
 
     fn draw_mods(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top();
         let find = Rect::new(col.x, y, col.w, ROW);
         row(
@@ -752,7 +1001,7 @@ impl LauncherScreen {
     }
 
     fn draw_browse(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top();
         if let Some(note) = &self.view.browse_note {
             for line in wrap(ui, Face::Regular, 14.0, note, col.w) {
@@ -808,7 +1057,7 @@ impl LauncherScreen {
     }
 
     fn draw_pick(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top();
         let row_h = 48.0;
         let n = self.view.choices.len();
@@ -850,7 +1099,7 @@ impl LauncherScreen {
     }
 
     fn draw_edit_profile(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top();
         ui.text(
             Face::Regular,
@@ -930,8 +1179,7 @@ impl LauncherScreen {
     }
 
     fn draw_settings(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
-        let w = ui.w;
-        let col = Rect::new(MARGIN, TOP, w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
+        let col = self.area.get();
         let mut y = self.content_top() - 8.0;
         let row_h = 48.0;
         for (section, settings) in SECTIONS {
@@ -1027,15 +1275,21 @@ fn top_bar(
         col.x + 4.0
     };
     ui.text(Face::SemiBold, 17.0, tx, col.y + 16.0, color::text(), title);
-    ui.rounded(0.0, col.y + 56.0, ui.w, 1.0, 0.0, color::border());
+    ui.rounded(
+        col.x - MARGIN,
+        col.y + 56.0,
+        col.w + 2.0 * MARGIN,
+        1.0,
+        0.0,
+        color::border(),
+    );
     col.y + 72.0
 }
 
 /// A sign-in page: the boot screen's content in the launcher's look, top to bottom, the buttons
 /// after it (the first one white) so the system keyboard never covers them.
-fn draw_flow(ui: &mut Ui, flow: &Flow, targets: &mut Vec<(Action, Rect)>) {
+fn draw_flow(ui: &mut Ui, col: Rect, flow: &Flow, targets: &mut Vec<(Action, Rect)>) {
     let c = &flow.content;
-    let col = Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN);
     let mut y = top_bar(ui, col, &c.title, flow.back, targets);
     if flow.back {
         // The flow's back is its own: leaving the method choice.
@@ -1119,6 +1373,22 @@ fn draw_flow(ui: &mut Ui, flow: &Flow, targets: &mut Vec<(Action, Rect)>) {
     }
 }
 
+/// The white Play button.
+fn play_button(ui: &mut Ui, play: Rect, targets: &mut Vec<(Action, Rect)>) {
+    ui.rounded(play.x, play.y, play.w, play.h, 10.0, color::text());
+    let label = lang::get("horizon.launcher.play");
+    let lw = ui.measure(Face::SemiBold, 16.0, &label);
+    ui.text(
+        Face::SemiBold,
+        16.0,
+        play.x + (play.w - lw) / 2.0,
+        play.y + (play.h - 23.0) / 2.0,
+        color::bg(),
+        &label,
+    );
+    targets.push((Action::Play, play));
+}
+
 /// The first line of `text` that fits `width`, with an ellipsis when there was more.
 fn first_line(ui: &Ui, face: Face, size: f32, text: &str, width: f32) -> String {
     let lines = wrap(ui, face, size, text, width);
@@ -1185,8 +1455,10 @@ mod tests {
 
     #[test]
     fn a_phone_upright_gets_about_its_own_density() {
-        assert!((LauncherScreen::density_for(1080.0) - 2.57).abs() < 0.01);
-        assert_eq!(LauncherScreen::density_for(300.0), 1.0);
+        assert!((LauncherScreen::density_for(1080.0, 2400.0, 2.6) - 2.57).abs() < 0.01);
+        assert_eq!(LauncherScreen::density_for(300.0, 600.0, 1.0), 1.0);
+        // A PC's window keeps the system's scale.
+        assert_eq!(LauncherScreen::density_for(1920.0, 1080.0, 1.5), 1.5);
     }
 
     #[test]

@@ -8,10 +8,62 @@ port and an iOS port together on a single shared Rust core, so a fix or a mod ho
 - **Magnetite**: Windows, macOS, Linux.
 - **Magnetite Android** and **Magnetite iOS**: the same core with the `mobile` build profile, touch controls you can
   lay out yourself, and Microsoft and Ely.by sign-in inside the game.
-- **Native Rust mods**: generic mod hooks over WASM, with a Lua layer on the way.
+- **Mods** in WebAssembly, Lua or native Rust, with the same hooks on every platform, and Magnetite's own
+  [mod platform](https://github.com/izrikmizrik/magnetite-mods).
 
-Work in progress: the merge plan and status are in [docs/unification/](docs/unification/plan.md). You need your
-own copy of Minecraft: Java Edition. Licence: GNU LGPL 3.0 or later, as Horizon (see below).
+Work in progress: the merge plan and status are in [docs/unification/](docs/unification/plan.md). Licence: GNU LGPL
+3.0 or later, as Horizon (see below).
+
+## Download
+
+Preview builds are on the [Releases](https://github.com/izrikmizrik/Magnetite/releases) page:
+
+| Platform | File | How to install |
+| --- | --- | --- |
+| Android 9+ (arm64) | `Magnetite-<version>-android-arm64.apk` | Allow installs from unknown sources and open the file. Later builds install over it. |
+| iOS 16+ | `Magnetite-<version>-ios-unsigned.ipa` | SideStore, AltStore or TrollStore. The launcher shows when the signature expires. |
+| PC | coming in the next releases | |
+
+Sign in with Microsoft (a code you type on any device), Ely.by, or play offline. On the first start the game
+downloads its own files (about 530 MB); nothing else needs installing. Early versions may crash: the launcher's
+"Share the log" sends the game's log.
+
+## The launcher
+
+The screen before the game, the same on every platform: upright on a phone, with a sidebar on a PC.
+
+- **Accounts:** several kept at once; the account's plate picks one, the people button signs in another.
+- **Profiles:** each with its own settings and touch layout, sharing the worlds, accounts and game files.
+- **Mods:** the installed ones with a switch each, and the mod platform to find and install more.
+- **Settings:** graphics API (Vulkan or OpenGL ES on Android), render resolution, frame rate limit, camera
+  sensitivity, language; on iOS, the time left until the app must be signed again.
+- **Open the game folder** in the system's file manager, and **share the log**.
+
+## Modding
+
+Magnetite's modding is Horizon's with differences: its own mod platform, Lua, prebuilt native mods for phones,
+and hooks added for porting mods such as Farmer's Delight and Create (load-time data transforms, crafting kinds
+with remainders, the block entity tick's level, the used stack, `/reload` for mod tables, `copy_components`, mod
+trades).
+
+- [The modding guide](docs/magnetite/modding.en.md) ([по-русски](docs/magnetite/modding.md)): the kinds of mod and
+  where each runs, hooks, Parts, the Host, Lua, determinism, the phones' limits, publishing.
+- [The function reference](docs/magnetite/modding-reference.en.md)
+  ([по-русски](docs/magnetite/modding-reference.md)): all 761 hooks and 364 `Host` methods, one line each.
+
+| Kind | PC | Android | iOS |
+| --- | --- | --- | --- |
+| Content (`assets/`, `data/`) | yes | yes | yes |
+| WebAssembly | yes | yes | yes (interpreted without JIT) |
+| Lua (LuaJIT) | yes | yes | yes (interpreted) |
+| Native Rust | built by the launcher | prebuilt by the mod farm (planned) | with JIT (planned) |
+
+## Building
+
+The workspace builds as Horizon's does ([build guide](docs/native-client.md#run-from-a-checkout)); the phones'
+packaging is in `packaging/android` and `packaging/ios`, and the `android-apk` and `ios-ipa` workflows build the
+APK and IPA (for a `v*` tag, onto its release). On Windows, LuaJIT builds with `msvcbuild.bat`, so run Cargo from a
+Visual Studio developer prompt.
 
 NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.
 
