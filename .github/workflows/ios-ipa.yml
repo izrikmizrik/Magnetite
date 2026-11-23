@@ -34,6 +34,9 @@ jobs:
         with:
           key: ios-ipa
       - name: Build the magnetite executable
+        # LuaJIT (horizon-mod-lua) builds its host tools for an iOS target only when told so.
+        env:
+          TARGET_SYS: iOS
         run: cargo build --locked -p magnetite-ios --target aarch64-apple-ios --profile fast
       - name: Package the .ipa
         env:
