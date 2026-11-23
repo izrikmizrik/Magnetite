@@ -60,3 +60,4 @@
 
 - [Crafting recipe kinds](crafting-recipe-kinds.md)
 - [Load-time data transforms](data-transforms.md)
+- [Lua mods](lua.md)

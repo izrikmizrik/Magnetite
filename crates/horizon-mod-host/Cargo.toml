@@ -16,6 +16,7 @@ horizon-client = { path = "../horizon-client", default-features = false }
 
 horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index"] }
 horizon-mod-wasm = { path = "../horizon-mod-wasm" }
+horizon-mod-lua = { path = "../horizon-mod-lua" }
 mod-api = { package = "horizon-mod-api", path = "../horizon-mod-api" }
 
 log = "0.4"

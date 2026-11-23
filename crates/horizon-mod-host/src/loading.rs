@@ -50,12 +50,26 @@ pub fn main_with(
                 horizon_mod_wasm::load_installed(launch, &horizon_client::logging::player_dir());
             let mut mods = mods;
             mods.extend(std::mem::take(&mut wasm.mods));
-            // One installed dispatch order for both targets; ties retain bundle order.
+            let settings = horizon_mod_package::mod_list::ModList::load(&launch.context.game_dir);
+            let content: Vec<_> = horizon_mod_package::selection::content_packages(
+                &launch.context.game_dir,
+                &settings.enabled,
+                &launch.context.dev_mods,
+            )
+            .collect();
+            // The selected content packages with a `[lua]` table: script mods, beside the rest.
+            let (lua_mods, lua_manifests): (Vec<_>, Vec<_>) =
+                crate::lua::load(&content, &launch.context.game_dir)
+                    .into_iter()
+                    .unzip();
+            mods.extend(lua_mods);
+            // One installed dispatch order for every target; ties retain bundle order.
             let code_manifests: Vec<_> = native
                 .packages()
                 .iter()
                 .map(|p| &p.manifest)
                 .chain(wasm.manifests.iter())
+                .chain(lua_manifests.iter())
                 .filter(|m| mods.iter().any(|entry| entry.fields().id == m.id))
                 .collect();
             assert_eq!(
@@ -75,19 +89,13 @@ pub fn main_with(
                     id: &m.id,
                     version: &m.version,
                     has_api: true,
-                    code: true,
+                    // Scripts link with no library: only native and wasm code does.
+                    code: m.lua.is_none(),
                     dependencies,
                 })
                 .collect();
             let code_ids: std::collections::HashSet<_> =
                 mods.iter().map(|entry| entry.fields().id).collect();
-            let settings = horizon_mod_package::mod_list::ModList::load(&launch.context.game_dir);
-            let content: Vec<_> = horizon_mod_package::selection::content_packages(
-                &launch.context.game_dir,
-                &settings.enabled,
-                &launch.context.dev_mods,
-            )
-            .collect();
             let manifests: Vec<_> = code_manifests
                 .iter()
                 .copied()
@@ -96,7 +104,9 @@ pub fn main_with(
                         .iter()
                         .filter(|source| {
                             let manifest = &source.package.manifest;
-                            let code = manifest.native.is_some() || manifest.wasm.is_some();
+                            let code = manifest.native.is_some()
+                                || manifest.wasm.is_some()
+                                || manifest.lua.is_some();
                             !code || !code_ids.contains(manifest.id.as_str())
                         })
                         .map(|source| &source.package.manifest),

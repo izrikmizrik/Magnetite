@@ -234,7 +234,7 @@ pub fn resolve_manifests(
             Mod {
                 id: &manifest.id,
                 version: &manifest.version,
-                has_api: code,
+                has_api: code || manifest.lua.is_some(),
                 code,
                 dependencies,
             }
