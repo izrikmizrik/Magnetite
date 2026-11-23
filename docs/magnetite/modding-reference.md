@@ -4,7 +4,7 @@
 Здесь все хуки каталога и все методы `Host`: имя, сторона, контракт и одна строка о том,
 что делает функция. Полное описание с параметрами — в rustdoc крейта `horizon-mod-api`
 (`cargo doc -p horizon-mod-api --no-deps --open`). Как всё это устроено — в
-[гайде по моддингу](modding.md).
+[гайде по моддингу](modding.md). English: [modding-reference.en.md](modding-reference.en.md).
 
 Хуков: **761**, методов Host: **364**.
 
