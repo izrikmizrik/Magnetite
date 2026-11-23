@@ -49,6 +49,10 @@ jobs:
         # LuaJIT (horizon-mod-lua) builds its host tools for an iOS target only when told so.
         env:
           TARGET_SYS: iOS
+          # Its host tools (minilua, buildvm) run on this Mac while the build does: clang would aim
+          # them at iOS by IPHONEOS_DEPLOYMENT_TARGET, and macOS kills such a binary (Killed: 9).
+          HOST_CFLAGS: -mmacosx-version-min=12.0
+          HOST_LDFLAGS: -mmacosx-version-min=12.0
         run: cargo build --locked -p magnetite-ios --target aarch64-apple-ios --profile fast
       - name: Package the .ipa
         env:
