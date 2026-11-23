@@ -14,6 +14,11 @@ dev = "build --locked --profile fast -p horizon-game -p horizon-prepare"
 # tools/build-runtime.sh) and so build without it.
 [env]
 RUSTC_BOOTSTRAP = "1"
+# LuaJIT's Makefile (horizon-mod-lua, vendored through mlua) builds its host tools on a Mac for every
+# Apple target and refuses to start without this; luajit-src sets it only for macOS targets, so an
+# iOS cross build needs it here. 11.0 is Rust's own minimum for Apple silicon. A value already in
+# the environment wins.
+MACOSX_DEPLOYMENT_TARGET = "11.0"
 
 [build]
 rustflags = ["-Zthreads=8"]
