@@ -17,7 +17,8 @@ RUSTC_BOOTSTRAP = "1"
 # LuaJIT's Makefile (horizon-mod-lua, vendored through mlua) builds its host tools on a Mac for every
 # Apple target and refuses to start without this; luajit-src sets it only for macOS targets, so an
 # iOS cross build needs it here. 11.0 is Rust's own minimum for Apple silicon. A value already in
-# the environment wins.
+# the environment wins. An iOS build also needs `TARGET_SYS=iOS` exported (the iOS workflows do it):
+# Cargo's [env] can't set it for one target alone.
 MACOSX_DEPLOYMENT_TARGET = "11.0"
 
 [build]

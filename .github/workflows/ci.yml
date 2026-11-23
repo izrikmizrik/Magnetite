@@ -71,6 +71,9 @@ jobs:
           rustup default stable
       - uses: Swatinem/rust-cache@v2
       - name: Check with Xcode's iOS SDK
+        # LuaJIT (horizon-mod-lua) builds its host tools for an iOS target only when told so.
+        env:
+          TARGET_SYS: iOS
         run: |
           cargo check --locked -p horizon-game --target aarch64-apple-ios --no-default-features --features mobile
           cargo check --locked -p magnetite-ios --target aarch64-apple-ios
