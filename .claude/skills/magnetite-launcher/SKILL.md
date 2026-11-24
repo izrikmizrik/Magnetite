@@ -19,11 +19,15 @@ a PC wide with a sidebar. Spec and decisions: `docs/unification/launcher.md`; th
 | The sign-in pages' content (shared with the plain boot screen) | `crates/horizon-client/src/boot_screen.rs` (`Content`, `BootAction`) |
 | Profiles (`profiles/<id>/`, `index.json`) | `crates/horizon-client/src/profiles.rs` |
 | Installed mods as rows | `crates/horizon-client/src/launcher_mods.rs` |
-| The mod platform (index, install) | `crates/horizon-client/src/mod_registry.rs` (`listings_any`, `install_any`) |
+| The mod platform (index, install), a mod from a file, removing one | `crates/horizon-client/src/mod_registry.rs` (`listings_any`, `install_any`, `import`, `remove`) |
+| The mods' settings, written by the game and changed by the launcher | `crates/horizon-client/src/launcher_mod_settings.rs` |
+| Updates (GitHub releases, `VERSION`), disk use and clearing | `launcher_updates.rs`, `launcher_data.rs` beside it |
+| Vibration, gyroscope, cutout (`horizon-touch.txt`) | `crates/horizon-client-render/src/phone.rs` |
+| The touch layout's editor over the launcher | `TouchLayout` in `boot.rs`, `touch_editor::draw`, `touch::editor_for` |
 | Kept accounts | `crates/horizon-account/src/keyring.rs` |
 | Icons (64 px PNGs in the boot atlas) | `crates/horizon-client-render/src/launcher_icons.rs`, `assets/launcher/*.png` |
 | Strings | `crates/horizon-client/assets/horizon/lang/{en_us,ru_ru}.json`, keys `horizon.launcher.*` |
-| Hosts (the `BootConfig` each platform gives) | `crates/magnetite-android/src/lib.rs`, `crates/magnetite-ios/src/main.rs`, `crates/horizon-game/src/bin/magnetite.rs` (PC) |
+| Hosts (the `BootConfig` each platform gives) | `crates/magnetite-android/src/lib.rs`, `crates/magnetite-ios/src/main.rs`, `crates/horizon-game/src/bin/magnetite/` (PC) |
 
 ## How it fits together
 
@@ -57,7 +61,13 @@ a PC wide with a sidebar. Spec and decisions: `docs/unification/launcher.md`; th
   (`Platform`, `poll_platform` in `about_to_wait`).
 - **Platform hooks** are plain `fn` fields of `BootConfig`, each with a no-op default:
   `set_orientation`, `share_log`, `open_folder` (returns false when it could not), `open_link`,
-  `keep_awake`, `signature_expires` (iOS, from `embedded.mobileprovision`), `language`.
+  `keep_awake`, `signature_expires` (iOS, from `embedded.mobileprovision`), `language`, `pick_file` and
+  `picked_file` (the file picker and its answer), `set_cutout`, `jit`, `phone`. Ask `BootConfig::phone`, never a
+  Cargo feature: the PC's executable builds `horizon-client` without its `desktop` feature.
+- **iOS** makes a window exactly its first inner size: give one only through `window::with_first_size`. Its keyboard
+  is the window's own (`set_ime_allowed`), whose typing arrives as key presses.
+- **Phones run no second process**: wasm mods compile in the app (Android) or run on Pulley (iOS,
+  `horizon-mod-wasm` `interpreted`); `MAGNETITE_WASM_INTERPRETED=1 cargo test -p horizon-mod-wasm` tests that engine.
 
 ## Recipes
 

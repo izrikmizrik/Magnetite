@@ -54,12 +54,18 @@ features = [
     "UIPopoverPresentationController",
     "UIPresentationController",
     # Turning the screen between the launcher (upright) and the game (on its side) on iOS 16 and
-    # later: the window scene's geometry request (`set_orientation`).
+    # later: the window scene's geometry request (`set_orientation`), and the orientation the
+    # gyroscope reads (`gyro.rs`).
     "UIScene",
     "UIWindowScene",
     "UIWindowSceneGeometryPreferences",
     "UIWindowSceneGeometryPreferencesIOS",
     "UIOrientation",
+    # The file picker (`pick.rs`): a mod or a touch button's picture comes from the Files app.
+    "UIDocumentPickerViewController",
+    # A touch button's press ticks the vibration motor (`haptic.rs`).
+    "UIFeedbackGenerator",
+    "UIImpactFeedbackGenerator",
 ]
 
 [lints]

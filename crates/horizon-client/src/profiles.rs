@@ -22,6 +22,7 @@ const SETTINGS: &[&str] = &[
     "horizon-extras.txt",
     "horizon-controller.txt",
     "touch-controls.json",
+    crate::phone::FILE,
 ];
 /// The longest name kept, in characters.
 pub const NAME_MAX: usize = 32;

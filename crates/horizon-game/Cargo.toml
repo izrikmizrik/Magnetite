@@ -12,11 +12,15 @@ horizon-client = { path = "../horizon-client", default-features = false }
 horizon-mod-package = { path = "../horizon-mod-package", default-features = false, features = ["index"] }
 
 horizon-mod-host = { path = "../horizon-mod-host", default-features = false }
-# The PC launcher's executable (src/bin/magnetite.rs): the kept account, its log lines and the
+# The PC launcher's executable (src/bin/magnetite): the kept account, its log lines and the
 # system's language for a first start.
 horizon-account = { path = "../horizon-account" }
 log = "0.4"
 sys-locale = "0.3"
+
+# The launcher's file dialog.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs"] }
 
 [lints]
 workspace = true
@@ -31,7 +35,7 @@ test = false
 # Magnetite for PC: the launcher window, then the game (the phones' boot loop, laid out wide).
 [[bin]]
 name = "magnetite"
-path = "src/bin/magnetite.rs"
+path = "src/bin/magnetite/main.rs"
 test = false
 required-features = ["desktop"]
 

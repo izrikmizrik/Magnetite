@@ -147,8 +147,10 @@ impl ModuleCache {
         engine: &Engine,
         bytes: &[u8],
     ) -> wasmtime::Result<(Module, Source)> {
+        // A phone's app is no executable to start again (Android's is a library in the system's
+        // own process, iOS starts no processes): it compiles here, without the child's time limit.
         #[cfg(unix)]
-        let child = if cfg!(test) {
+        let child = if cfg!(any(test, target_os = "android", target_os = "ios")) {
             None
         } else {
             Some((

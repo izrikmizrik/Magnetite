@@ -73,6 +73,14 @@ pub enum Page {
     Mods,
     /// Magnetite's mod platform: what it offers, installing one.
     BrowseMods,
+    /// One installed mod: what it is, on or off, its settings, removing it.
+    Mod,
+    /// The app's version and the newest one released.
+    Updates,
+    /// What the game keeps on the disk, and clearing what it can make again.
+    Data,
+    /// The version, the licences and the project's pages.
+    About,
 }
 
 /// A setting the settings page lists, by what it changes.
@@ -85,6 +93,7 @@ pub enum Setting {
     Memory,
     Sensitivity,
     Gyro,
+    GyroSensitivity,
     Vibration,
     Cutout,
     Language,
@@ -104,6 +113,7 @@ impl Setting {
             Self::Memory => "horizon.launcher.settings.memory",
             Self::Sensitivity => "horizon.launcher.settings.sensitivity",
             Self::Gyro => "horizon.launcher.settings.gyro",
+            Self::GyroSensitivity => "horizon.launcher.settings.gyro_sensitivity",
             Self::Vibration => "horizon.launcher.settings.vibration",
             Self::Cutout => "horizon.launcher.settings.cutout",
             Self::Language => "horizon.launcher.settings.language",
@@ -120,7 +130,9 @@ impl Setting {
             Self::Resolution => "launcher/resolution",
             Self::FpsLimit => "launcher/fps",
             Self::Memory => "launcher/profile",
-            Self::Sensitivity | Self::Gyro | Self::Vibration => "launcher/controls",
+            Self::Sensitivity | Self::Gyro | Self::GyroSensitivity | Self::Vibration => {
+                "launcher/controls"
+            }
             Self::Cutout => "launcher/resolution",
             Self::Language => "launcher/language",
             Self::Updates => "launcher/refresh",
@@ -152,6 +164,7 @@ const SECTIONS: &[(&str, &[Setting])] = &[
         &[
             Setting::Sensitivity,
             Setting::Gyro,
+            Setting::GyroSensitivity,
             Setting::Vibration,
             Setting::Cutout,
         ],
@@ -170,6 +183,8 @@ const SECTIONS: &[(&str, &[Setting])] = &[
 /// What a tap asks the boot loop for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
+    /// A place that does nothing.
+    None,
     Play,
     Open(Page),
     Back,
@@ -202,6 +217,79 @@ pub enum Action {
     ToggleMod(usize),
     /// Install (or update) the platform's mod at this index.
     InstallMod(usize),
+    /// Pick a mod's file on the device and install it.
+    ImportMod,
+    /// The page of the installed mod at this index.
+    OpenMod(usize),
+    /// Turn the open mod on or off.
+    ToggleOpenMod,
+    /// Remove the open mod (asked twice).
+    RemoveMod,
+    /// The open mod's setting at this index one step on (`true`) or back.
+    ModStep(usize, bool),
+    /// Look for a newer release.
+    CheckUpdate,
+    /// Clear one of the kept things (asked twice).
+    Clear(Store),
+    /// Check the game's files and download what is missing.
+    CheckFiles,
+    /// A page in the system's browser.
+    Link(String),
+}
+
+/// What the Data page clears: each is made again when it is needed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Store {
+    /// Old logs and crash reports.
+    Logs,
+    /// Prepared resources, compiled mods and the like.
+    Cache,
+    /// What is left of the game files' download.
+    Downloads,
+}
+
+/// A row of the Updates, Data and About pages: its text, what stands on its right, and what a tap
+/// does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InfoLine {
+    pub icon: &'static str,
+    pub label: String,
+    pub value: String,
+    pub action: Option<Action>,
+}
+
+/// The open mod's page.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModPage {
+    pub name: String,
+    /// "1.2 · WebAssembly · Author".
+    pub detail: String,
+    pub description: String,
+    pub enabled: bool,
+    pub settings: Vec<ModSettingLine>,
+    /// Said where the settings would be, when the mod has none to show.
+    pub settings_note: String,
+    pub homepage: Option<String>,
+    pub confirm_remove: bool,
+}
+
+/// One of a mod's settings: its label, its value, and how it changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModSettingLine {
+    pub label: String,
+    pub value: String,
+    pub kind: ModSettingKind,
+}
+
+/// How a mod's setting is drawn and changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ModSettingKind {
+    /// A switch.
+    Toggle(bool),
+    /// A minus and a plus around the value.
+    Step,
+    /// A minus and a plus around a patch of this colour (`0xRRGGBB`).
+    Color(u32),
 }
 
 /// An installed mod's row: its name, its line under it ("1.2 · WebAssembly"), and whether it is
@@ -239,6 +327,14 @@ pub struct View {
     /// Each setting's value as shown; a setting left out is not listed (gyro only on Android,
     /// JIT only on iOS).
     pub values: Vec<(Setting, String)>,
+    /// The settings drawn as a switch, and whether each is on.
+    pub switches: Vec<(Setting, bool)>,
+    /// Whether the touch layout is edited here (a phone; a PC has no touch controls to lay out).
+    pub touch_layout: bool,
+    /// The open mod's page, and the rows and text of the Updates, Data and About pages.
+    pub mod_page: ModPage,
+    pub info: Vec<InfoLine>,
+    pub info_text: Vec<String>,
     /// Whether an account (or an offline name) plays: without one the header asks to sign in.
     pub signed_in: bool,
     /// The kept accounts (name, kind), the one that plays, and the one whose removal waits for a
@@ -435,6 +531,19 @@ impl LauncherScreen {
                 self.draw_browse(ui, &mut targets);
                 Some(("horizon.launcher.browse", Some(Action::Open(Page::Mods))))
             }
+            (None, Page::Mod) => {
+                self.draw_mod(ui, &mut targets);
+                Some(("horizon.launcher.mods.page", Some(Action::Open(Page::Mods))))
+            }
+            (None, page @ (Page::Updates | Page::Data | Page::About)) => {
+                self.draw_info(ui, &mut targets);
+                let title = match page {
+                    Page::Updates => Setting::Updates,
+                    Page::Data => Setting::Data,
+                    _ => Setting::About,
+                };
+                Some((title.label_key(), Some(Action::Open(Page::Settings))))
+            }
             (None, Page::Pick(setting)) => {
                 self.draw_pick(ui, &mut targets);
                 // The settings page, not home, is where its back arrow goes.
@@ -476,13 +585,23 @@ impl LauncherScreen {
             self.draw_sidebar(ui, &mut targets);
         }
         if let Some(note) = &self.notice {
-            let nw = ui.measure(Face::Regular, 13.0, note) + 32.0;
+            let lines = wrap(ui, Face::Regular, 13.0, note, col.w - 48.0);
+            let text_w = lines
+                .iter()
+                .map(|line| ui.measure(Face::Regular, 13.0, line))
+                .fold(0.0f32, f32::max);
+            let (nw, nh) = (text_w + 32.0, lines.len() as f32 * 19.0 + 17.0);
             let (x, y) = (
                 col.x + (col.w - nw) / 2.0,
-                col.y + col.h - ROW - GAP - 64.0 - GAP - 44.0,
+                col.y + col.h - ROW - GAP - 64.0 - GAP - 8.0 - nh,
             );
-            ui.rounded(x, y, nw, 36.0, 18.0, color::hover());
-            ui.text(Face::Regular, 13.0, x + 16.0, y + 8.0, color::text(), note);
+            // Over the rows it covers, not through them.
+            ui.rounded(x, y, nw, nh, 18.0, color::bg());
+            ui.rounded(x, y, nw, nh, 18.0, color::hover());
+            for (i, line) in lines.iter().enumerate() {
+                let ty = y + 8.0 + i as f32 * 19.0;
+                ui.text(Face::Regular, 13.0, x + 16.0, ty, color::text(), line);
+            }
         }
         *self.frame.borrow_mut() = Layout {
             density: ui.density,
@@ -579,6 +698,9 @@ impl LauncherScreen {
                 Action::OpenFolder,
             ),
         ] {
+            if action == Action::Controls && !self.view.touch_layout {
+                continue;
+            }
             let rect = Rect::new(col.x, y, col.w, ROW);
             row(ui, rect, icon, &lang::get(key), None, true);
             targets.push((action, rect));
@@ -776,9 +898,14 @@ impl LauncherScreen {
         y += 60.0 + 20.0;
         let current = match self.page {
             Page::Home => 0,
-            Page::Mods | Page::BrowseMods => 1,
+            Page::Mods | Page::BrowseMods | Page::Mod => 1,
             Page::Profiles | Page::EditProfile => 2,
-            Page::Settings | Page::Pick(_) | Page::Accounts => 3,
+            Page::Settings
+            | Page::Pick(_)
+            | Page::Accounts
+            | Page::Updates
+            | Page::Data
+            | Page::About => 3,
         };
         for (i, (icon, key, page)) in [
             ("launcher/play", "horizon.launcher.home", Page::Home),
@@ -987,6 +1114,17 @@ impl LauncherScreen {
             true,
         );
         targets.push((Action::Open(Page::BrowseMods), find));
+        y += ROW + GAP;
+        let import = Rect::new(col.x, y, col.w, ROW);
+        row(
+            ui,
+            import,
+            "launcher/add",
+            &lang::get("horizon.launcher.mods.import"),
+            None,
+            true,
+        );
+        targets.push((Action::ImportMod, import));
         y += ROW + 12.0;
         let hint = if self.view.mods.is_empty() {
             "horizon.launcher.mods.empty"
@@ -1022,8 +1160,182 @@ impl LauncherScreen {
                 &detail,
             );
             switch(ui, rect.x + rect.w - 62.0, rect.y + 16.0, m.enabled);
-            targets.push((Action::ToggleMod(i), rect));
+            // The switch's end of the row turns it; the rest opens the mod's page.
+            let end = Rect::new(rect.x + rect.w - 78.0, rect.y, 78.0, rect.h);
+            targets.push((Action::ToggleMod(i), end));
+            targets.push((Action::OpenMod(i), rect));
             y += row_h + GAP;
+        }
+    }
+
+    /// One installed mod: its name and what it says of itself, on or off, its settings, its page
+    /// and removing it.
+    fn draw_mod(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = self.area.get();
+        let page = &self.view.mod_page;
+        let mut y = self.content_top();
+        for line in wrap(ui, Face::SemiBold, 20.0, &page.name, col.w) {
+            ui.text(Face::SemiBold, 20.0, col.x, y, color::text(), &line);
+            y += 27.0;
+        }
+        for line in wrap(ui, Face::Regular, 13.0, &page.detail, col.w) {
+            ui.text(Face::Regular, 13.0, col.x, y, color::muted(), &line);
+            y += 19.0;
+        }
+        y += 6.0;
+        for line in page.description.lines() {
+            for line in wrap(ui, Face::Regular, 14.0, line, col.w) {
+                ui.text(Face::Regular, 14.0, col.x, y, color::text(), &line);
+                y += 20.0;
+            }
+        }
+        y += 14.0;
+        let on = Rect::new(col.x, y, col.w, ROW);
+        row(
+            ui,
+            on,
+            "launcher/mods",
+            &lang::get("horizon.launcher.mods.enabled"),
+            None,
+            false,
+        );
+        switch(
+            ui,
+            on.x + on.w - 62.0,
+            on.y + (ROW - 28.0) / 2.0,
+            page.enabled,
+        );
+        targets.push((Action::ToggleOpenMod, on));
+        y += ROW + 18.0;
+        ui.text(
+            Face::Regular,
+            12.0,
+            col.x + 4.0,
+            y,
+            color::muted(),
+            &lang::get("horizon.launcher.mods.settings"),
+        );
+        y += 24.0;
+        let row_h = 52.0;
+        for (i, setting) in page.settings.iter().enumerate() {
+            let rect = Rect::new(col.x, y, col.w, row_h);
+            ui.rounded(rect.x, rect.y, rect.w, rect.h, 10.0, color::raised());
+            // The two buttons and the value between them, as wide as the value needs.
+            let control = (ui.measure(Face::Medium, 13.0, &setting.value) + 108.0)
+                .max(160.0)
+                .min(rect.w * 0.64);
+            let room = match setting.kind {
+                ModSettingKind::Toggle(_) => rect.w - 16.0 - 78.0,
+                _ => rect.w - 16.0 - control - 8.0,
+            };
+            let label = first_line(ui, Face::Regular, 14.0, &setting.label, room);
+            ui.text(
+                Face::Regular,
+                14.0,
+                rect.x + 16.0,
+                rect.y + 16.0,
+                color::text(),
+                &label,
+            );
+            if let ModSettingKind::Toggle(on) = setting.kind {
+                switch(ui, rect.x + rect.w - 62.0, rect.y + 12.0, on);
+                targets.push((Action::ModStep(i, true), rect));
+            } else {
+                let side = 40.0;
+                let left = Rect::new(rect.x + rect.w - control, rect.y + 6.0, side, side);
+                let right = Rect::new(rect.x + rect.w - side - 6.0, rect.y + 6.0, side, side);
+                for (r, icon, forward) in [
+                    (left, "launcher/back", false),
+                    (right, "launcher/next", true),
+                ] {
+                    ui.rounded(r.x, r.y, r.w, r.h, 8.0, color::hover());
+                    ui.icon(icon, r.x + 10.0, r.y + 10.0, 20.0, color::text());
+                    targets.push((Action::ModStep(i, forward), r));
+                }
+                let (from, to) = (left.x + left.w + 4.0, right.x - 4.0);
+                if let ModSettingKind::Color(rgb) = setting.kind {
+                    let patch = Rect::new((from + to) / 2.0 - 18.0, rect.y + 14.0, 36.0, 24.0);
+                    ui.rounded(
+                        patch.x,
+                        patch.y,
+                        patch.w,
+                        patch.h,
+                        6.0,
+                        crate::hud::rgba((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 255),
+                    );
+                    ui.border(patch.x, patch.y, patch.w, patch.h, 6.0, color::muted());
+                } else {
+                    let value = first_line(ui, Face::Medium, 13.0, &setting.value, to - from);
+                    let vw = ui.measure(Face::Medium, 13.0, &value);
+                    ui.text(
+                        Face::Medium,
+                        13.0,
+                        (from + to - vw) / 2.0,
+                        rect.y + 17.0,
+                        color::text(),
+                        &value,
+                    );
+                }
+            }
+            y += row_h + GAP;
+        }
+        if page.settings.is_empty() {
+            for line in wrap(ui, Face::Regular, 13.0, &page.settings_note, col.w) {
+                ui.text(Face::Regular, 13.0, col.x + 2.0, y, color::muted(), &line);
+                y += 19.0;
+            }
+        }
+        y += 12.0;
+        if let Some(url) = &page.homepage {
+            let rect = Rect::new(col.x, y, col.w, ROW);
+            row(
+                ui,
+                rect,
+                "launcher/link",
+                &lang::get("horizon.launcher.mods.homepage"),
+                None,
+                true,
+            );
+            targets.push((Action::Link(url.clone()), rect));
+            y += ROW + GAP;
+        }
+        let rect = Rect::new(col.x, y, col.w, ROW);
+        let key = if page.confirm_remove {
+            "horizon.launcher.profile.remove_confirm"
+        } else {
+            "horizon.launcher.mods.remove"
+        };
+        row(ui, rect, "launcher/delete", &lang::get(key), None, false);
+        if page.confirm_remove {
+            ui.border(rect.x, rect.y, rect.w, rect.h, 10.0, color::text());
+        }
+        targets.push((Action::RemoveMod, rect));
+    }
+
+    /// The Updates, Data and About pages: some text, then rows.
+    fn draw_info(&self, ui: &mut Ui, targets: &mut Vec<(Action, Rect)>) {
+        let col = self.area.get();
+        let mut y = self.content_top();
+        for text in &self.view.info_text {
+            for line in wrap(ui, Face::Regular, 14.0, text, col.w) {
+                ui.text(Face::Regular, 14.0, col.x + 2.0, y, color::muted(), &line);
+                y += 20.0;
+            }
+            y += 8.0;
+        }
+        if !self.view.info_text.is_empty() {
+            y += 8.0;
+        }
+        for line in &self.view.info {
+            let rect = Rect::new(col.x, y, col.w, ROW);
+            let vw = ui.measure(Face::Regular, 13.0, &line.value);
+            let room = rect.w - 52.0 - vw - 44.0;
+            let label = first_line(ui, Face::Regular, 15.0, &line.label, room);
+            let value = (!line.value.is_empty()).then_some(line.value.as_str());
+            row(ui, rect, line.icon, &label, value, line.action.is_some());
+            // A row that does nothing is a target too, so that the page scrolls to it.
+            targets.push((line.action.clone().unwrap_or(Action::None), rect));
+            y += ROW + GAP;
         }
     }
 
@@ -1261,15 +1573,20 @@ impl LauncherScreen {
                     color::text(),
                     &lang::get(setting.label_key()),
                 );
-                let vw = ui.measure(Face::Regular, 13.0, &value);
-                ui.text(
-                    Face::Regular,
-                    13.0,
-                    rect.x + rect.w - 14.0 - vw,
-                    rect.y + 15.0,
-                    color::muted(),
-                    &value,
-                );
+                let on = self.view.switches.iter().find(|(s, _)| *s == setting);
+                if let Some((_, on)) = on {
+                    switch(ui, rect.x + rect.w - 60.0, rect.y + 10.0, *on);
+                } else {
+                    let vw = ui.measure(Face::Regular, 13.0, &value);
+                    ui.text(
+                        Face::Regular,
+                        13.0,
+                        rect.x + rect.w - 14.0 - vw,
+                        rect.y + 15.0,
+                        color::muted(),
+                        &value,
+                    );
+                }
                 targets.push((Action::Setting(setting), rect));
                 y += row_h;
             }
@@ -1486,6 +1803,279 @@ mod tests {
         assert_eq!(LauncherScreen::density_for(300.0, 600.0, 1.0), 1.0);
         // A PC's window keeps the system's scale.
         assert_eq!(LauncherScreen::density_for(1920.0, 1080.0, 1.5), 1.5);
+    }
+
+    /// The frame `draw` makes at `size` pixels, painted as the HUD's shader paints it: RGBA rows.
+    fn painted(size: [u32; 2], density: f32, draw: impl Fn(&mut Ui)) -> Vec<u8> {
+        use crate::hud::{HudAtlas, HudBatch};
+        let atlas = HudAtlas::boot();
+        let mut pixels = atlas.pixels().into_owned();
+        let mut batch = HudBatch::scratch(size);
+        let mut ui = Ui::new(&atlas, &mut batch, (0.0, 0.0));
+        ui.set_density(density);
+        draw(&mut ui);
+        ui.finish();
+        for patch in &batch.patches {
+            for row in 0..patch.height {
+                let from = (row * patch.width * 4) as usize;
+                let to = (((patch.y + row) * atlas.width + patch.x) * 4) as usize;
+                let n = (patch.width * 4) as usize;
+                pixels[to..to + n].copy_from_slice(&patch.rgba[from..from + n]);
+            }
+        }
+        let [w, h] = size;
+        let mut out = [0u8, 0, 0, 255].repeat((w * h) as usize);
+        // Every quad is two triangles over an upright rectangle.
+        for quad in batch.vertices.chunks(6) {
+            let edge = |f: fn(f32, f32) -> f32, of: fn(&crate::hud::HudVertex) -> f32, start| {
+                quad.iter().map(of).fold(start, f)
+            };
+            let (inf, ninf) = (f32::INFINITY, f32::NEG_INFINITY);
+            let s = batch.scale;
+            let (x0, x1) = (
+                edge(f32::min, |v| v.pos[0], inf) * s,
+                edge(f32::max, |v| v.pos[0], ninf) * s,
+            );
+            let (y0, y1) = (
+                edge(f32::min, |v| v.pos[1], inf) * s,
+                edge(f32::max, |v| v.pos[1], ninf) * s,
+            );
+            let at = |x: bool, y: bool| {
+                quad.iter()
+                    .find(|v| {
+                        (v.pos[0] * s > (x0 + x1) / 2.0) == x
+                            && (v.pos[1] * s > (y0 + y1) / 2.0) == y
+                    })
+                    .map(|v| v.uv)
+            };
+            let (Some(a), Some(b)) = (at(false, false), at(true, true)) else {
+                continue;
+            };
+            let tint = quad[0].color.to_le_bytes();
+            for py in y0.round().max(0.0) as u32..(y1.round().max(0.0) as u32).min(h) {
+                for px in x0.round().max(0.0) as u32..(x1.round().max(0.0) as u32).min(w) {
+                    let (fx, fy) = (
+                        (px as f32 + 0.5 - x0) / (x1 - x0),
+                        (py as f32 + 0.5 - y0) / (y1 - y0),
+                    );
+                    let u = (a[0] + (b[0] - a[0]) * fx) * atlas.width as f32;
+                    let v = (a[1] + (b[1] - a[1]) * fy) * atlas.height as f32;
+                    let i = ((v as u32).min(atlas.height - 1) * atlas.width
+                        + (u as u32).min(atlas.width - 1)) as usize
+                        * 4;
+                    let alpha = u32::from(pixels[i + 3]) * u32::from(tint[3]) / 255;
+                    let o = ((py * w + px) * 4) as usize;
+                    for c in 0..3 {
+                        let ink = u32::from(pixels[i + c]) * u32::from(tint[c]) / 255;
+                        out[o + c] =
+                            ((ink * alpha + u32::from(out[o + c]) * (255 - alpha)) / 255) as u8;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Pictures of the pages, to look at: `MAGNETITE_LAUNCHER_SHOTS=<folder> cargo test -p
+    /// horizon-client-lib --lib -- --ignored launcher_pictures`.
+    #[test]
+    #[ignore = "writes pictures of the pages to look at"]
+    fn launcher_pictures() {
+        let Some(folder) = std::env::var_os("MAGNETITE_LAUNCHER_SHOTS") else {
+            return;
+        };
+        let folder = std::path::PathBuf::from(folder);
+        crate::lang::set(crate::lang::Language::load(&[], "ru_ru"));
+        let setting = |s: Setting, v: &str| (s, v.to_owned());
+        let info = |icon, label: &str, value: &str, action| InfoLine {
+            icon,
+            label: lang::get(label),
+            value: value.to_owned(),
+            action,
+        };
+        let link = || Some(Action::Link(String::new()));
+        let view = View {
+            name: "Steve".into(),
+            account_kind: "Microsoft".into(),
+            signed_in: true,
+            profile: "Основной".into(),
+            profile_detail: "Minecraft 26.3".into(),
+            touch_layout: true,
+            version: "0.1.2".into(),
+            values: vec![
+                setting(Setting::Accounts, "1"),
+                setting(Setting::GraphicsApi, "Vulkan"),
+                setting(Setting::FpsLimit, "Без ограничения"),
+                setting(Setting::Memory, "Без ограничения"),
+                setting(Setting::Jit, "Выключен"),
+                setting(Setting::Sensitivity, "100 %"),
+                setting(Setting::Gyro, ""),
+                setting(Setting::GyroSensitivity, "100 %"),
+                setting(Setting::Vibration, ""),
+                setting(Setting::Cutout, ""),
+                setting(Setting::Language, "Русский (Россия)"),
+                setting(Setting::Updates, "Вышла версия 0.1.3"),
+                setting(Setting::Data, "642 МБ"),
+                setting(Setting::About, ""),
+            ],
+            switches: vec![
+                (Setting::Gyro, true),
+                (Setting::Vibration, true),
+                (Setting::Cutout, false),
+            ],
+            mods: vec![
+                ModLine {
+                    name: "Farmer's Delight".into(),
+                    detail: "1.4.0 · WebAssembly".into(),
+                    enabled: true,
+                },
+                ModLine {
+                    name: "Очень длинное название мода, которое не помещается в строку".into(),
+                    detail: "0.1 · Lua".into(),
+                    enabled: false,
+                },
+            ],
+            mod_page: ModPage {
+                name: "Farmer's Delight".into(),
+                detail: "1.4.0 · WebAssembly · vectorwing · MIT".into(),
+                description:
+                    "Расширяет фермерство и кулинарию: новые культуры, кухонная утварь и блюда."
+                        .into(),
+                enabled: true,
+                settings: vec![
+                    ModSettingLine {
+                        label: "Показывать подсказки в инвентаре и на рабочих столах".into(),
+                        value: String::new(),
+                        kind: ModSettingKind::Toggle(true),
+                    },
+                    ModSettingLine {
+                        label: "Скорость готовки".into(),
+                        value: "1.25".into(),
+                        kind: ModSettingKind::Step,
+                    },
+                    ModSettingLine {
+                        label: "Режим".into(),
+                        value: "Как в ванильной игре".into(),
+                        kind: ModSettingKind::Step,
+                    },
+                    ModSettingLine {
+                        label: "Цвет пара".into(),
+                        value: "#3AB3DA".into(),
+                        kind: ModSettingKind::Color(0x3AB3DA),
+                    },
+                ],
+                settings_note: String::new(),
+                homepage: Some("https://example.com".into()),
+                confirm_remove: false,
+            },
+            ..View::default()
+        };
+        let data = vec![
+            info(
+                "launcher/language",
+                "horizon.launcher.data.worlds",
+                "84 МБ",
+                None,
+            ),
+            info(
+                "launcher/mods",
+                "horizon.launcher.data.mods",
+                "3.2 МБ",
+                None,
+            ),
+            info(
+                "launcher/profile",
+                "horizon.launcher.data.files",
+                "530 МБ",
+                None,
+            ),
+            info(
+                "launcher/delete",
+                "horizon.launcher.data.cache",
+                "12 МБ",
+                Some(Action::Clear(Store::Cache)),
+            ),
+            info(
+                "launcher/delete",
+                "horizon.launcher.data.downloads",
+                "0.0 МБ",
+                Some(Action::Clear(Store::Downloads)),
+            ),
+            info(
+                "launcher/refresh",
+                "horizon.launcher.data.check",
+                "",
+                Some(Action::CheckFiles),
+            ),
+        ];
+        let about = vec![
+            info(
+                "launcher/info",
+                "horizon.launcher.updates.current",
+                "0.1.2",
+                None,
+            ),
+            info(
+                "launcher/github",
+                "horizon.launcher.about.project",
+                "",
+                link(),
+            ),
+            info("launcher/mods", "horizon.launcher.about.mods", "", link()),
+        ];
+        let text = |keys: &[&str]| keys.iter().map(|k| lang::get(k)).collect::<Vec<_>>();
+        for (name, page, info, info_text) in [
+            ("home", Page::Home, Vec::new(), Vec::new()),
+            ("settings", Page::Settings, Vec::new(), Vec::new()),
+            ("mods", Page::Mods, Vec::new(), Vec::new()),
+            ("mod", Page::Mod, Vec::new(), Vec::new()),
+            (
+                "data",
+                Page::Data,
+                data,
+                text(&["horizon.launcher.data.hint"]),
+            ),
+            (
+                "about",
+                Page::About,
+                about,
+                text(&[
+                    "horizon.launcher.about.note",
+                    "horizon.launcher.about.thanks",
+                    "horizon.launcher.about.mojang",
+                ]),
+            ),
+        ] {
+            let mut screen = LauncherScreen::new(View {
+                info,
+                info_text,
+                ..view.clone()
+            });
+            screen.set_page(page);
+            if page == Page::Mods {
+                screen.set_notice(Some(lang::get("horizon.launcher.import.native")));
+            }
+            // An iPhone: 393 by 852 points, the Dynamic Island and the home indicator; then a PC.
+            screen.set_insets([0.0, 118.0, 0.0, 68.0]);
+            for (kind, size, scale) in
+                [("phone", [786u32, 1704u32], 2.0), ("pc", [1300, 875], 1.25)]
+            {
+                if kind == "pc" {
+                    screen.set_insets([0.0; 4]);
+                }
+                let density = LauncherScreen::density_for(size[0] as f32, size[1] as f32, scale);
+                crate::ui_theme::reset_atlas();
+                let rgba = painted(size, density, |ui| screen.draw(ui));
+                let file =
+                    std::fs::File::create(folder.join(format!("{name}-{kind}.png"))).unwrap();
+                let mut encoder = png::Encoder::new(file, size[0], size[1]);
+                encoder.set_color(png::ColorType::Rgba);
+                encoder
+                    .write_header()
+                    .and_then(|mut w| w.write_image_data(&rgba))
+                    .unwrap();
+            }
+        }
     }
 
     #[test]

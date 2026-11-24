@@ -3254,6 +3254,22 @@ impl Game<'_> {
             row.native = Some(NativePage { mappings, settings });
             self.settings.mods.installed.push(row);
         }
+        self.list_settings_for_the_launcher();
+    }
+    /// What the loaded mods registered, for the launcher's mod pages.
+    fn list_settings_for_the_launcher(&self) {
+        use horizon_client::launcher_mod_settings::{ModSetting, write};
+        if !self.options.execution_role.is_client() {
+            return;
+        }
+        let text = |key: &str| horizon_client::lang::get_or(key, key);
+        let mut now = std::collections::BTreeMap::<String, Vec<ModSetting>>::new();
+        for (owner, spec) in mod_api::__private::settings() {
+            now.entry((*owner).to_owned())
+                .or_default()
+                .push(ModSetting::new(spec, text));
+        }
+        write(&Self::game_dir(), now);
     }
     /// The settings mod `mod_id` registered, with their kept values, as its page shows them.
     fn native_page_settings(&self, mod_id: &str) -> Vec<NativeSetting> {

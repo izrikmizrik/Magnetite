@@ -26,7 +26,10 @@ use horizon_client::game_files::{
     InstallProgress, InstallSpec, install as install_game_files, spec_from_build,
 };
 use horizon_client::lang;
+use horizon_client::launcher_mod_settings::{self, ModSetting};
 use horizon_client::launcher_screen::{self, LauncherScreen};
+use horizon_client::phone::{self, PhoneSettings};
+use horizon_client::{launcher_data, launcher_updates};
 use horizon_client::osk::Output;
 use horizon_client::mod_registry;
 use horizon_client::profiles::Profiles;
@@ -87,6 +90,9 @@ pub struct BootConfig {
     /// The launcher between signing in and the game (`launcher_screen.rs`), on a phone. Without
     /// it a ready account starts the game at once.
     pub launcher: bool,
+    /// The host is a phone or a tablet: the launcher edits the touch layout, and leaves the world's
+    /// resolution to the game's own settings.
+    pub phone: bool,
     /// Turn the screen upright (`true`, the launcher) or on its side (`false`, the game), for
     /// this window (iOS sets the window's own orientations).
     pub set_orientation: fn(&Window, bool),
@@ -97,9 +103,36 @@ pub struct BootConfig {
     /// iOS: when the app's signature expires (Unix seconds, from `embedded.mobileprovision`);
     /// the launcher counts down to it. `None` where nothing expires.
     pub signature_expires: Option<u64>,
+    /// Show the platform's file picker for a file of this kind; false when there is none. What
+    /// the player picked comes later, through `picked_file`.
+    pub pick_file: fn(PickKind) -> bool,
+    /// The file picked since the last call, copied where the app may read it, or why it could not
+    /// be; asked every tick. The boot loop removes the copy once it took it.
+    pub picked_file: fn() -> Option<std::result::Result<PathBuf, String>>,
+    /// Let the game draw under the camera cutout (`true`) or keep clear of it; `None` where the
+    /// platform has no such choice.
+    pub set_cutout: Option<fn(bool)>,
+    /// Whether the system lets this run compile code (iOS: a debugger or a JIT enabler attached);
+    /// `None` where it always does.
+    pub jit: Option<fn() -> bool>,
+}
+
+/// What the player is asked to pick a file for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickKind {
+    /// A mod (`.hmod`).
+    Mod,
+    /// A picture for a touch button.
+    Picture,
 }
 
 /// The defaults of the hooks a host may leave out: nothing happens.
+pub fn no_pick(_kind: PickKind) -> bool {
+    false
+}
+pub fn no_picked() -> Option<std::result::Result<PathBuf, String>> {
+    None
+}
 pub fn no_orientation(_window: &Window, _upright: bool) {}
 pub fn no_share(_path: &Path, _text: &str) {}
 pub fn no_folder(_path: &Path) -> bool {
@@ -269,6 +302,16 @@ fn sensitivity_percent(sensitivity: f32) -> u32 {
     (sensitivity * 200.0).round() as u32
 }
 
+/// What a mod is made of, as its row says.
+fn code_label(code: horizon_client::launcher_mods::Code) -> String {
+    use horizon_client::launcher_mods::Code;
+    lang::get(match code {
+        Code::Wasm => "horizon.launcher.mods.wasm",
+        Code::Lua => "horizon.launcher.mods.lua",
+        Code::Content => "horizon.launcher.mods.content",
+    })
+}
+
 /// The iOS launcher's signature row for `left` seconds until the signature expires, and whether
 /// that is under a day.
 fn resign_label(left: i64) -> (String, bool) {
@@ -293,6 +336,78 @@ struct Platform {
     note: Option<String>,
     installing: Option<String>,
     job: Option<Receiver<PlatformJob>>,
+}
+
+/// The wasm memory caps the launcher offers, in MiB; `None` is no cap of the player's.
+const MEMORY_CAPS: [Option<u32>; 6] = [
+    None,
+    Some(256),
+    Some(512),
+    Some(1024),
+    Some(2048),
+    Some(4096),
+];
+
+/// The Updates page: what was found, and the thread looking.
+#[derive(Default)]
+struct Updates {
+    found: Option<std::result::Result<Option<launcher_updates::Release>, String>>,
+    job: Option<Receiver<std::result::Result<Option<launcher_updates::Release>, String>>>,
+}
+
+impl Updates {
+    /// The release newer than this build, if one was found.
+    fn newer(&self) -> Option<&launcher_updates::Release> {
+        match &self.found {
+            Some(Ok(Some(release)))
+                if launcher_updates::is_newer(&release.version, launcher_updates::VERSION) =>
+            {
+                Some(release)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The Data page: the sizes read last, the thread reading them, and the thing whose clearing waits
+/// for a second tap.
+#[derive(Default)]
+struct Data {
+    sizes: Option<launcher_data::Sizes>,
+    job: Option<Receiver<launcher_data::Sizes>>,
+    confirm: Option<launcher_screen::Store>,
+}
+
+/// The installed mod whose page is open.
+struct OpenMod {
+    id: String,
+    settings: Vec<ModSetting>,
+    confirm_remove: bool,
+}
+
+/// The touch layout's editor over the launcher: it waits for the screen to turn on its side, then
+/// opens over that frame.
+enum TouchLayout {
+    Turning,
+    Open {
+        editor: touch_editor::Editor,
+        defaults: touch::HudLayout,
+        /// The action a picture is being picked for.
+        picture: Option<String>,
+    },
+}
+
+/// `bytes` as the Data page shows them.
+fn size_label(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let mib = bytes as f64 / MIB;
+    let (key, value) = if mib >= 1024.0 {
+        ("horizon.launcher.data.gib", mib / 1024.0)
+    } else {
+        ("horizon.launcher.data.mib", mib)
+    };
+    let digits = if value < 10.0 { 1 } else { 0 };
+    lang::tr(key, &[&format!("{value:.digits$}")])
 }
 
 /// What the platform's thread sends back.
@@ -480,6 +595,17 @@ impl Controller {
             pending_forget: false,
             version: 0,
         }
+    }
+
+    /// The files checked again and what is missing downloaded, by the player's wish.
+    fn check_files(&mut self) -> Vec<Job> {
+        if self.installing || !self.has_installer {
+            return Vec::new();
+        }
+        self.installing = true;
+        self.failure = None;
+        self.version += 1;
+        vec![Job::Install]
     }
 
     fn current_attempt(&self) -> u64 {
@@ -706,7 +832,7 @@ impl Controller {
                         vec![Job::Microsoft]
                     }
                     Retry::Install => {
-                        if self.files_ready || !self.has_installer {
+                        if !self.has_installer {
                             Vec::new()
                         } else {
                             self.installing = true;
@@ -894,6 +1020,22 @@ struct Boot {
     signing_in: bool,
     /// The kept account whose removal waits for a second tap.
     confirm_remove: Option<usize>,
+    /// The mod whose page is open, the Updates and Data pages, and the touch layout's editor.
+    open_mod: Option<OpenMod>,
+    updates: Updates,
+    data: Data,
+    touch_layout: Option<TouchLayout>,
+    /// The phone's own settings of the profile that plays.
+    phone: PhoneSettings,
+    /// The game files' download folder, for the Data page.
+    work: PathBuf,
+    pick_file: fn(PickKind) -> bool,
+    picked_file: fn() -> Option<std::result::Result<PathBuf, String>>,
+    /// What the picker was last shown for.
+    picking: Option<PickKind>,
+    set_cutout: Option<fn(bool)>,
+    jit: Option<fn() -> bool>,
+    on_phone: bool,
     /// The launcher's profiles; the current one's folder is the player's (`logging::player_dir`).
     profiles: Profiles,
     /// The profile's name while the player types it, and whether its removal waits for a second
@@ -981,6 +1123,18 @@ impl Boot {
             keyring: Keyring::default(),
             signing_in: false,
             confirm_remove: None,
+            open_mod: None,
+            updates: Updates::default(),
+            data: Data::default(),
+            touch_layout: None,
+            phone: PhoneSettings::load(&profiles.dir(profiles.current)),
+            work: config.work,
+            pick_file: config.pick_file,
+            picked_file: config.picked_file,
+            picking: None,
+            set_cutout: config.set_cutout,
+            jit: config.jit,
+            on_phone: config.phone,
             profiles,
             renaming: None,
             confirm_remove_profile: false,
@@ -991,7 +1145,21 @@ impl Boot {
         };
         boot.resume_saved();
         boot.resume_pending_code();
+        boot.apply_cutout();
         boot
+    }
+
+    /// The player's choice about the camera cutout, told to the host.
+    fn apply_cutout(&self) {
+        if let Some(set) = self.set_cutout {
+            set(self.phone.cutout);
+        }
+    }
+
+    /// The phone's settings kept, in the profile that plays.
+    fn save_phone(&self) {
+        self.phone
+            .save(&self.profiles.dir(self.profiles.current));
     }
 
     /// Sign the kept account in again on a thread: success restores it, a refused token forgets
@@ -1203,9 +1371,74 @@ impl Boot {
         result
     }
 
+    /// The touch layout's editor over the whole frame, once the screen lies on its side; a frame
+    /// still upright is drawn empty.
+    fn draw_touch_layout(&mut self, batch: &mut HudBatch) {
+        let size = self.size();
+        if matches!(self.touch_layout, Some(TouchLayout::Turning)) && size[0] > size[1] {
+            let insets = touch::safe_insets_of(self.window.as_deref(), size);
+            let (editor, defaults) = touch::editor_for(size, batch.scale, insets);
+            self.touch_layout = Some(TouchLayout::Open {
+                editor,
+                defaults,
+                picture: None,
+            });
+        }
+        let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
+        let fsize = size.map(|v| v as f32);
+        self.with_ui(batch, |ui| {
+            ui.set_density(scale);
+            match &self.touch_layout {
+                Some(TouchLayout::Open { editor, .. }) => touch_editor::draw(editor, ui, fsize),
+                _ => {
+                    let bg = horizon_client::ui_theme::color::bg();
+                    ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, bg);
+                }
+            }
+        });
+    }
+
+    /// A finger in the touch layout's editor.
+    fn touch_layout_event(&mut self, touch: &winit::event::Touch, at: (f64, f64)) {
+        let size = self.size().map(|v| v as f32);
+        let Some(TouchLayout::Open {
+            editor,
+            defaults,
+            picture,
+        }) = &mut self.touch_layout
+        else {
+            return;
+        };
+        let at = [at.0 as f32, at.1 as f32];
+        if let Some((layouts, active)) = editor.touch(touch.id, touch.phase, at, size, defaults) {
+            touch::keep_layouts(layouts, active, defaults);
+            self.touch_layout = None;
+            return;
+        }
+        if let Some(id) = editor.picture_clear.take() {
+            let dir = horizon_client::touch_icons::user_dir();
+            let key = if horizon_client::touch_icons::remove_user_icon(&dir, &id) {
+                "horizon.touch.editor.note.picture_removed"
+            } else {
+                "horizon.touch.editor.note.no_picture"
+            };
+            editor.note = Some(touch_editor::tr(key).replace("%s", &id));
+        }
+        if let Some(id) = editor.picture_request.take() {
+            if (self.pick_file)(PickKind::Picture) {
+                *picture = Some(id);
+                self.picking = Some(PickKind::Picture);
+            } else {
+                editor.note = Some(lang::get("horizon.launcher.pick.failed"));
+            }
+        }
+    }
+
     fn draw(&mut self) {
         let mut batch = HudBatch::new(self.size(), self.settings.gui_scale_inputs());
-        if self.launcher_active() {
+        if self.touch_layout.is_some() {
+            self.draw_touch_layout(&mut batch);
+        } else if self.launcher_active() {
             let view = self.launcher_view();
             let flow = self.launcher_flow();
             let notice = self
@@ -1281,7 +1514,6 @@ impl Boot {
         })
     }
 
-    /// Upright for the launcher, on its side for the game, asked of the host on a change.
     /// The frame the window's size again, when a resize was missed: on iOS the window turns upright
     /// after the launcher asks it to, and the frame kept the size the window had before, drawing
     /// the PC's wide layout cut off at the screen's edge.
@@ -1305,11 +1537,12 @@ impl Boot {
         window.request_redraw();
     }
 
+    /// Upright for the launcher, on its side for the game, asked of the host on a change.
     fn sync_orientation(&mut self) {
         if self.launcher.is_none() {
             return;
         }
-        let upright = self.launcher_active();
+        let upright = self.launcher_active() && self.touch_layout.is_none();
         if self.upright != Some(upright)
             && let Some(window) = &self.window
         {
@@ -1337,7 +1570,6 @@ impl Boot {
             ),
             _ => (String::new(), String::new(), false),
         };
-        let soon = lang::get("horizon.launcher.soon");
         let api = match self.settings.horizon.api {
             horizon_client::graphics::GraphicsApi::Vulkan => "horizon.launcher.api.vulkan",
             horizon_client::graphics::GraphicsApi::OpenGl => "horizon.launcher.api.opengl",
@@ -1359,23 +1591,16 @@ impl Boot {
                     .map_or(0, |d| d.as_secs());
                 resign_label(at as i64 - now as i64)
             }),
-            values: vec![
-                (
-                    Setting::Accounts,
-                    self.keyring.accounts.len().to_string(),
-                ),
-                (Setting::GraphicsApi, lang::get(api)),
-                (Setting::Resolution, self.chosen_label(Setting::Resolution)),
-                (Setting::FpsLimit, self.chosen_label(Setting::FpsLimit)),
-                (Setting::Memory, soon.clone()),
-                (Setting::Sensitivity, self.chosen_label(Setting::Sensitivity)),
-                (Setting::Vibration, soon.clone()),
-                (Setting::Cutout, soon.clone()),
-                (Setting::Language, self.chosen_label(Setting::Language)),
-                (Setting::Updates, soon.clone()),
-                (Setting::Data, soon),
-                (Setting::About, env!("CARGO_PKG_VERSION").to_owned()),
+            values: self.setting_values(api),
+            switches: vec![
+                (Setting::Gyro, self.phone.gyro),
+                (Setting::Vibration, self.phone.vibration),
+                (Setting::Cutout, self.phone.cutout),
             ],
+            touch_layout: self.on_phone,
+            mod_page: self.mod_page(),
+            info: self.info().0,
+            info_text: self.info().1,
             signed_in,
             accounts: self
                 .keyring
@@ -1398,7 +1623,7 @@ impl Boot {
             confirm_remove_profile: self.confirm_remove_profile,
             choices,
             chosen,
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: launcher_updates::VERSION.to_owned(),
             files_line: lang::tr(
                 if self.ctrl.files_ready {
                     "horizon.launcher.files.ready"
@@ -1414,15 +1639,7 @@ impl Boot {
                 .iter()
                 .map(|m| launcher_screen::ModLine {
                     name: m.name.clone(),
-                    detail: format!(
-                        "{} · {}",
-                        m.version,
-                        lang::get(if m.wasm {
-                            "horizon.launcher.mods.wasm"
-                        } else {
-                            "horizon.launcher.mods.content"
-                        })
-                    ),
+                    detail: format!("{} · {}", m.version, code_label(m.code)),
                     enabled: self.settings.mods.enabled.contains(&m.id),
                 })
                 .collect(),
@@ -1448,6 +1665,440 @@ impl Boot {
                 .collect(),
             browse_note: self.platform.note.clone(),
         }
+    }
+
+    /// The settings page's rows this platform has, with their values.
+    fn setting_values(&self, api: &str) -> Vec<(launcher_screen::Setting, String)> {
+        use launcher_screen::Setting;
+        let platform = phone::platform();
+        let chosen = |setting| (setting, self.chosen_label(setting));
+        let switch = |setting| (setting, String::new());
+        let mut out = vec![
+            (
+                Setting::Accounts,
+                self.keyring.accounts.len().to_string(),
+            ),
+            (Setting::GraphicsApi, lang::get(api)),
+        ];
+        // A phone's resolution is the game's own setting (Video Settings), which scales the world
+        // alone: the launcher does not offer a second place for it.
+        if !self.on_phone {
+            out.push(chosen(Setting::Resolution));
+        }
+        out.extend([chosen(Setting::FpsLimit), chosen(Setting::Memory)]);
+        if let Some(jit) = self.jit {
+            let key = if jit() {
+                "horizon.launcher.jit.on"
+            } else {
+                "horizon.launcher.jit.off"
+            };
+            out.push((Setting::Jit, lang::get(key)));
+        }
+        out.push(chosen(Setting::Sensitivity));
+        if platform.gyro.is_some() {
+            out.push(switch(Setting::Gyro));
+            if self.phone.gyro {
+                out.push(chosen(Setting::GyroSensitivity));
+            }
+        }
+        if platform.haptic.is_some() {
+            out.push(switch(Setting::Vibration));
+        }
+        if self.set_cutout.is_some() {
+            out.push(switch(Setting::Cutout));
+        }
+        out.extend([
+            chosen(Setting::Language),
+            (
+                Setting::Updates,
+                self.updates.newer().map_or_else(
+                    || launcher_updates::VERSION.to_owned(),
+                    |r| lang::tr("horizon.launcher.updates.available", &[&r.version]),
+                ),
+            ),
+            (
+                Setting::Data,
+                self.data.sizes.map_or_else(String::new, |s| {
+                    size_label(s.files + s.worlds + s.mods + s.logs + s.cache + s.downloads)
+                }),
+            ),
+            (Setting::About, String::new()),
+        ]);
+        out
+    }
+
+    /// The open mod's page.
+    fn mod_page(&self) -> launcher_screen::ModPage {
+        use launcher_screen::{ModPage, ModSettingKind, ModSettingLine};
+        use mod_api::SettingValue;
+        let Some((open, row)) = self.open_mod.as_ref().and_then(|open| {
+            let row = self.mod_rows.iter().find(|m| m.id == open.id)?;
+            Some((open, row))
+        }) else {
+            return ModPage::default();
+        };
+        let mut detail = vec![row.version.clone(), code_label(row.code)];
+        detail.extend((!row.authors.is_empty()).then(|| row.authors.join(", ")));
+        detail.extend((!row.license.is_empty()).then(|| row.license.clone()));
+        let enabled = self.settings.mods.enabled.contains(&row.id);
+        ModPage {
+            name: row.name.clone(),
+            detail: detail.join(" · "),
+            description: row.description.clone(),
+            enabled,
+            settings: open
+                .settings
+                .iter()
+                .map(|setting| {
+                    let value = launcher_mod_settings::value(&self.game_dir, &row.id, setting);
+                    ModSettingLine {
+                        label: setting.label.clone(),
+                        value: launcher_mod_settings::shown(setting, value),
+                        kind: match value {
+                            SettingValue::Toggle(on) => ModSettingKind::Toggle(on),
+                            SettingValue::Color(rgb) => ModSettingKind::Color(rgb),
+                            _ => ModSettingKind::Step,
+                        },
+                    }
+                })
+                .collect(),
+            settings_note: lang::get(match row.code {
+                horizon_client::launcher_mods::Code::Wasm => "horizon.launcher.mods.settings.later",
+                _ => "horizon.launcher.mods.settings.none",
+            }),
+            homepage: row.homepage.clone().filter(|u| u.starts_with("https://")),
+            confirm_remove: open.confirm_remove,
+        }
+    }
+
+    /// The rows and the text of the Updates, Data and About pages, whichever is open.
+    fn info(&self) -> (Vec<launcher_screen::InfoLine>, Vec<String>) {
+        use launcher_screen::{Action, InfoLine, Page, Store};
+        let line = |icon, key: &str, value: String, action| InfoLine {
+            icon,
+            label: lang::get(key),
+            value,
+            action,
+        };
+        match self.launcher.as_ref().map(LauncherScreen::page) {
+            Some(Page::Updates) => {
+                let text = match &self.updates.found {
+                    _ if self.updates.job.is_some() => lang::get("horizon.launcher.updates.looking"),
+                    None => String::new(),
+                    Some(Err(e)) => lang::tr("horizon.launcher.updates.failed", &[e]),
+                    Some(Ok(_)) => match self.updates.newer() {
+                        Some(r) => lang::tr("horizon.launcher.updates.available", &[&r.version]),
+                        None => lang::get("horizon.launcher.updates.newest"),
+                    },
+                };
+                let mut lines = vec![line(
+                    "launcher/info",
+                    "horizon.launcher.updates.current",
+                    launcher_updates::VERSION.to_owned(),
+                    None,
+                )];
+                if let Some(release) = self.updates.newer() {
+                    let mut get = line(
+                        "launcher/download",
+                        "horizon.launcher.updates.get",
+                        String::new(),
+                        Some(Action::Link(release.page.clone())),
+                    );
+                    get.label = lang::tr("horizon.launcher.updates.get", &[&release.version]);
+                    lines.push(get);
+                }
+                lines.push(line(
+                    "launcher/refresh",
+                    "horizon.launcher.updates.check",
+                    String::new(),
+                    self.updates.job.is_none().then_some(Action::CheckUpdate),
+                ));
+                let text = (!text.is_empty()).then_some(text);
+                (lines, text.into_iter().collect())
+            }
+            Some(Page::Data) => {
+                let size = |of: fn(&launcher_data::Sizes) -> u64| match &self.data.sizes {
+                    Some(sizes) => size_label(of(sizes)),
+                    None => lang::get("horizon.launcher.data.counting"),
+                };
+                let clear = |icon, key: &str, store, of| {
+                    let mut line = line(icon, key, size(of), Some(Action::Clear(store)));
+                    if self.data.confirm == Some(store) {
+                        line.label = lang::get("horizon.launcher.data.confirm");
+                    }
+                    line
+                };
+                let mut lines = vec![
+                    line(
+                        "launcher/language",
+                        "horizon.launcher.data.worlds",
+                        size(|s| s.worlds),
+                        None,
+                    ),
+                    line(
+                        "launcher/mods",
+                        "horizon.launcher.data.mods",
+                        size(|s| s.mods),
+                        None,
+                    ),
+                    line(
+                        "launcher/profile",
+                        "horizon.launcher.data.files",
+                        size(|s| s.files),
+                        None,
+                    ),
+                    clear(
+                        "launcher/delete",
+                        "horizon.launcher.data.cache",
+                        Store::Cache,
+                        |s| s.cache,
+                    ),
+                    clear(
+                        "launcher/delete",
+                        "horizon.launcher.data.logs",
+                        Store::Logs,
+                        |s| s.logs,
+                    ),
+                    clear(
+                        "launcher/delete",
+                        "horizon.launcher.data.downloads",
+                        Store::Downloads,
+                        |s| s.downloads,
+                    ),
+                ];
+                if self.ctrl.has_installer {
+                    lines.push(line(
+                        "launcher/refresh",
+                        "horizon.launcher.data.check",
+                        String::new(),
+                        Some(Action::CheckFiles),
+                    ));
+                }
+                (lines, vec![lang::get("horizon.launcher.data.hint")])
+            }
+            Some(Page::About) => {
+                let link = |icon, key: &str, url: &str| {
+                    line(icon, key, String::new(), Some(Action::Link(url.to_owned())))
+                };
+                let project = launcher_updates::PROJECT;
+                (
+                    vec![
+                        line(
+                            "launcher/info",
+                            "horizon.launcher.updates.current",
+                            launcher_updates::VERSION.to_owned(),
+                            None,
+                        ),
+                        line(
+                            "launcher/play",
+                            "horizon.launcher.about.game",
+                            GAME_VERSION.to_owned(),
+                            None,
+                        ),
+                        link("launcher/github", "horizon.launcher.about.project", project),
+                        link(
+                            "launcher/mods",
+                            "horizon.launcher.about.mods",
+                            mod_registry::SITE,
+                        ),
+                        link(
+                            "launcher/edit",
+                            "horizon.launcher.about.issues",
+                            &format!("{project}/issues"),
+                        ),
+                        link(
+                            "launcher/github",
+                            "horizon.launcher.about.horizon",
+                            "https://github.com/horizon-rust/horizon",
+                        ),
+                        link(
+                            "launcher/info",
+                            "horizon.launcher.about.notices",
+                            &format!("{project}/blob/main/THIRD_PARTY_NOTICES.md"),
+                        ),
+                    ],
+                    vec![
+                        lang::get("horizon.launcher.about.note"),
+                        lang::get("horizon.launcher.about.thanks"),
+                        lang::get("horizon.launcher.about.mojang"),
+                    ],
+                )
+            }
+            _ => (Vec::new(), Vec::new()),
+        }
+    }
+
+    /// Look for a newer release, on a thread.
+    fn check_updates(&mut self) {
+        if self.updates.job.is_some() {
+            return;
+        }
+        let (send, receive) = channel();
+        self.updates.job = Some(receive);
+        spawn_mods_job("updates", move || {
+            let read = mod_registry::download(
+                launcher_updates::RELEASES,
+                launcher_updates::MAX_RELEASES,
+            )
+            .and_then(|bytes| {
+                let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                launcher_updates::newest(&text)
+            });
+            let _ = send.send(read);
+        });
+    }
+
+    fn places(&self) -> launcher_data::Places {
+        launcher_data::Places {
+            game_dir: self.game_dir.clone(),
+            resources: self.resources.clone(),
+            work: self.work.clone(),
+        }
+    }
+
+    /// What everything takes on the disk, read on a thread.
+    fn read_sizes(&mut self) {
+        if self.data.job.is_some() {
+            return;
+        }
+        let (send, receive) = channel();
+        self.data.job = Some(receive);
+        let places = self.places();
+        spawn_mods_job("data-sizes", move || {
+            let _ = send.send(places.sizes());
+        });
+    }
+
+    /// What the threads of the Updates and Data pages sent back, and the file the player picked.
+    fn poll_pages(&mut self) {
+        let mut changed = false;
+        if let Some(Ok(found)) = self.updates.job.as_ref().map(Receiver::try_recv) {
+            self.updates.job = None;
+            if let Err(e) = &found {
+                log::warn!("Magnetite: the releases could not be read: {e}");
+            }
+            self.updates.found = Some(found);
+            changed = true;
+        }
+        if let Some(Ok(sizes)) = self.data.job.as_ref().map(Receiver::try_recv) {
+            self.data.job = None;
+            self.data.sizes = Some(sizes);
+            changed = true;
+        }
+        if let Some(picked) = (self.picked_file)() {
+            changed = true;
+            match (picked, self.picking.take()) {
+                (Ok(path), Some(PickKind::Picture)) => {
+                    self.take_picture(&path);
+                    let _ = std::fs::remove_file(path);
+                }
+                (Ok(path), _) => {
+                    self.import_mod(&path);
+                    let _ = std::fs::remove_file(path);
+                }
+                (Err(e), _) => {
+                    log::warn!("Magnetite: the picked file could not be read: {e}");
+                    self.say(lang::tr("horizon.launcher.pick.unread", &[&e]));
+                }
+            }
+        }
+        if changed && let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// A short note at the launcher's foot.
+    fn say(&mut self, text: String) {
+        self.notice = Some((text, Instant::now() + Duration::from_secs(5)));
+    }
+
+    /// The picture picked for a touch button, kept as the player's own.
+    fn take_picture(&mut self, path: &Path) {
+        let Some(TouchLayout::Open {
+            editor, picture, ..
+        }) = &mut self.touch_layout
+        else {
+            return;
+        };
+        let Some(id) = picture.take() else {
+            return;
+        };
+        let kept = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                let dir = horizon_client::touch_icons::user_dir();
+                horizon_client::touch_icons::save_user_icon(&dir, &id, &bytes)
+            });
+        editor.note = Some(match kept {
+            Ok(()) => lang::get("horizon.launcher.picture.kept"),
+            Err(e) => lang::tr("horizon.launcher.pick.unread", &[&e]),
+        });
+    }
+
+    /// Install the mod at `path`, a file the player picked or dropped, and turn it on.
+    fn import_mod(&mut self, path: &Path) {
+        use horizon_client::mod_registry::ImportError;
+        match mod_registry::import(&self.game_dir, path) {
+            Ok(done) => {
+                log::info!("Magnetite: installed {} {}", done.id, done.version);
+                self.settings.mods.enabled.insert(done.id);
+                self.settings.save(&self.options_path());
+                self.read_mods();
+                let key = "horizon.launcher.browse.done";
+                self.say(if done.missing.is_empty() {
+                    lang::tr(key, &[&done.name])
+                } else {
+                    lang::tr(
+                        "horizon.launcher.mods.missing",
+                        &[&done.name, &done.missing.join(", ")],
+                    )
+                });
+                if let Some(launcher) = self.launcher.as_mut() {
+                    launcher.set_page(launcher_screen::Page::Mods);
+                }
+            }
+            Err(e) => {
+                log::warn!("Magnetite: {} was not installed: {e:?}", path.display());
+                let text = match e {
+                    ImportError::NotAMod(_) => lang::get("horizon.launcher.import.not_a_mod"),
+                    ImportError::Native => lang::get("horizon.launcher.import.native"),
+                    ImportError::Source => lang::get("horizon.launcher.import.source"),
+                    ImportError::TooBig => lang::get("horizon.launcher.import.too_big"),
+                    ImportError::Files(e) => {
+                        lang::tr("horizon.launcher.browse.install_failed", &[&e])
+                    }
+                };
+                self.say(text);
+            }
+        }
+    }
+
+    /// The page of the installed mod at `i`.
+    fn open_mod(&mut self, i: usize) {
+        let Some(id) = self.mod_rows.get(i).map(|m| m.id.clone()) else {
+            return;
+        };
+        let settings = launcher_mod_settings::read(&self.game_dir)
+            .remove(&id)
+            .unwrap_or_default();
+        self.open_mod = Some(OpenMod {
+            id,
+            settings,
+            confirm_remove: false,
+        });
+        if let Some(launcher) = self.launcher.as_mut() {
+            launcher.set_page(launcher_screen::Page::Mod);
+        }
+    }
+
+    /// Turn the installed mod `id` on or off.
+    fn toggle_mod(&mut self, id: String) {
+        let enabled = &mut self.settings.mods.enabled;
+        if !enabled.remove(&id) {
+            enabled.insert(id);
+        }
+        let options = self.options_path();
+        self.settings.save(&options);
     }
 
     /// The Mods page opens: the installed mods read again.
@@ -1590,6 +2241,27 @@ impl Boot {
                         .position(|l| l.code == self.settings.language),
                 )
             }
+            Setting::Memory => (
+                MEMORY_CAPS
+                    .iter()
+                    .map(|cap| match cap {
+                        Some(mib) => lang::tr("horizon.launcher.memory.mib", &[mib]),
+                        None => lang::get("horizon.launcher.memory.auto"),
+                    })
+                    .collect(),
+                MEMORY_CAPS
+                    .iter()
+                    .position(|cap| *cap == self.settings.mods.wasm_memory_cap_mib),
+            ),
+            Setting::GyroSensitivity => (
+                phone::GYRO_SENSITIVITIES
+                    .iter()
+                    .map(|&p| percent(p))
+                    .collect(),
+                phone::GYRO_SENSITIVITIES
+                    .iter()
+                    .position(|&p| p == self.phone.gyro_sensitivity),
+            ),
             Setting::Sensitivity => (
                 SENSITIVITIES.iter().map(|&p| percent(p)).collect(),
                 SENSITIVITIES
@@ -1613,6 +2285,14 @@ impl Boot {
                     format!("{} %", sensitivity_percent(self.settings.sensitivity))
                 }
                 Setting::Language => self.settings.language.clone(),
+                Setting::GyroSensitivity => format!("{} %", self.phone.gyro_sensitivity),
+                Setting::Memory => self
+                    .settings
+                    .mods
+                    .wasm_memory_cap_mib
+                    .map_or_else(String::new, |mib| {
+                        lang::tr("horizon.launcher.memory.mib", &[&mib])
+                    }),
                 _ => String::new(),
             },
         }
@@ -1643,6 +2323,18 @@ impl Boot {
                 if let Some(&f) = FPS_LIMITS.get(i) {
                     self.settings.max_fps = f;
                 }
+            }
+            Setting::Memory => {
+                if let Some(&cap) = MEMORY_CAPS.get(i) {
+                    self.settings.mods.wasm_memory_cap_mib = cap;
+                }
+            }
+            Setting::GyroSensitivity => {
+                if let Some(&p) = phone::GYRO_SENSITIVITIES.get(i) {
+                    self.phone.gyro_sensitivity = p;
+                    self.save_phone();
+                }
+                return;
             }
             Setting::Sensitivity => {
                 if let Some(&p) = SENSITIVITIES.get(i) {
@@ -1683,6 +2375,8 @@ impl Boot {
     fn use_profile(&mut self) {
         set_player_dir(&self.profiles);
         self.settings = Settings::load(&self.options_path());
+        self.phone = PhoneSettings::load(&self.profiles.dir(self.profiles.current));
+        self.apply_cutout();
     }
 
     /// Keep the name being typed (an empty one leaves the old name).
@@ -1750,6 +2444,14 @@ impl Boot {
         if action != Action::RemoveProfile {
             self.confirm_remove_profile = false;
         }
+        if !matches!(action, Action::Clear(_)) {
+            self.data.confirm = None;
+        }
+        if action != Action::RemoveMod
+            && let Some(open) = &mut self.open_mod
+        {
+            open.confirm_remove = false;
+        }
         // A tap anywhere but the name field keeps the name typed so far.
         if action != Action::RenameProfile {
             self.finish_rename();
@@ -1775,19 +2477,114 @@ impl Boot {
                 match p {
                     Page::Mods => self.read_mods(),
                     Page::BrowseMods => self.browse_platform(),
+                    Page::Settings if self.data.sizes.is_none() => self.read_sizes(),
                     _ => {}
                 }
                 page(self, p);
             }
+            Action::None => {}
             Action::ToggleMod(i) => {
                 if let Some(id) = self.mod_rows.get(i).map(|m| m.id.clone()) {
-                    let enabled = &mut self.settings.mods.enabled;
-                    if !enabled.remove(&id) {
-                        enabled.insert(id);
-                    }
-                    let options = self.options_path();
-                    self.settings.save(&options);
+                    self.toggle_mod(id);
                 }
+            }
+            Action::ToggleOpenMod => {
+                if let Some(id) = self.open_mod.as_ref().map(|open| open.id.clone()) {
+                    self.toggle_mod(id);
+                }
+            }
+            Action::OpenMod(i) => self.open_mod(i),
+            Action::ModStep(i, forward) => {
+                if let Some(open) = &self.open_mod
+                    && let Some(setting) = open.settings.get(i)
+                {
+                    let now = launcher_mod_settings::value(&self.game_dir, &open.id, setting);
+                    let next = launcher_mod_settings::step(setting, now, forward);
+                    if !launcher_mod_settings::store(&self.game_dir, &open.id, setting, next) {
+                        note(self, "horizon.launcher.mods.settings.failed");
+                    }
+                }
+            }
+            Action::RemoveMod => {
+                let Some(open) = &mut self.open_mod else {
+                    return;
+                };
+                if !open.confirm_remove {
+                    open.confirm_remove = true;
+                } else {
+                    let id = open.id.clone();
+                    match mod_registry::remove(&self.game_dir, &id) {
+                        Ok(()) => {
+                            self.open_mod = None;
+                            self.settings.mods.enabled.remove(&id);
+                            self.settings.save(&self.options_path());
+                            self.read_mods();
+                            page(self, Page::Mods);
+                        }
+                        Err(e) => {
+                            log::warn!("Magnetite: {id} was not removed: {e}");
+                            self.say(lang::tr("horizon.launcher.mods.remove_failed", &[&e]));
+                        }
+                    }
+                }
+            }
+            Action::ImportMod => {
+                if (self.pick_file)(PickKind::Mod) {
+                    self.picking = Some(PickKind::Mod);
+                } else {
+                    note(self, "horizon.launcher.pick.failed");
+                }
+            }
+            Action::CheckUpdate => self.check_updates(),
+            Action::Link(url) => (self.open_link)(&url),
+            Action::Clear(store) => {
+                if self.data.confirm != Some(store) {
+                    self.data.confirm = Some(store);
+                } else {
+                    self.data.confirm = None;
+                    if let Err(e) = self.places().clear(store) {
+                        log::warn!("Magnetite: {store:?} was not cleared: {e}");
+                        self.say(lang::tr("horizon.launcher.data.failed", &[&e]));
+                    }
+                    self.read_sizes();
+                }
+            }
+            Action::CheckFiles => {
+                for job in self.ctrl.check_files() {
+                    self.run_job(job);
+                }
+            }
+            Action::Setting(Setting::Updates) => {
+                page(self, Page::Updates);
+                if self.updates.found.is_none() {
+                    self.check_updates();
+                }
+            }
+            Action::Setting(Setting::Data) => {
+                page(self, Page::Data);
+                self.read_sizes();
+            }
+            Action::Setting(Setting::About) => page(self, Page::About),
+            Action::Setting(Setting::Jit) => note(self, "horizon.launcher.jit.note"),
+            Action::Setting(
+                setting @ (Setting::Gyro | Setting::Vibration | Setting::Cutout),
+            ) => {
+                match setting {
+                    Setting::Gyro => self.phone.gyro = !self.phone.gyro,
+                    Setting::Vibration => {
+                        self.phone.vibration = !self.phone.vibration;
+                        if self.phone.vibration
+                            && let Some(haptic) = phone::platform().haptic
+                        {
+                            haptic();
+                        }
+                    }
+                    _ => {
+                        self.phone.cutout = !self.phone.cutout;
+                        self.apply_cutout();
+                    }
+                }
+                self.save_phone();
             }
             Action::InstallMod(i) => self.install_mod(i),
             Action::Back => page(self, Page::Home),
@@ -1897,11 +2694,12 @@ impl Boot {
                 self.settings.horizon.api = choices[(at + 1) % choices.len()];
                 self.settings.save(&options);
             }
-            Action::Setting(Setting::About) => note(self, "horizon.launcher.about.note"),
             Action::Setting(
                 setting @ (Setting::Resolution
                 | Setting::FpsLimit
+                | Setting::Memory
                 | Setting::Sensitivity
+                | Setting::GyroSensitivity
                 | Setting::Language),
             ) => page(self, Page::Pick(setting)),
             Action::Choose(i) => {
@@ -1919,8 +2717,9 @@ impl Boot {
                 self.read_mods();
                 page(self, Page::Mods);
             }
-            Action::Controls | Action::Setting(_) => {
-                note(self, "horizon.launcher.soon.note")
+            Action::Controls => {
+                self.touch_layout = Some(TouchLayout::Turning);
+                self.sync_orientation();
             }
         }
         if let Some(window) = &self.window {
@@ -1929,6 +2728,9 @@ impl Boot {
     }
 
     fn click(&mut self, event_loop: &ActiveEventLoop) {
+        if self.touch_layout.is_some() {
+            return;
+        }
         if self.launcher_active() {
             return self.launcher_click(event_loop);
         }
@@ -1978,7 +2780,7 @@ impl Boot {
     /// field that has focus, with that field's text, and what it typed into the field. Enter
     /// sends the form.
     fn sync_system_keyboard(&mut self, event_loop: &ActiveEventLoop) {
-        if !horizon_client::system_keyboard::platform_keyboard() || self.app.is_some() {
+        if self.app.is_some() {
             return;
         }
         use horizon_client::system_keyboard::Mode;
@@ -2008,6 +2810,21 @@ impl Boot {
             }
             _ => wanted,
         };
+        if !horizon_client::system_keyboard::platform_keyboard() {
+            // iOS: the window's own keyboard, whose typing comes as key presses (`key_pressed`). A
+            // PC's keyboard is always there.
+            if self.launcher.is_some()
+                && horizon_client::window::outer_is_screen()
+                && let Some(window) = &self.window
+            {
+                let field = wanted.map(|(field, ..)| field);
+                if self.keyboard_for != field {
+                    window.set_ime_allowed(field.is_some());
+                    self.keyboard_for = field;
+                }
+            }
+            return;
+        }
         match wanted {
             Some((field, text, mode)) => {
                 if self.keyboard_for != Some(field) {
@@ -2065,6 +2882,8 @@ impl Boot {
         let edit = match &event.logical_key {
             Key::Named(NamedKey::Backspace) => Edit::Backspace,
             Key::Named(NamedKey::Enter) => Edit::Enter,
+            // iOS's keyboard types its Return as a line break.
+            _ if matches!(event.text.as_deref(), Some("\n" | "\r")) => Edit::Enter,
             _ => match event.text.as_deref().filter(|t| !t.chars().any(char::is_control)) {
                 Some(text) => Edit::Text(text.to_owned()),
                 None => return,
@@ -2090,6 +2909,10 @@ impl Boot {
     /// with nowhere to go back to: the home page, or a sign-in page that must finish.
     fn launcher_back(&mut self) -> bool {
         use launcher_screen::Page;
+        // The touch layout's editor is left without keeping what was moved.
+        if self.touch_layout.take().is_some() {
+            return true;
+        }
         if self.renaming.is_some() {
             self.finish_rename();
             return true;
@@ -2109,8 +2932,8 @@ impl Boot {
         };
         let to = match launcher.page() {
             Page::Home => return false,
-            Page::Pick(_) => Page::Settings,
-            Page::BrowseMods => Page::Mods,
+            Page::Pick(_) | Page::Updates | Page::Data | Page::About => Page::Settings,
+            Page::BrowseMods | Page::Mod => Page::Mods,
             Page::EditProfile => Page::Profiles,
             _ => Page::Home,
         };
@@ -2294,12 +3117,21 @@ impl ApplicationHandler for Boot {
                 button: MouseButton::Left,
                 ..
             } => self.click(event_loop),
+            // A mod dropped on the window is installed as a picked one is.
+            WindowEvent::DroppedFile(path) if self.launcher_active() => {
+                self.import_mod(&path);
+                window.request_redraw();
+            }
             WindowEvent::Touch(touch) => {
                 // In the frame's pixels: iOS gives touches in the screen's frame (`touch_pixels`).
                 let [x, y] = touch::touch_pixels(Some(window.as_ref()), self.size(), &touch);
                 let at = (x, y);
                 let last = std::mem::replace(&mut self.pointer, at);
                 window.request_redraw();
+                if self.touch_layout.is_some() {
+                    self.touch_layout_event(&touch, at);
+                    return;
+                }
                 match touch.phase {
                     TouchPhase::Started => {
                         self.touch_from = Some(at);
@@ -2319,10 +3151,12 @@ impl ApplicationHandler for Boot {
                         }
                     }
                     TouchPhase::Ended => {
-                        if !std::mem::take(&mut self.dragging) {
+                        // A finger that went down elsewhere (on the touch layout's Done) taps
+                        // nothing of the page it finds under it.
+                        let here = self.touch_from.take().is_some();
+                        if !std::mem::take(&mut self.dragging) && here {
                             self.click(event_loop);
                         }
-                        self.touch_from = None;
                     }
                     TouchPhase::Cancelled => {
                         self.dragging = false;
@@ -2368,6 +3202,7 @@ impl ApplicationHandler for Boot {
         }
         self.sync_system_keyboard(event_loop);
         self.poll_platform();
+        self.poll_pages();
         while let Ok((attempt, event)) = self.rx.try_recv() {
             let jobs = self.ctrl.apply(attempt, event);
             self.drain_side_effects();

@@ -129,6 +129,93 @@ pub(super) fn picker(size: [f32; 2], placed: &[Placed]) -> ([f32; 4], Vec<(usize
     (panel, tiles)
 }
 
+/// The editor as the launcher draws it, before there is a game or its fonts: the same layouts,
+/// tools and Add list, where [`Editor::touch`] takes the fingers, on the launcher's own plates.
+/// `size` is the frame's, in pixels.
+pub(super) fn draw(editor: &Editor, ui: &mut horizon_client::ui_theme::Ui, size: [f32; 2]) {
+    use horizon_client::hud::rgba;
+    use horizon_client::ui_theme::{Face, Ui, color};
+    let d = ui.density;
+    let dp = |r: [f32; 4]| r.map(|v| v / d);
+    let plate = |ui: &mut Ui, r: [f32; 4], fill: u32, label: &str| {
+        let [x, y, w, h] = dp(r);
+        ui.rounded(x, y, w, h, 8.0f32.min(h / 4.0), fill);
+        let full = ui.measure(Face::Medium, 13.0, label);
+        let px = (13.0 * ((w - 8.0) / full).min(1.0)).max(6.0);
+        let tw = ui.measure(Face::Medium, px, label);
+        let ty = y + (h - px * 1.4) / 2.0;
+        ui.text(Face::Medium, px, x + (w - tw) / 2.0, ty, color::text(), label);
+    };
+    let centred = |ui: &mut Ui, y: f32, text: &str| {
+        let tw = ui.measure(Face::Regular, 13.0, text);
+        let x = (ui.w - tw) / 2.0;
+        ui.text(Face::Regular, 13.0, x, y, color::text(), text);
+    };
+    let (idle, chosen) = (rgba(255, 255, 255, 40), rgba(90, 160, 255, 170));
+    ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::bg());
+    let layout = editor.current();
+    let [x, y, w, h] = dp(layout.stick_rect(size));
+    let zone = if editor.selected == Some(Sel::Stick) {
+        rgba(90, 160, 255, 60)
+    } else {
+        rgba(255, 255, 255, 18)
+    };
+    ui.rounded(x, y, w, h, 12.0, zone);
+    let note = tr("horizon.touch.editor.stick_area");
+    ui.text(Face::Regular, 12.0, x + 10.0, y + 8.0, color::muted(), &note);
+    let fill = |sel| {
+        if editor.selected == Some(sel) {
+            chosen
+        } else {
+            idle
+        }
+    };
+    plate(ui, layout.esc_rect(size), fill(Sel::Esc), &tr("horizon.touch.esc"));
+    for (i, b) in layout.buttons.iter().enumerate() {
+        let label = super::touch::find_action(&b.id).map_or("?".to_owned(), |a| tr(a.label));
+        plate(ui, b.rect(size), fill(Sel::Button(i)), &label);
+    }
+    for (tool, label, r) in toolbar(size) {
+        let usable = match tool {
+            Tool::Remove => matches!(editor.selected, Some(Sel::Button(_))),
+            Tool::Smaller | Tool::Bigger => editor.selected.is_some(),
+            Tool::Picture | Tool::NoPicture => {
+                matches!(editor.selected, Some(Sel::Button(_) | Sel::Stick))
+            }
+            _ => true,
+        };
+        let fill = match tool {
+            Tool::Done => rgba(60, 150, 70, 255),
+            _ if usable => rgba(70, 70, 74, 255),
+            _ => rgba(36, 36, 40, 255),
+        };
+        let label = match tool {
+            Tool::Layout => tr(label).replace("%s", &(editor.active + 1).to_string()),
+            _ => tr(label),
+        };
+        plate(ui, r, fill, &label);
+    }
+    let hint = match (&editor.note, editor.picking, editor.selected) {
+        (Some(note), _, _) => note.clone(),
+        (None, true, _) => tr("horizon.touch.editor.hint.picking"),
+        (None, _, Some(Sel::Button(_))) => tr("horizon.touch.editor.hint.button"),
+        (None, _, Some(Sel::Stick)) => tr("horizon.touch.editor.hint.stick"),
+        (None, _, Some(Sel::Esc)) => tr("horizon.touch.editor.hint.esc"),
+        (None, _, None) => tr("horizon.touch.editor.hint.none"),
+    };
+    centred(ui, toolbar_bottom(size) / d + 6.0, &hint);
+    if editor.picking {
+        let (panel, tiles) = picker(size, &layout.buttons);
+        let [x, y, w, h] = dp(panel);
+        ui.rounded(x, y, w, h, 12.0, color::raised());
+        ui.border(x, y, w, h, 12.0, color::border());
+        centred(ui, y + 8.0, &tr("horizon.touch.editor.add_title"));
+        for (action, r) in tiles {
+            plate(ui, r, rgba(70, 70, 74, 255), &tr(ACTIONS[action].name));
+        }
+    }
+}
+
 /// The layouts being edited.
 pub(super) struct Editor {
     /// Every saved layout (the defaults where none was saved).

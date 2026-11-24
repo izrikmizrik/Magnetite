@@ -19,8 +19,10 @@ ORIGINAL_JDK_TOOLS = {
     "tools/JavaCharacterTables.java",
     "tests/java/JfrFixture.java",
     # Original Android Java: the Storage Access Framework provider that shows the game's folder to
-    # the system Files app (packaging/android); none of the game's Java.
+    # the system Files app, and the transparent activity that answers the game's file picker
+    # (packaging/android); none of the game's Java.
     "packaging/android/java/dev/magnetite/MagnetiteDocumentsProvider.java",
+    "packaging/android/java/dev/magnetite/PickFileActivity.java",
     # HISTORY-ONLY: this original comparison driver is no longer in the current tree.
     # Keep its old path allowed so --history/--pre-push accept its legitimate historical addition.
     "tools/refactors/api-pr3/JsonNbtOracle.java",

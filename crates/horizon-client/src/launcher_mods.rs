@@ -1,7 +1,7 @@
 //! The phone launcher's Mods page (docs/unification/launcher.md): the mods installed in the game
 //! folder's `horizon-mods/`, read without running anything, as its rows show them. Turning one on
 //! or off is the game's own list (`ModList`, `horizon-mods.txt`); installing one is
-//! `mod_registry::install_any` from Magnetite's mod platform.
+//! `mod_registry::install_any` from Magnetite's mod platform, or `mod_registry::import` from a file.
 use std::path::Path;
 
 /// One installed mod as the launcher lists it.
@@ -10,11 +10,26 @@ pub struct ModRow {
     pub id: String,
     pub name: String,
     pub version: String,
-    /// WebAssembly code (`[wasm]`), else content only.
-    pub wasm: bool,
+    /// What the mod is made of.
+    pub code: Code,
+    pub description: String,
+    pub authors: Vec<String>,
+    pub license: String,
+    pub homepage: Option<String>,
 }
 
-/// The content and WebAssembly mods in `game_dir`'s `horizon-mods/`, by name. Native mods are
+/// What a mod the launcher installs is made of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Code {
+    /// Content alone.
+    Content,
+    /// WebAssembly (`[wasm]`).
+    Wasm,
+    /// Lua scripts (`[lua]`).
+    Lua,
+}
+
+/// The content, WebAssembly and Lua mods in `game_dir`'s `horizon-mods/`, by name. Native mods are
 /// left out: a phone runs only those built into it, which the game's own Mods page lists.
 pub fn installed(game_dir: &Path) -> Vec<ModRow> {
     let dir = game_dir.join(crate::mod_list::DIR);
@@ -25,12 +40,25 @@ pub fn installed(game_dir: &Path) -> Vec<ModRow> {
         .map(|entry| entry.path())
         .filter(|path| path.is_dir() || path.extension().is_some_and(|e| e == "hmod"))
         .filter_map(|path| match horizon_mod_package::Package::read(&path) {
-            Ok(package) if !package.is_native() => Some(ModRow {
-                wasm: package.manifest.wasm.is_some(),
-                id: package.manifest.id,
-                name: package.manifest.name,
-                version: package.manifest.version,
-            }),
+            Ok(package) if !package.is_native() => {
+                let m = package.manifest;
+                Some(ModRow {
+                    code: if m.wasm.is_some() {
+                        Code::Wasm
+                    } else if m.lua.is_some() {
+                        Code::Lua
+                    } else {
+                        Code::Content
+                    },
+                    id: m.id,
+                    name: m.name,
+                    version: m.version,
+                    description: m.description,
+                    authors: m.authors,
+                    license: m.license,
+                    homepage: m.homepage,
+                })
+            }
             Ok(_) => None,
             Err(e) => {
                 log::warn!(

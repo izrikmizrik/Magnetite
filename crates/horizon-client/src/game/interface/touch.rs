@@ -268,6 +268,43 @@ fn load_layouts(defaults: &HudLayout) -> HudFile {
     }
 }
 
+/// Edit HUD is done: the layouts and the one in use, kept in the player's folder.
+pub(super) fn keep_layouts(
+    layouts: Vec<HudLayout>,
+    active: usize,
+    defaults: &HudLayout,
+) -> HudFile {
+    // A layout like the default is no layout: it follows the game's later changes.
+    let layouts: Vec<Option<HudLayout>> = layouts
+        .into_iter()
+        .map(|l| (l != *defaults).then_some(l))
+        .collect();
+    let file = HudFile { active, layouts };
+    if file.layouts.iter().all(Option::is_none) && active == 0 {
+        let _ = std::fs::remove_file(layout_file());
+    } else {
+        save_layouts(&file);
+    }
+    file
+}
+
+/// Edit HUD outside the game (the launcher's touch layout): the editor over the player's layouts,
+/// and the default layout Reset puts back, for a frame of `size` pixels.
+pub(super) fn editor_for(
+    size: [u32; 2],
+    gui_scale: f32,
+    insets: [f32; 4],
+) -> (super::touch_editor::Editor, HudLayout) {
+    let defaults =
+        screen_layout(size, gui_scale, insets, None).hud([size[0] as f32, size[1] as f32]);
+    let file = load_layouts(&defaults);
+    let layouts = super::touch_editor::slots(&file.layouts, &defaults);
+    (
+        super::touch_editor::Editor::new(layouts, file.active),
+        defaults,
+    )
+}
+
 fn save_layouts(file: &HudFile) {
     let layout = |l: &Option<HudLayout>| match l {
         None => serde_json::Value::Null,
@@ -654,6 +691,10 @@ pub(super) struct Controls {
     /// A controller, a keyboard or a mouse drove the game last: the touch HUD steps aside until
     /// a finger touches the glass again.
     pub(super) hardware: bool,
+    /// The player's phone settings (vibration, gyroscope), once they were read, and whether the
+    /// gyroscope is being read now.
+    phone: Option<horizon_client::phone::PhoneSettings>,
+    gyro_on: bool,
 }
 
 impl Controls {
@@ -684,6 +725,13 @@ impl Controls {
             .iter()
             .find(|f| f.role == Role::Stick)
             .map(|f| (f.start, f.last))
+    }
+
+    /// Whether the finger `id` is on a button.
+    fn on_button(&self, id: u64) -> bool {
+        self.fingers
+            .iter()
+            .any(|f| f.id == id && matches!(f.role, Role::Key(_) | Role::Escape))
     }
 
     /// Whether a finger is on the Esc button.
@@ -965,6 +1013,14 @@ fn ask_picture(id: &str) {
     picker(id);
 }
 
+/// The mouse counts that turn the view by `turn` (radians, yaw and pitch) times `percent`: vanilla
+/// turns `0.15 * 8 * (0.6 * sensitivity + 0.2)^3` degrees a count (`MouseHandler.turnPlayer`).
+fn gyro_counts(turn: [f64; 2], percent: u32, sensitivity: f32) -> [f64; 2] {
+    let base = f64::from(sensitivity) * 0.6 + 0.2;
+    let degrees = 0.15 * 8.0 * base.powi(3);
+    turn.map(|radians| radians.to_degrees() * f64::from(percent) / 100.0 / degrees)
+}
+
 impl Game<'_> {
     /// Whether the fingers play the world (the game holds the pointer) or work a screen.
     pub(super) fn touch_world(&self) -> bool {
@@ -1029,17 +1085,7 @@ impl Game<'_> {
         };
         let at = [at[0] as f32, at[1] as f32];
         if let Some((layouts, active)) = editor.touch(touch.id, touch.phase, at, fsize, &defaults) {
-            // A layout like the default is no layout: it follows the game's later changes.
-            let layouts: Vec<Option<HudLayout>> = layouts
-                .into_iter()
-                .map(|l| (l != defaults).then_some(l))
-                .collect();
-            self.touch.hud = HudFile { active, layouts };
-            if self.touch.hud.layouts.iter().all(Option::is_none) && active == 0 {
-                let _ = std::fs::remove_file(layout_file());
-            } else {
-                save_layouts(&self.touch.hud);
-            }
+            self.touch.hud = keep_layouts(layouts, active, &defaults);
             self.touch.editor = None;
             return;
         }
@@ -1156,8 +1202,49 @@ impl Game<'_> {
         let outs = self
             .touch
             .touch(touch.id, touch.phase, at, Instant::now(), world, &layout);
+        if touch.phase == TouchPhase::Started
+            && self.touch.on_button(touch.id)
+            && self.phone_settings().vibration
+            && let Some(haptic) = horizon_client::phone::platform().haptic
+        {
+            haptic();
+        }
         self.last_input = Instant::now();
         self.touch_outs(event_loop, id, outs, [inset_left, inset_top]);
+    }
+
+    /// The player's phone settings, read once: the launcher changes them, before the game.
+    fn phone_settings(&mut self) -> &horizon_client::phone::PhoneSettings {
+        self.touch.phone.get_or_insert_with(|| {
+            let dir = horizon_client::logging::player_dir();
+            horizon_client::phone::PhoneSettings::load(&dir)
+        })
+    }
+
+    /// Each frame: turning the phone turns the view, while the world is played. It is as many
+    /// mouse counts as turn the view by the phone's own turn, whatever the mouse's sensitivity is.
+    pub(super) fn gyro_frame(&mut self) {
+        let Some(gyro) = horizon_client::phone::platform().gyro else {
+            return;
+        };
+        let settings = self.phone_settings();
+        let (on, percent) = (settings.gyro, settings.gyro_sensitivity);
+        let on = on && self.touch_world() && self.pending_save.is_none();
+        if on != self.touch.gyro_on {
+            self.touch.gyro_on = on;
+            (if on { gyro.start } else { gyro.stop })();
+            // What the sensor saw before is no turn of this view.
+            let _ = (gyro.take)();
+            return;
+        }
+        if on {
+            let [yaw, pitch] = (gyro.take)();
+            let [x, y] = gyro_counts([yaw, pitch], percent, self.settings.sensitivity);
+            if x != 0.0 || y != 0.0 {
+                self.mouse.add_motion(x, y);
+                self.last_input = Instant::now();
+            }
+        }
     }
 
     /// Each frame: a list let go mid-swipe keeps gliding.
@@ -1565,6 +1652,17 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gyroscope_turns_the_view_as_far_as_the_phone_turned() {
+        // Vanilla's default sensitivity turns 0.15 degrees a count.
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let [x, y] = gyro_counts([quarter, 0.0], 100, 0.5);
+        assert!((x * 0.15 - 90.0).abs() < 1e-6 && y == 0.0);
+        let [x, _] = gyro_counts([quarter, 0.0], 200, 0.5);
+        assert!((x * 0.15 - 180.0).abs() < 1e-6);
+    }
+
 
     const SIZE: [f32; 2] = [2556.0, 1179.0];
 

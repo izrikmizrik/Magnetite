@@ -392,7 +392,8 @@ machine:
 - **Native mods on a phone** come only as prebuilt binaries for the exact game build and platform:
   nothing compiles on a phone. With no binary for your build, the mod doesn't install, and the
   platform says so.
-- **iOS without JIT:** no native mods (or re-signed through ferrite-signer); WebAssembly runs on
+- **Android:** WebAssembly is compiled in the app itself, when a mod first starts.
+- **iOS without JIT:** no native mods (or re-signed through ferrite-signer); with JIT or without, WebAssembly runs on
   Pulley, Lua on the interpreter. A future manifest field
   `ios_jit = "required" | "recommended" | "optional"` will say whether a mod needs JIT.
 

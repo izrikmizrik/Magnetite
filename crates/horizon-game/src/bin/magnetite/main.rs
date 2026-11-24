@@ -4,6 +4,8 @@
 //! folder, so nothing else needs installing. `horizon-client` stays the plain game executable that
 //! a launcher starts with arguments.
 
+mod pick;
+
 fn main() {
     horizon_game::prepare_main_stack();
     // The game compiles WebAssembly mods in a child process that is this executable again.
@@ -38,10 +40,15 @@ fn main() {
         }),
         language: sys_locale::get_locale(),
         launcher: true,
+        phone: false,
         set_orientation: horizon_client::boot::no_orientation,
         share_log,
         open_folder,
         signature_expires: None,
+        pick_file: pick::pick,
+        picked_file: pick::picked,
+        set_cutout: None,
+        jit: None,
     };
     if let Err(error) = horizon_client::boot::run(config) {
         eprintln!("Magnetite: the boot loop stopped: {error}");

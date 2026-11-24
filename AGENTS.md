@@ -270,7 +270,7 @@ python3 tools/parity.py dedicated_server server_entities server_player_damage
 
 Magnetite is this fork for PC, Android and iOS (plan: [docs/unification/plan.md](docs/unification/plan.md)).
 Its launcher (the screen before the game on every platform), the hosts in `crates/magnetite-android`,
-`crates/magnetite-ios` and `crates/horizon-game/src/bin/magnetite.rs`, and its build and release pipeline
+`crates/magnetite-ios` and `crates/horizon-game/src/bin/magnetite/`, and its build and release pipeline
 have their own skills: [.claude/skills/magnetite-launcher/SKILL.md](.claude/skills/magnetite-launcher/SKILL.md)
 and [.claude/skills/magnetite-builds/SKILL.md](.claude/skills/magnetite-builds/SKILL.md). Modding for mod
 authors: [docs/magnetite/modding.en.md](docs/magnetite/modding.en.md). Mods come from Magnetite's own platform

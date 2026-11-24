@@ -34,9 +34,13 @@ The screen before the game, the same on every platform: upright on a phone, with
 
 - **Accounts:** several kept at once; the account's plate picks one, the people button signs in another.
 - **Profiles:** each with its own settings and touch layout, sharing the worlds, accounts and game files.
-- **Mods:** the installed ones with a switch each, and the mod platform to find and install more.
-- **Settings:** graphics API (Vulkan or OpenGL ES on Android), render resolution, frame rate limit, camera
-  sensitivity, language; on iOS, the time left until the app must be signed again.
+- **Mods:** the installed ones with a switch each, the mod platform, and installing a `.hmod` file from the device
+  (on a PC also by dropping it on the window). A mod's page has its settings, its site and removing it; the settings
+  appear once the game has started with the mod.
+- **Settings:** graphics API (Vulkan or OpenGL ES on Android), frame rate limit, memory for mods, camera sensitivity,
+  gyroscope, vibration, the camera cutout (Android), language, updates, data and cache; render resolution on a PC (on
+  a phone it is the game's own Video Settings); on iOS, JIT and the time left until the app must be signed again.
+- **Touch layout** on a phone: Edit HUD before the game starts.
 - **Open the game folder** in the system's file manager, and **share the log**.
 
 ## Modding

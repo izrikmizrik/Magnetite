@@ -118,6 +118,7 @@ pub mod particles;
 #[cfg(target_os = "linux")]
 pub mod perf_capture;
 pub mod perf_gpu;
+pub mod phone;
 pub mod poi_sections;
 pub mod polytone_post;
 pub mod post_chain;

@@ -41,7 +41,7 @@ pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
 
 /// The overlays' palette (`menu_style`) in the HUD's colour encoding, plus the
 /// translucent plates the overlays draw over the game.
-pub(crate) mod color {
+pub mod color {
     use horizon_client_render::menu_style::{self, OverlayColours};
     pub use menu_style::hud_colour as hex;
     fn p() -> &'static OverlayColours {
@@ -111,7 +111,7 @@ pub(crate) fn radius_plate() -> f32 {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Face {
+pub enum Face {
     Regular,
     Medium,
     /// The wordmark and page titles (the design system's 500).
@@ -516,7 +516,7 @@ impl<'a> Ui<'a> {
         }
     }
     /// A filled rectangle with rounded corners.
-    pub(crate) fn rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
+    pub fn rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
         if color >> 24 == 0 {
             return;
         }
@@ -541,7 +541,7 @@ impl<'a> Ui<'a> {
         self.corners(x0, y0, x1, y1, r, false, color);
     }
     /// A 1px rounded border.
-    pub(crate) fn border(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
+    pub fn border(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
         if color >> 24 == 0 {
             return;
         }
@@ -691,7 +691,7 @@ impl<'a> Ui<'a> {
         fit
     }
     /// The advance of `text` in dp.
-    pub(crate) fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
+    pub fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
         let px = (size * self.density * 4.0).round() / 4.0;
         Self::layout(
             self.atlas,
@@ -737,15 +737,7 @@ impl<'a> Ui<'a> {
         width / self.density
     }
     /// Text in a `1.45 × size` line box whose top is `y`.
-    pub(crate) fn text(
-        &mut self,
-        face: Face,
-        size: f32,
-        x: f32,
-        y: f32,
-        color: u32,
-        text: &str,
-    ) -> f32 {
+    pub fn text(&mut self, face: Face, size: f32, x: f32, y: f32, color: u32, text: &str) -> f32 {
         self.text_line(face, size, (size * 1.45).round(), x, y, color, text)
     }
     pub(crate) fn text_centered(
@@ -796,7 +788,14 @@ fn wordmark(atlas: &HudAtlas, batch: &mut HudBatch) {
     let small = (size * 0.25).clamp(micro(), 18.0);
     let block = size * 1.45 + small * 0.6 + small * 1.5;
     let top = (ui.h - block) / 2.0;
-    ui.text_centered(Face::SemiBold, size, ui.w / 2.0, top, BOOT_TEXT, crate::window::TITLE);
+    ui.text_centered(
+        Face::SemiBold,
+        size,
+        ui.w / 2.0,
+        top,
+        BOOT_TEXT,
+        crate::window::TITLE,
+    );
     ui.text_centered(
         Face::Mono,
         small,

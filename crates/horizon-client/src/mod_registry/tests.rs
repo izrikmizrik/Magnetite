@@ -315,11 +315,9 @@ fn a_mod_the_player_put_there_is_never_replaced() {
     fs::remove_dir_all(&home).unwrap();
 }
 
-/// A wasm package can declare only registries too; the browser must inspect the package,
-/// rather than treat that capability list as proof that it contains no code.
-#[test]
-fn code_packages_never_reach_the_content_browser_install_path() {
-    // The smallest shared group member: `dylink.0` memory info and the three guest exports.
+/// A WebAssembly mod `ruby` 1.0: the smallest shared group member, `dylink.0` memory info and the
+/// three guest exports.
+fn ruby_wasm() -> Vec<u8> {
     let module = &[
         b"\0asm\x01\0\0\0".as_slice(),
         b"\0\x0f\x08dylink.0\x01\x04\0\0\0\0",
@@ -333,8 +331,91 @@ fn code_packages_never_reach_the_content_browser_install_path() {
         "id = \"ruby\"\nname = \"Ruby\"\nversion = \"1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n[wasm]\nsha512 = \"{}\"\ntoolchain = \"1.99.1\"\nbuilt_with = \"test\"\n",
         horizon_mod_package::manifest::sha512_of(module)
     );
-    let bytes =
-        horizon_mod_package::Package::write_files(&manifest, &[("mod.wasm", module)]).unwrap();
+    horizon_mod_package::Package::write_files(&manifest, &[("mod.wasm", module)]).unwrap()
+}
+
+#[test]
+fn the_launcher_installs_a_wasm_mod_from_the_platform() {
+    let bytes = ruby_wasm();
+    let index = registry("1.0", &bytes, "file:///ruby.hmod");
+    let home = scratch("wasm-any");
+    let done = install_any(&index, &home, "ruby", &serve(bytes.clone())).unwrap();
+    assert_eq!(done.version, "1.0");
+    assert_eq!(
+        fs::read(home.join("horizon-mods/ruby.hmod")).unwrap(),
+        bytes
+    );
+    // And its update over it.
+    let index = registry("1.1", &ruby("1.1"), "file:///ruby.hmod");
+    let done = install_any(&index, &home, "ruby", &serve(ruby("1.1"))).unwrap();
+    assert_eq!(done.version, "1.1");
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn a_picked_file_is_installed_replaced_and_removed() {
+    let home = scratch("import");
+    let picked = home.join("My mod (1).hmod");
+    fs::write(&picked, ruby_wasm()).unwrap();
+    let done = import(&home, &picked).unwrap();
+    assert_eq!((done.id.as_str(), done.version.as_str()), ("ruby", "1.0"));
+    assert!(done.missing.is_empty());
+    let target = home.join("horizon-mods/ruby.hmod");
+    assert_eq!(fs::read(&target).unwrap(), ruby_wasm());
+    // The picked copy stays the caller's, and another file of the same mod goes.
+    assert!(picked.exists());
+    fs::write(home.join("horizon-mods/old-ruby.hmod"), ruby("0.9")).unwrap();
+    fs::write(&picked, ruby("2.0")).unwrap();
+    assert_eq!(import(&home, &picked).unwrap().version, "2.0");
+    assert!(!home.join("horizon-mods/old-ruby.hmod").exists());
+    assert_eq!(fs::read(&target).unwrap(), ruby("2.0"));
+    // The platform's record of it goes with the player's own file.
+    fs::write(
+        home.join(MANIFEST),
+        serde_json::json!({"entries": [{
+        "source": "horizon", "project": "ruby", "version": "2.0", "file": "horizon-mods/ruby.hmod"
+    }, {"source": "modrinth", "project": "pack"}]})
+        .to_string(),
+    )
+    .unwrap();
+    import(&home, &picked).unwrap();
+    let kept = Installed::load(&home).unwrap();
+    assert!(kept.position("ruby").is_none());
+    assert_eq!(kept.entries.len(), 1);
+    remove(&home, "ruby").unwrap();
+    assert!(!target.exists());
+    fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn a_picked_file_that_is_no_mod_here_changes_nothing() {
+    let home = scratch("import-refused");
+    let picked = home.join("notes.hmod");
+    fs::write(&picked, "not a zip").unwrap();
+    assert!(matches!(
+        import(&home, &picked),
+        Err(ImportError::NotAMod(_))
+    ));
+    assert!(!home.join("horizon-mods/ruby.hmod").exists());
+    // A mod someone works on as a folder is never replaced by a file.
+    let folder = home.join("horizon-mods/ruby");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(
+        folder.join("horizon-mod.toml"),
+        "id = \"ruby\"\nname = \"Ruby\"\nversion = \"1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+    )
+    .unwrap();
+    fs::write(&picked, ruby("2.0")).unwrap();
+    assert!(matches!(import(&home, &picked), Err(ImportError::Files(_))));
+    assert!(folder.exists() && !home.join("horizon-mods/ruby.hmod").exists());
+    fs::remove_dir_all(home).unwrap();
+}
+
+/// A wasm package can declare only registries too; the browser must inspect the package,
+/// rather than treat that capability list as proof that it contains no code.
+#[test]
+fn code_packages_never_reach_the_content_browser_install_path() {
+    let bytes = ruby_wasm();
     let index = registry("1.0", &bytes, "file:///ruby.hmod");
     let home = scratch("code");
     let error = install(&index, &home, "ruby", &serve(bytes.clone())).unwrap_err();

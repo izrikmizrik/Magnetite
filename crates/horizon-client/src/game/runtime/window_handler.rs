@@ -340,6 +340,7 @@ impl Game<'_> {
         horizon_client::spans::time("pads", || self.poll_pads(event_loop));
         // A list let go mid-swipe keeps gliding (interface/touch.rs).
         self.touch_frame(event_loop);
+        self.gyro_frame();
         self.settle_after_run(event_loop);
         self.pause_if_inactive();
         if let Some(limit) = self.options.time_limit()

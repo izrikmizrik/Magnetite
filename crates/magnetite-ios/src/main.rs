@@ -8,6 +8,16 @@
 //! game files, then the game itself, handed the session file and the prepared resources. Touch
 //! controls and the in-game launcher come in later stages.
 
+// The mapping is plain arithmetic with tests that run on the host too, so this module is not
+// gated; what it does with CoreMotion and UIKit is.
+mod gyro;
+#[cfg(target_os = "ios")]
+mod haptic;
+#[cfg(target_os = "ios")]
+mod jit;
+#[cfg(target_os = "ios")]
+mod pick;
+
 #[cfg(target_os = "ios")]
 fn main() {
     use std::path::PathBuf;
@@ -25,6 +35,16 @@ fn main() {
         permission: microphone::permission,
         request: microphone::request,
         prepare: microphone::prepare,
+    });
+    // What the phone has beyond its screen: a vibration motor, and a gyroscope where the device
+    // has one (the launcher's settings ask before the game reads it).
+    horizon_client::phone::set_platform(horizon_client::phone::Platform {
+        haptic: Some(haptic::tick),
+        gyro: gyro::available().then_some(horizon_client::phone::Gyro {
+            start: gyro::start,
+            stop: gyro::stop,
+            take: gyro::take,
+        }),
     });
     let Some(container) = std::env::var_os("HOME").map(PathBuf::from) else {
         eprintln!("Magnetite: iOS gave the app no container folder");
@@ -68,10 +88,16 @@ fn main() {
         }),
         language: system_language(),
         launcher: true,
+        phone: true,
         set_orientation,
         share_log,
         open_folder,
         signature_expires: signature_expires(),
+        pick_file: pick::pick,
+        picked_file: pick::picked,
+        // The window is the whole screen, and the game keeps its own HUD clear of the safe area.
+        set_cutout: None,
+        jit: Some(jit::enabled),
     };
     if let Err(error) = horizon_client::boot::run(config) {
         eprintln!("Magnetite: the boot loop stopped: {error}");

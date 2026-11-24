@@ -2,9 +2,10 @@
 //! Android UI looper, driven through JNI, no project Java classes.
 //!
 //! Ported from the Android fork of Horizon (MIT licence), where it is `android/native_ime.rs`,
-//! trimmed to the keyboard: the document pickers, mouse capture, screen/cutout configuration and
-//! viewport bounds stay behind. The core gets the four plain functions of
-//! `horizon_client::window::PlatformKeyboard`: [`show`], [`hide`], [`text`], [`set_text`].
+//! trimmed to the keyboard, with the screen's own switches grown back: the document pickers, mouse
+//! capture and viewport bounds stay behind. The core gets the four plain functions of
+//! `horizon_client::window::PlatformKeyboard`: [`show`], [`hide`], [`text`], [`set_text`]; the
+//! boot loop and the game ask for [`keep_screen_on`], [`set_upright`] and [`set_cutout`].
 //!
 //! Enter works through the multiline input type, as in the fork: the keyboard's Enter key types
 //! a line break into the box, [`text`] reports it and the core reads it as Enter
@@ -55,6 +56,9 @@ enum Command {
     KeepScreenOn(bool),
     /// `Activity.setRequestedOrientation` with this `ActivityInfo` constant.
     Orientation(i32),
+    /// Let the window draw under the camera cutout (`true`) or keep clear of it, through the
+    /// window's layout attributes.
+    Cutout(bool),
 }
 
 struct Ui {
@@ -394,6 +398,43 @@ impl Ui {
                     &[JValue::Int(orientation)],
                 )?;
             }
+            Command::Cutout(on) => {
+                // The window's layout attributes carry the cutout mode: SHORT_EDGES (1) lets the
+                // window draw into the cutout along its short sides; DEFAULT (0), the window's own
+                // before anything is asked, keeps the game on its side clear of it.
+                // The native view's context is the activity, as the Orientation command reads it.
+                let activity = env
+                    .call_method(
+                        &self.native,
+                        "getContext",
+                        "()Landroid/content/Context;",
+                        &[],
+                    )?
+                    .l()?;
+                let window = env
+                    .call_method(&activity, "getWindow", "()Landroid/view/Window;", &[])?
+                    .l()?;
+                let attributes = env
+                    .call_method(
+                        &window,
+                        "getAttributes",
+                        "()Landroid/view/WindowManager$LayoutParams;",
+                        &[],
+                    )?
+                    .l()?;
+                env.set_field(
+                    &attributes,
+                    "layoutInDisplayCutoutMode",
+                    "I",
+                    JValue::Int(i32::from(on)),
+                )?;
+                env.call_method(
+                    &window,
+                    "setAttributes",
+                    "(Landroid/view/WindowManager$LayoutParams;)V",
+                    &[JValue::Object(&attributes)],
+                )?;
+            }
             Command::KeepScreenOn(on) => {
                 env.call_method(
                     &self.native,
@@ -510,10 +551,6 @@ pub fn show(text: &str, mode: horizon_client::system_keyboard::Mode) -> bool {
     }
 }
 
-/// Keep the screen on while `on` (the files' download), through the native view on the UI
-/// thread. Not `AndroidApp::set_window_flags`: android-activity 0.6.1 takes its state for
-/// writing there while the event loop holds it for reading around every callback, so a call from
-/// the game's loop never returns. False when the UI thread can't be reached.
 /// Turn the screen upright (`ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT`) or on its side
 /// (`SENSOR_LANDSCAPE`), on the UI thread. False when it can't be reached.
 pub fn set_upright(upright: bool) -> bool {
@@ -526,6 +563,19 @@ pub fn set_upright(upright: bool) -> bool {
     }
 }
 
+/// Let the game draw under the camera cutout (`on`) or keep clear of it, on the UI thread (the
+/// window's layout attributes belong to that thread). The boot loop asks at the start and whenever
+/// the player's choice changes.
+pub fn set_cutout(on: bool) {
+    if let Some(ui) = UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) {
+        ui.enqueue(Command::Cutout(on));
+    }
+}
+
+/// Keep the screen on while `on` (the files' download), through the native view on the UI
+/// thread. Not `AndroidApp::set_window_flags`: android-activity 0.6.1 takes its state for
+/// writing there while the event loop holds it for reading around every callback, so a call from
+/// the game's loop never returns. False when the UI thread can't be reached.
 pub fn keep_screen_on(on: bool) -> bool {
     match UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) {
         Some(ui) => {

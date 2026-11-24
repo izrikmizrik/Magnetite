@@ -178,6 +178,12 @@ pub(crate) fn engine_config() -> wasmtime::Config {
     let mut config = wasmtime::Config::new();
     without_threads(&mut config);
     config.epoch_interruption(ENGINE_CONFIG.1);
+    // `MAGNETITE_WASM_INTERPRETED=1 cargo test` runs the tests on iOS's engine.
+    if cfg!(target_os = "ios")
+        || cfg!(test) && std::env::var_os("MAGNETITE_WASM_INTERPRETED").is_some()
+    {
+        interpreted(&mut config);
+    }
     config.max_wasm_stack(horizon_guest_stack::GUEST_STACK_BYTES);
     // Wasmtime validates this bound even for synchronous engines. No async
     // support or fiber execution is enabled by setting its size.
@@ -185,6 +191,18 @@ pub(crate) fn engine_config() -> wasmtime::Config {
         horizon_guest_stack::GUEST_STACK_BYTES + horizon_guest_stack::HOST_HEADROOM,
     );
     config
+}
+
+/// Wasmtime's interpreter (Pulley) in place of native code: iOS lets an app map no executable
+/// memory, whatever signs it. The reservations are small too: the default 4 GiB for each memory
+/// is for native code's unchecked accesses, and an iOS app has too little address space for it.
+fn interpreted(config: &mut wasmtime::Config) {
+    if let Err(why) = config.target("pulley64") {
+        log::error!("wasm: the interpreter is not in this build: {why}");
+    }
+    config
+        .memory_reservation(16 << 20)
+        .memory_reservation_for_growth(16 << 20);
 }
 
 pub(crate) fn engine() -> wasmtime::Result<Engine> {

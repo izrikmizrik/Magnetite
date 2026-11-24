@@ -184,17 +184,26 @@ pub fn install(
     id: &str,
     get: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
 ) -> Result<Done, String> {
-    install_with(index, home, id, get, installable)
+    install_with(index, home, id, get, installable, false)
 }
 
-/// [`install`] of any mod the launcher installs ([`installable_any`]).
+/// [`install`] of any mod the launcher installs ([`installable_any`]): WebAssembly ones too.
 pub fn install_any(
     index: &Index,
     home: &Path,
     id: &str,
     get: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
 ) -> Result<Done, String> {
-    install_with(index, home, id, get, installable_any)
+    install_with(index, home, id, get, installable_any, true)
+}
+
+/// Why a package with code is refused where it can't be installed: native code always, WebAssembly
+/// in the game's own content browser (`wasm` false).
+fn refuse_code(package: &horizon_mod_package::Package, wasm: bool) -> Result<(), String> {
+    if package.is_native() || (package.manifest.wasm.is_some() && !wasm) {
+        return Err("code mods are installed and updated in the launcher".into());
+    }
+    Ok(())
 }
 
 fn install_with(
@@ -203,6 +212,7 @@ fn install_with(
     id: &str,
     get: &dyn Fn(&str, u64) -> Result<Vec<u8>, String>,
     installable: for<'a> fn(&Index, &'a Project) -> Option<&'a Version>,
+    wasm: bool,
 ) -> Result<Done, String> {
     let p = index
         .project(id)
@@ -227,10 +237,7 @@ fn install_with(
         return Err("code mods are installed and updated in the launcher".into());
     }
     if target.exists() && old_file.as_deref() == Some(relative.as_str()) {
-        let package = horizon_mod_package::Package::read(&target)?;
-        if package.manifest.native.is_some() || package.manifest.wasm.is_some() {
-            return Err("code mods are installed and updated in the launcher".into());
-        }
+        refuse_code(&horizon_mod_package::Package::read(&target)?, wasm)?;
     }
     if let Some(i) = ours
         && list.entries[i]["version"].as_str() == Some(v.version.as_str())
@@ -261,9 +268,7 @@ fn install_with(
     let checked = || -> Result<_, String> {
         let trust = index::check_file(index, p, v, &download)?;
         let package = horizon_mod_package::Package::read(&download)?;
-        if package.manifest.native.is_some() || package.manifest.wasm.is_some() {
-            return Err("code mods are installed and updated in the launcher".into());
-        }
+        refuse_code(&package, wasm)?;
         Ok(trust)
     };
     let trust = checked().inspect_err(|_| {
@@ -294,6 +299,144 @@ fn install_with(
         version: v.version.clone(),
         verified,
     })
+}
+
+/// The largest `.hmod` [`import`] copies.
+const MAX_IMPORT: u64 = 256 << 20;
+
+/// Why a file the player picked was not installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportError {
+    /// It is no mod this build reads: what is wrong with it.
+    NotAMod(String),
+    /// A native mod, which is built into the game, not added to it.
+    Native,
+    /// A WebAssembly mod with its source alone, to be built first.
+    Source,
+    /// Larger than [`MAX_IMPORT`].
+    TooBig,
+    /// The files could not be changed.
+    Files(String),
+}
+
+/// What [`import`] installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Imported {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// The mods it needs that aren't installed.
+    pub missing: Vec<String>,
+}
+
+/// Installs the `.hmod` file at `from` into the game folder `home`: read as the game will read it,
+/// then copied to `horizon-mods/<id>.hmod` over any version of the mod already there (a file with
+/// the same id under another name goes, so the game doesn't find the mod twice). A mod the platform
+/// installed becomes the player's own: its record goes. Turning it on is the caller's.
+pub fn import(home: &Path, from: &Path) -> Result<Imported, ImportError> {
+    let files = ImportError::Files;
+    let size = fs::metadata(from)
+        .map_err(|e| files(format!("{}: {e}", from.display())))?
+        .len();
+    if size > MAX_IMPORT {
+        return Err(ImportError::TooBig);
+    }
+    let package = horizon_mod_package::Package::read(from).map_err(ImportError::NotAMod)?;
+    if package.is_native() {
+        return Err(ImportError::Native);
+    }
+    if package.manifest.wasm.is_some() && package.wasm(from).is_err() {
+        return Err(ImportError::Source);
+    }
+    let manifest = package.manifest;
+    let dir = home.join(crate::mod_list::DIR);
+    fs::create_dir_all(&dir).map_err(|e| files(format!("{}: {e}", dir.display())))?;
+    let _lock = horizon_mod_package::install_lock::lock_home(home)
+        .map_err(|e| files(format!("cannot lock {}: {e}", home.display())))?;
+    let staging = home.join(DOWNLOADS);
+    fs::create_dir_all(&staging).map_err(|e| files(format!("{}: {e}", staging.display())))?;
+    let part = staging.join(format!("{}.hmod.part", manifest.id));
+    fs::copy(from, &part).map_err(|e| files(format!("{}: {e}", part.display())))?;
+    let target = dir.join(format!("{}.hmod", manifest.id));
+    let old = packages_of(home, &manifest.id);
+    let placed = old
+        .iter()
+        .find(|path| path.is_dir())
+        .map_or(Ok(()), |dir| Err(folder(dir)))
+        .and_then(|()| fs::rename(&part, &target).map_err(|e| format!("{}: {e}", target.display())))
+        .and_then(|()| {
+            old.iter()
+                .filter(|path| **path != target)
+                .try_for_each(|path| remove_package(path))
+        })
+        .and_then(|()| forget(home, &manifest.id));
+    if let Err(e) = placed {
+        let _ = fs::remove_file(&part);
+        return Err(files(e));
+    }
+    let installed: Vec<String> = crate::launcher_mods::installed(home)
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    let missing = manifest
+        .dependencies
+        .iter()
+        .filter(|(id, d)| !d.details().optional && !installed.contains(id))
+        .map(|(id, _)| id.clone())
+        .collect();
+    Ok(Imported {
+        id: manifest.id,
+        name: manifest.name,
+        version: manifest.version,
+        missing,
+    })
+}
+
+/// Removes mod `id` from the game folder `home`: its package and, if the platform installed it, its
+/// record. The mod's own data and settings stay, for when the player puts it back.
+pub fn remove(home: &Path, id: &str) -> Result<(), String> {
+    let _lock = horizon_mod_package::install_lock::lock_home(home)
+        .map_err(|e| format!("cannot lock {}: {e}", home.display()))?;
+    for path in packages_of(home, id) {
+        remove_package(&path)?;
+    }
+    forget(home, id)
+}
+
+/// The packages in `horizon-mods/` whose manifest says `id`: files, or a folder being worked on.
+fn packages_of(home: &Path, id: &str) -> Vec<PathBuf> {
+    fs::read_dir(home.join(crate::mod_list::DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() || path.extension().is_some_and(|e| e == "hmod"))
+        .filter(|path| horizon_mod_package::Package::read(path).is_ok_and(|p| p.manifest.id == id))
+        .collect()
+}
+
+/// A package's file goes; a folder is someone's work, which nothing here deletes.
+fn remove_package(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return Err(folder(path));
+    }
+    fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn folder(path: &Path) -> String {
+    format!("{} is a folder: move it away by hand", path.display())
+}
+
+/// Drops the platform's record of `id`, if there is one.
+fn forget(home: &Path, id: &str) -> Result<(), String> {
+    let mut list = Installed::load(home)?;
+    let before = list.entries.len();
+    list.entries
+        .retain(|e| !(e["source"] == "horizon" && e["project"] == id));
+    if list.entries.len() != before {
+        list.save(home)?;
+    }
+    Ok(())
 }
 
 /// Downloads `url` (at most `max` bytes): `https://` only, or a `file://` path

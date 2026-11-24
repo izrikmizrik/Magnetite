@@ -9,7 +9,10 @@
 #![cfg(target_os = "android")]
 
 mod clipboard;
+mod gyro;
+mod haptic;
 mod ime;
+mod pick;
 
 use std::sync::OnceLock;
 use winit::event_loop::EventLoop;
@@ -45,6 +48,32 @@ fn to_logcat(level: log::Level, target: &str, line: &str) {
 /// A line of this crate's own, before the core's logger exists.
 fn early(level: log::Level, line: &str) {
     to_logcat(level, "magnetite_android", line);
+}
+
+/// `f` with the JNI environment and the activity, on this thread: the one way this crate reaches
+/// Java (the picker, the vibration motor, the gyroscope's package name, the microphone). `None`
+/// before `android_main` kept the activity, and on a JNI error, whose exception is cleared so
+/// nothing later sees a pending one.
+pub(crate) fn with_activity<R>(
+    f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<R>,
+) -> Option<R> {
+    let app = ACTIVITY.get()?;
+    // SAFETY: `AndroidApp` keeps the VM and the activity alive for this call.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let result = env.with_local_frame(8, |env| {
+        // SAFETY: the activity `AndroidApp` holds alive, used for these calls only.
+        let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+        f(env, &activity)
+    });
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            let _ = env.exception_clear();
+            early(log::Level::Warn, &format!("Android JNI: {error}"));
+            None
+        }
+    }
 }
 
 /// The activity, kept for the boot loop's two plain `fn` hooks (`open_link`, `keep_awake`): they
@@ -413,33 +442,10 @@ fn android_on_create(state: &OnCreateState<'_>) {
 
 /// The microphone's permission for mods: `RECORD_AUDIO`, asked at run time.
 mod microphone {
-    use super::{ACTIVITY, early};
+    use super::with_activity;
     use horizon_client::microphone::Permission;
 
     const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
-
-    /// `f` with the JNI environment and the activity, on this thread.
-    fn with_activity<R>(
-        f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<R>,
-    ) -> Option<R> {
-        let app = ACTIVITY.get()?;
-        // SAFETY: `AndroidApp` keeps the VM and the activity alive for this call.
-        let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
-        let mut env = vm.attach_current_thread().ok()?;
-        let result = env.with_local_frame(8, |env| {
-            // SAFETY: the activity `AndroidApp` holds alive, used for these calls only.
-            let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
-            f(env, &activity)
-        });
-        match result {
-            Ok(value) => Some(value),
-            Err(error) => {
-                let _ = env.exception_clear();
-                early(log::Level::Warn, &format!("Android microphone: {error}"));
-                None
-            }
-        }
-    }
 
     /// `Activity.checkSelfPermission(RECORD_AUDIO)`; not granted, it is denied once the player
     /// refused (`shouldShowRequestPermissionRationale`), and still to be asked before. A player
@@ -530,6 +536,16 @@ fn android_main(app: AndroidApp) {
     horizon_client::window::set_event_loop_factory(Box::new(move || {
         EventLoop::builder().with_android_app(activity).build()
     }));
+    // The vibration motor and the gyroscope, where the phone has them: the launcher's and the
+    // game's touch settings ask for them through `horizon_client::phone`.
+    horizon_client::phone::set_platform(horizon_client::phone::Platform {
+        haptic: haptic::available().then_some(haptic::tick as fn()),
+        gyro: gyro::available().then_some(horizon_client::phone::Gyro {
+            start: gyro::start,
+            stop: gyro::stop,
+            take: gyro::take,
+        }),
+    });
     let _exit = ExitOnReturn;
     let config = horizon_client::boot::BootConfig {
         game_dir,
@@ -551,11 +567,19 @@ fn android_main(app: AndroidApp) {
         }),
         language: system_language(),
         launcher: true,
+        phone: true,
         set_orientation,
         share_log,
         open_folder,
         // Android apps are signed once; nothing expires.
         signature_expires: None,
+        // The system's file picker, for a mod or a touch button's picture, and what it copied.
+        pick_file: pick::pick,
+        picked_file: pick::picked,
+        // The launcher's "draw under the cutout" choice, through the window's attributes.
+        set_cutout: Some(ime::set_cutout),
+        // Android always lets an app run the code it compiles.
+        jit: None,
     };
     // The platform's keyboard and clipboard for the core, as the iOS host gives them: the
     // hidden EditText the system keyboard types into, and the ClipboardManager.
