@@ -1279,6 +1279,29 @@ impl Boot {
     }
 
     /// Upright for the launcher, on its side for the game, asked of the host on a change.
+    /// The frame the window's size again, when a resize was missed: on iOS the window turns upright
+    /// after the launcher asks it to, and the frame kept the size the window had before, drawing
+    /// the PC's wide layout cut off at the screen's edge.
+    fn sync_surface_size(&mut self) {
+        let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) else {
+            return;
+        };
+        let size = horizon_client::window::surface_size(window);
+        let frame = [renderer.config.width, renderer.config.height];
+        if size.width == 0 || size.height == 0 || renderer.suspended || frame == [size.width, size.height] {
+            return;
+        }
+        log::info!(
+            "Magnetite: the window is {}x{}, the frame was {}x{}: resized",
+            size.width,
+            size.height,
+            frame[0],
+            frame[1]
+        );
+        renderer.resize(size.width, size.height);
+        window.request_redraw();
+    }
+
     fn sync_orientation(&mut self) {
         if self.launcher.is_none() {
             return;
@@ -2366,6 +2389,7 @@ impl ApplicationHandler for Boot {
             }
         }
         self.sync_screen();
+        self.sync_surface_size();
         if self.ctrl.version != self.drawn || self.ctrl.installing || self.frame_missed {
             self.drawn = self.ctrl.version;
             self.frame_missed = false;

@@ -695,6 +695,15 @@ fn decode_icon(png: &[u8]) -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(bytes, info.width, info.height).ok()
 }
 
+/// The size of the window's drawing surface: the client area, and on iOS the whole view, which
+/// winit's `inner_size` gives without the safe area while its `Resized` gives all of it.
+pub fn surface_size(window: &winit::window::Window) -> winit::dpi::PhysicalSize<u32> {
+    #[cfg(target_os = "ios")]
+    return window.outer_size();
+    #[cfg(not(target_os = "ios"))]
+    window.inner_size()
+}
+
 /// The name on the game's windows (title bar, taskbar, the window switcher).
 pub const TITLE: &str = "Magnetite";
 
