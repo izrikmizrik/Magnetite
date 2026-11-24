@@ -766,6 +766,20 @@ pub fn set_outer_is_screen(on: bool) {
     OUTER_IS_SCREEN.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// `attributes` with the window's first inner size, where a window has one: where it is the
+/// screen ([`outer_is_screen`]: iOS) none is given, since winit there would make the view that size
+/// (a PC window's 1040x700 points on a phone: wider than the screen, the PC's layout, cut off).
+pub fn with_first_size(
+    attributes: winit::window::WindowAttributes,
+    size: winit::dpi::LogicalSize<f64>,
+) -> winit::window::WindowAttributes {
+    if outer_is_screen() {
+        attributes
+    } else {
+        attributes.with_inner_size(size)
+    }
+}
+
 /// Whether [`set_outer_is_screen`] turned it on.
 pub fn outer_is_screen() -> bool {
     OUTER_IS_SCREEN.load(std::sync::atomic::Ordering::Relaxed)

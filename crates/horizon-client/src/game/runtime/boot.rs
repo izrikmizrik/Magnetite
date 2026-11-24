@@ -1213,10 +1213,13 @@ impl Boot {
                 .as_ref()
                 .filter(|(_, until)| Instant::now() < *until)
                 .map(|(text, _)| text.clone());
+            // iOS's status bar, Dynamic Island and home indicator: the window is the screen.
+            let insets = touch::safe_insets_of(self.window.as_deref(), self.size());
             if let Some(launcher) = self.launcher.as_mut() {
                 launcher.set_view(view);
                 launcher.set_notice(notice);
                 launcher.set_flow(flow);
+                launcher.set_insets(insets);
             }
             let [width, height] = self.size();
             let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
@@ -2233,9 +2236,10 @@ impl ApplicationHandler for Boot {
             }
             return;
         }
-        let attributes =
-            horizon_client::window::with_icon(Window::default_attributes().with_title(TITLE))
-                .with_inner_size(winit::dpi::LogicalSize::new(1040.0, 700.0));
+        let attributes = horizon_client::window::with_first_size(
+            horizon_client::window::with_icon(Window::default_attributes().with_title(TITLE)),
+            winit::dpi::LogicalSize::new(1040.0, 700.0),
+        );
         let made = event_loop
             .create_window(attributes)
             .map_err(Into::into)
@@ -2291,7 +2295,9 @@ impl ApplicationHandler for Boot {
                 ..
             } => self.click(event_loop),
             WindowEvent::Touch(touch) => {
-                let at = (touch.location.x, touch.location.y);
+                // In the frame's pixels: iOS gives touches in the screen's frame (`touch_pixels`).
+                let [x, y] = touch::touch_pixels(Some(window.as_ref()), self.size(), &touch);
+                let at = (x, y);
                 let last = std::mem::replace(&mut self.pointer, at);
                 window.request_redraw();
                 match touch.phase {

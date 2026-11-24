@@ -30,13 +30,29 @@ fn wide(ui: &Ui) -> bool {
     ui.w > ui.h && ui.w >= WIDE_MIN
 }
 
-/// The page column: the screen less its margins on a phone, right of the sidebar on a PC.
-fn area_for(ui: &Ui) -> Rect {
+/// The page column: the screen less its margins on a phone, right of the sidebar on a PC. `insets`
+/// (left, top, right, bottom, in dp) are the system's own over the window: iOS's status bar,
+/// Dynamic Island and home indicator, where the window is the whole screen; none on a PC.
+fn area_for(ui: &Ui, insets: [f32; 4]) -> Rect {
+    let [left, top, right, bottom] = insets;
     if wide(ui) {
-        let x = SIDEBAR + 28.0;
-        Rect::new(x, 20.0, (ui.w - x - 28.0).min(CONTENT_MAX), ui.h - 40.0)
+        let x = left + SIDEBAR + 28.0;
+        let y = top + 20.0;
+        Rect::new(
+            x,
+            y,
+            (ui.w - x - 28.0 - right).min(CONTENT_MAX),
+            ui.h - y - 20.0 - bottom,
+        )
     } else {
-        Rect::new(MARGIN, TOP, ui.w - 2.0 * MARGIN, ui.h - TOP - MARGIN)
+        let x = MARGIN.max(left);
+        let y = TOP.max(top + 8.0);
+        Rect::new(
+            x,
+            y,
+            ui.w - x - MARGIN.max(right),
+            ui.h - y - MARGIN.max(bottom),
+        )
     }
 }
 
@@ -281,6 +297,8 @@ pub struct LauncherScreen {
     max_scroll: Cell<f32>,
     /// The page column the last draw laid out (`area_for`).
     area: Cell<Rect>,
+    /// The system's insets over the window, in physical pixels (left, top, right, bottom).
+    insets: Cell<[f32; 4]>,
 }
 
 impl LauncherScreen {
@@ -294,7 +312,14 @@ impl LauncherScreen {
             scroll: Cell::new(0.0),
             max_scroll: Cell::new(0.0),
             area: Cell::new(Rect::default()),
+            insets: Cell::new([0.0; 4]),
         }
+    }
+
+    /// The system's insets over the window (left, top, right, bottom), in physical pixels: the
+    /// safe area's edges where the window is the whole screen (iOS), zero elsewhere.
+    pub fn set_insets(&self, insets: [f32; 4]) {
+        self.insets.set(insets);
     }
     pub fn page(&self) -> Page {
         self.page
@@ -364,7 +389,8 @@ impl LauncherScreen {
         let mut targets = Vec::new();
         ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::bg());
         let wide = wide(ui);
-        self.area.set(area_for(ui));
+        let insets = self.insets.get().map(|px| px / ui.density);
+        self.area.set(area_for(ui, insets));
         // A wide window lists the top pages in its sidebar: they have no back arrow.
         let top = |back: Action| (!wide).then_some(back);
         // A page with a bar scrolls under it: its content first, then the bar over it, whose
@@ -423,7 +449,8 @@ impl LauncherScreen {
                 .map(|(_, r)| r.y + r.h)
                 .fold(0.0f32, f32::max)
                 + self.scroll.get();
-            self.max_scroll.set((bottom + MARGIN - ui.h).max(0.0));
+            self.max_scroll
+                .set((bottom + MARGIN.max(insets[3]) - ui.h).max(0.0));
             if self.scroll.get() > self.max_scroll.get() {
                 self.scroll.set(self.max_scroll.get());
             }
