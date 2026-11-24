@@ -271,6 +271,45 @@ r.register_crafting_recipe_serializer("my_mod:dough", Dough);
 `data/<ns>/villager_trade/` и `trade_set` мода теперь читаются из его собственного пространства
 имён. Профессия может покупать урожай мода, странствующий торговец — продавать его семена.
 
+### Микрофон
+
+Клиентский мод может записывать микрофон игрока (например, для голосового чата). Разрешение
+спрашивает сама система: на Android это `RECORD_AUDIO`, на iOS вопрос с описанием из
+`NSMicrophoneUsageDescription`, на ПК разрешение не нужно.
+
+| Что | Как |
+| --- | --- |
+| Узнать разрешение | `host.microphone_permission()`: `Granted`, `Denied`, `Undetermined` или `Unavailable` |
+| Спросить игрока | `host.request_microphone()`: системный вопрос; ответ придёт хуком `microphone_permission_changed` |
+| Начать запись | `host.start_microphone()` возвращает частоту (например, 48000) или `MicrophoneError` |
+| Получать звук | хук `microphone_input(mod_id, samples, sample_rate)` раз в клиентский тик: моно, от -1 до 1 |
+| Остановить | `host.stop_microphone()`; устройство закрывается, когда не пишет ни один мод |
+
+```rust
+#[listener]
+fn client_setup(host: &mut impl ClientHost) {
+    if host.request_microphone() == MicrophonePermission::Granted {
+        let _ = host.start_microphone();
+    }
+}
+
+#[listener]
+fn microphone_permission_changed(host: &mut impl ClientHost, permission: MicrophonePermission) {
+    if permission == MicrophonePermission::Granted {
+        let _ = host.start_microphone();
+    }
+}
+
+#[listener]
+fn microphone_input(host: &mut impl ClientHost, mod_id: &str, samples: &[f32], rate: u32) {
+    // samples: всё, что записано с прошлого тика
+}
+```
+
+Звук приходит только тому моду, который включил запись. Если мод не забирает звук, хранится
+не больше двух секунд, старое отбрасывается. Работает в нативных и WebAssembly-модах, в Lua
+пока нет.
+
 ## Lua-моды
 
 ```toml

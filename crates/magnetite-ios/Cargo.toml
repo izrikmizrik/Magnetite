@@ -26,6 +26,10 @@ winit = "0.30.13"
 [target.'cfg(target_os = "ios")'.dependencies.objc2]
 version = "0.5.3"
 
+# The microphone question's answer block (`requestRecordPermission:`), objc2 0.5's.
+[target.'cfg(target_os = "ios")'.dependencies.block2]
+version = "0.5.1"
+
 [target.'cfg(target_os = "ios")'.dependencies.objc2-foundation]
 version = "0.2.2"
 default-features = false

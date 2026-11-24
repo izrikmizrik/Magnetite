@@ -47,9 +47,9 @@ with remainders, the block entity tick's level, the used stack, `/reload` for mo
 trades).
 
 - [The modding guide](docs/magnetite/modding.en.md) ([по-русски](docs/magnetite/modding.md)): the kinds of mod and
-  where each runs, hooks, Parts, the Host, Lua, determinism, the phones' limits, publishing.
+  where each runs, hooks, Parts, the Host, the microphone, Lua, determinism, the phones' limits, publishing.
 - [The function reference](docs/magnetite/modding-reference.en.md)
-  ([по-русски](docs/magnetite/modding-reference.md)): all 761 hooks and 364 `Host` methods, one line each.
+  ([по-русски](docs/magnetite/modding-reference.md)): all 763 hooks and 368 `Host` methods, one line each.
 
 | Kind | PC | Android | iOS |
 | --- | --- | --- | --- |

@@ -70,6 +70,9 @@
 	<!-- 120 Hz on ProMotion phones. -->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!-- The system's question when a mod records the microphone (ClientMicrophoneClientHost). -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Mods may use the microphone, for voice chat for example. Nothing records unless a mod asks.</string>
 	<!-- The game folder (saves, options, resource packs, logs) shows in the Files app. -->
 	<key>UIFileSharingEnabled</key>
 	<true/>

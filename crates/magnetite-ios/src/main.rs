@@ -20,6 +20,12 @@ fn main() {
     horizon_client::window::set_outer_is_screen(true);
     // The system clipboard: the sign-in code and the game's copy and paste.
     horizon_client::clipboard::set_platform_clipboard(clipboard_get, clipboard_set);
+    // The microphone for mods: AVAudioSession's permission, its question and its category.
+    horizon_client::microphone::set_platform(horizon_client::microphone::Platform {
+        permission: microphone::permission,
+        request: microphone::request,
+        prepare: microphone::prepare,
+    });
     let Some(container) = std::env::var_os("HOME").map(PathBuf::from) else {
         eprintln!("Magnetite: iOS gave the app no container folder");
         return;
@@ -69,6 +75,75 @@ fn main() {
     };
     if let Err(error) = horizon_client::boot::run(config) {
         eprintln!("Magnetite: the boot loop stopped: {error}");
+    }
+}
+
+/// The microphone's permission for mods, through `AVAudioSession` (AVFAudio). Info.plist's
+/// `NSMicrophoneUsageDescription` is the line the system's question shows.
+#[cfg(target_os = "ios")]
+mod microphone {
+    use horizon_client::microphone::Permission;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{msg_send, msg_send_id};
+
+    #[link(name = "AVFAudio", kind = "framework")]
+    unsafe extern "C" {}
+
+    /// `[AVAudioSession sharedInstance]`.
+    fn session() -> Option<Retained<AnyObject>> {
+        let class = AnyClass::get("AVAudioSession")?;
+        // SAFETY: AVAudioSession's documented class method, returning the shared session.
+        unsafe { msg_send_id![class, sharedInstance] }
+    }
+
+    /// `recordPermission`: 'grnt', 'deny' or 'undt' (`AVAudioSessionRecordPermission`).
+    pub(super) fn permission() -> Permission {
+        let Some(session) = session() else {
+            return Permission::Unavailable;
+        };
+        // SAFETY: the documented property, an NSUInteger.
+        let state: usize = unsafe { msg_send![&*session, recordPermission] };
+        match state {
+            0x6772_6e74 => Permission::Granted,
+            0x6465_6e79 => Permission::Denied,
+            0x756e_6474 => Permission::Undetermined,
+            _ => Permission::Unavailable,
+        }
+    }
+
+    /// `requestRecordPermission:`: the system's question, once; the answer is read back through
+    /// [`permission`], so the block does nothing.
+    pub(super) fn request() {
+        let Some(session) = session() else {
+            return;
+        };
+        let answered = block2::RcBlock::new(|_granted: Bool| {});
+        // SAFETY: the documented method with a `void (^)(BOOL)` block; the session copies it.
+        unsafe {
+            let _: () = msg_send![&*session, requestRecordPermission: &*answered];
+        }
+    }
+
+    /// The play-and-record category, the game's sound still on the speaker and mixed with other
+    /// apps' (`MixWithOthers | AllowBluetooth | DefaultToSpeaker`), and the session on.
+    pub(super) fn prepare() {
+        let Some(session) = session() else {
+            return;
+        };
+        let category = objc2_foundation::NSString::from_str("AVAudioSessionCategoryPlayAndRecord");
+        let options: usize = 0x1 | 0x4 | 0x8;
+        let no_error = std::ptr::null_mut::<*mut AnyObject>();
+        // SAFETY: the documented setters, a nil error out-pointer meaning no error is returned.
+        let (set, active): (Bool, Bool) = unsafe {
+            (
+                msg_send![&*session, setCategory: &*category, withOptions: options, error: no_error],
+                msg_send![&*session, setActive: Bool::YES, error: no_error],
+            )
+        };
+        if !set.as_bool() || !active.as_bool() {
+            eprintln!("Magnetite: the audio session did not take the recording category");
+        }
     }
 }
 

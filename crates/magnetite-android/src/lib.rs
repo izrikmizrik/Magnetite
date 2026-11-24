@@ -411,6 +411,92 @@ fn android_on_create(state: &OnCreateState<'_>) {
     }
 }
 
+/// The microphone's permission for mods: `RECORD_AUDIO`, asked at run time.
+mod microphone {
+    use super::{ACTIVITY, early};
+    use horizon_client::microphone::Permission;
+
+    const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+
+    /// `f` with the JNI environment and the activity, on this thread.
+    fn with_activity<R>(
+        f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<R>,
+    ) -> Option<R> {
+        let app = ACTIVITY.get()?;
+        // SAFETY: `AndroidApp` keeps the VM and the activity alive for this call.
+        let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+        let mut env = vm.attach_current_thread().ok()?;
+        let result = env.with_local_frame(8, |env| {
+            // SAFETY: the activity `AndroidApp` holds alive, used for these calls only.
+            let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+            f(env, &activity)
+        });
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                let _ = env.exception_clear();
+                early(log::Level::Warn, &format!("Android microphone: {error}"));
+                None
+            }
+        }
+    }
+
+    /// `Activity.checkSelfPermission(RECORD_AUDIO)`; not granted, it is denied once the player
+    /// refused (`shouldShowRequestPermissionRationale`), and still to be asked before. A player
+    /// who refused for good reads as not asked, and the question then shows nothing.
+    pub(super) fn permission() -> Permission {
+        let state = with_activity(|env, activity| {
+            let name = env.new_string(RECORD_AUDIO)?;
+            let name = jni::objects::JValue::Object(&name);
+            let state = env
+                .call_method(
+                    activity,
+                    "checkSelfPermission",
+                    "(Ljava/lang/String;)I",
+                    &[name],
+                )?
+                .i()?;
+            // PackageManager.PERMISSION_GRANTED
+            if state == 0 {
+                return Ok(Permission::Granted);
+            }
+            let refused = env
+                .call_method(
+                    activity,
+                    "shouldShowRequestPermissionRationale",
+                    "(Ljava/lang/String;)Z",
+                    &[name],
+                )?
+                .z()?;
+            Ok(if refused {
+                Permission::Denied
+            } else {
+                Permission::Undetermined
+            })
+        });
+        state.unwrap_or(Permission::Unavailable)
+    }
+
+    /// `Activity.requestPermissions([RECORD_AUDIO])`: the system's dialog over the game; the
+    /// answer is read back through [`permission`].
+    pub(super) fn request() {
+        with_activity(|env, activity| {
+            let name = env.new_string(RECORD_AUDIO)?;
+            let names = env.new_object_array(1, "java/lang/String", &name)?;
+            env.call_method(
+                activity,
+                "requestPermissions",
+                "([Ljava/lang/String;I)V",
+                &[
+                    jni::objects::JValue::Object(&names),
+                    jni::objects::JValue::Int(1),
+                ],
+            )?;
+            Ok(())
+        });
+    }
+}
+
 /// android-activity's entry point.
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -480,6 +566,11 @@ fn android_main(app: AndroidApp) {
         set_text: ime::set_text,
     });
     horizon_client::clipboard::set_platform_clipboard(clipboard::get, clipboard::set);
+    horizon_client::microphone::set_platform(horizon_client::microphone::Platform {
+        permission: microphone::permission,
+        request: microphone::request,
+        prepare: || {},
+    });
     if let Err(error) = horizon_client::boot::run(config) {
         early(
             log::Level::Error,

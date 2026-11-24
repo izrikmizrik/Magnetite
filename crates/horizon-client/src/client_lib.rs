@@ -31,7 +31,7 @@ pub use horizon_client_render::{
     effects, environment, extras, fast_hash, fluid_models, fluid_render, fog, font, gfx, graphics,
     graphics_style, graphics_ui, hdr_calibration, hud, hud_kit, hud_layout, hud_overlays,
     inventory_effects, java_text, jigsaw_block, json_folder, level_loading, light, lod, logging,
-    machine, mark_sprite, menu_blur, menu_style, mesher, minimap, mipmap, mod_browser,
+    machine, mark_sprite, menu_blur, menu_style, mesher, microphone, minimap, mipmap, mod_browser,
     mod_chunk_tickets, mod_list, mod_pipelines, model_library, models, mods_screen, monitor,
     multiline_edit, native_emissive, options_file, options_fixes, options_ui, overlay,
     pack_browser, pack_formats, pack_hooks, pack_palette, pack_screen, packs, pad_cursor,

@@ -6,7 +6,7 @@ it does. The full documentation with parameters is the rustdoc of `horizon-mod-a
 (`cargo doc -p horizon-mod-api --no-deps --open`). How it all fits together: the
 [modding guide](modding.en.md). По-русски: [modding-reference.md](modding-reference.md).
 
-Hooks: **761**, Host methods: **364**.
+Hooks: **763**, Host methods: **368**.
 
 **A hook's contract:** *listen*: told of the event; *cancel*: may stop the game's
 action; *collect*: every mod's answers are gathered; *replace*: the first mod to answer
@@ -438,6 +438,8 @@ replaces vanilla's answer.
 | `leaves_decay` | server | cancel | A non-persistent leaf block at distance 7 is about to decay at `pos`. |
 | `left_click_block` | server | cancel | A player left-clicks the block `state` at `pos`, `face` the face hit (`[0, 1, 0]` is the top): where `ServerPlayerGameMode.handleBlockBreakAction` takes a dig's start, after its reach, spawn protection and world border checks, before `Block.attack` (a note block plays) or a creative break. |
 | `menu_background` | client | listen | The normal menu blur request, before finite/range validation. |
+| `microphone_input` | client | listen | What the microphone recorded since the last client tick, for mod `mod_id`, which started recording with `start_microphone`: `samples` are mono, from -1 to 1, at `sample_rate` samples per second. |
+| `microphone_permission_changed` | client | listen | The system's permission to record changed to `permission`: the player answered the question `request_microphone` showed, or changed it in the system's settings while the game ran. |
 | `moisture_change` | server | cancel | Farmland at `pos` is about to change moisture from `from` to `to`. |
 | `neighbor_notify` | server | cancel | The block at `pos` (`state`) is about to tell its neighbours it changed (NeoForge's `BlockEvent.NeighborNotifyEvent`): at `ServerLevel.updateNeighborsAt`, which notifies all six sides (`skipped_side` is `None`), and `updateNeighborsAtExceptFromFacing`, which notifies all but `skipped_side`. |
 | `note_block_change` | server | cancel | A player is tuning a note block on the authoritative server, not in client prediction. |
@@ -927,6 +929,15 @@ server only, `ClientHost` methods on the client only, `Host` methods on both sid
 | `modifiers` | `ClientHost` | The current window modifier keys in the same GLFW encoding as input hooks. |
 | `clipboard_text` | `ClientHost` | The clipboard's text (`KeyboardHandler.getClipboard`), empty when it holds none, while the game handles a key, mouse or typed-text event: a mod's key or screen hook pasting into its own field. |
 | `set_clipboard_text` | `ClientHost` | Puts `text` on the clipboard (`KeyboardHandler.setClipboard`) on the same terms as `native_clipboard_text` reads it. |
+
+### `client_microphone`
+
+| Method | On | What it does |
+| --- | --- | --- |
+| `microphone_permission` | `ClientHost` | Whether the system lets the game record now. |
+| `request_microphone` | `ClientHost` | Shows the system's question for the microphone when the player was not asked yet, and gives the permission as it is now: the answer comes later, as the `microphone_permission_changed` hook. |
+| `start_microphone` | `ClientHost` | Starts recording from the system's default input for this mod, and gives the samples per second it records at. |
+| `stop_microphone` | `ClientHost` | Stops this mod's recording: `microphone_input` no longer comes to it. |
 
 ### `client_narrator`
 

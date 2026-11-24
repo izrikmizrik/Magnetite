@@ -81,6 +81,7 @@ pub mod mark_sprite;
 pub mod menu_blur;
 pub mod menu_style;
 pub mod mesher;
+pub mod microphone;
 pub mod minimap;
 pub mod mipmap;
 pub mod mod_animations;

@@ -3594,6 +3594,7 @@ dependencies = [
 name = "magnetite-ios"
 version = "0.1.0"
 dependencies = [
+ "block2 0.5.1",
  "horizon-account",
  "horizon-client",
  "horizon-mod-host",

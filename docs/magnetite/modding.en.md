@@ -271,6 +271,44 @@ components onto the drop: its saved `components` and those its mod gives through
 A mod's `data/<ns>/villager_trade/` and `trade_set` are read from its own namespace: a profession
 can buy the mod's crop, the wandering trader can sell its seeds.
 
+### The microphone
+
+A client mod can record the player's microphone (for voice chat, say). The system asks the
+player: Android's `RECORD_AUDIO`, iOS's question with the line from `NSMicrophoneUsageDescription`;
+a PC asks nothing of the game.
+
+| What | How |
+| --- | --- |
+| The permission | `host.microphone_permission()`: `Granted`, `Denied`, `Undetermined` or `Unavailable` |
+| Ask the player | `host.request_microphone()`: the system's question; the answer comes as the `microphone_permission_changed` hook |
+| Start recording | `host.start_microphone()` gives the sample rate (48000, say) or a `MicrophoneError` |
+| The sound | the `microphone_input(mod_id, samples, sample_rate)` hook once a client tick: mono, -1 to 1 |
+| Stop | `host.stop_microphone()`; the device closes when no mod records |
+
+```rust
+#[listener]
+fn client_setup(host: &mut impl ClientHost) {
+    if host.request_microphone() == MicrophonePermission::Granted {
+        let _ = host.start_microphone();
+    }
+}
+
+#[listener]
+fn microphone_permission_changed(host: &mut impl ClientHost, permission: MicrophonePermission) {
+    if permission == MicrophonePermission::Granted {
+        let _ = host.start_microphone();
+    }
+}
+
+#[listener]
+fn microphone_input(host: &mut impl ClientHost, mod_id: &str, samples: &[f32], rate: u32) {
+    // samples: all that was recorded since the last tick
+}
+```
+
+Only the mod that started recording hears its sound. A mod that does not take it keeps at most
+two seconds; older samples are dropped. Native and WebAssembly mods; not Lua yet.
+
 ## Lua mods
 
 ```toml

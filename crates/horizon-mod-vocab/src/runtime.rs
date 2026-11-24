@@ -281,6 +281,30 @@ pub(crate) fn entered_with_id(
     entered_subscribers(hook_id, hook).map(|entry| (entry.id, &*entry.hooks))
 }
 
+/// [`entered`] for a hook with an `owner`: only the mod whose `[mod] id` is `owner`; every other
+/// subscriber is skipped before it is marked or called, and never sees the arguments.
+pub(crate) fn entered_owned<'a>(
+    hook_id: generated::HookId,
+    hook: &'static str,
+    owner: &'a str,
+) -> impl Iterator<Item = &'static dyn Hooks> + 'a {
+    let mut crash_guard = crate::dispatch_scope::ModGuard::empty();
+    let scope = crate::dispatch_scope::snapshot();
+    listening(hook_id)
+        .filter(move |(_, entry)| entry.id == owner)
+        .map(move |(_, entry)| {
+            scope.replace(
+                &mut crash_guard,
+                crate::content::crash::ModCall {
+                    id: entry.id,
+                    hook,
+                    part: None,
+                },
+            );
+            &*entry.hooks
+        })
+}
+
 /// A hook's enabled subscribers in dispatch order (descending priority, then dependency order),
 /// each marked as running `hook` until the next one is (or the loop ends), so a panic in it
 /// names the mod.

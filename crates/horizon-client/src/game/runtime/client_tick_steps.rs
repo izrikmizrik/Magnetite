@@ -42,6 +42,8 @@ impl Game<'_> {
             self.tick_chat_queue();
             self.tick_music();
             self.tick_sound_engine();
+            // A mod's microphone: the permission's change, the samples recorded.
+            self.tick_microphone();
             // ClientTickEvent.Post, the tick's work done.
             self.native_client_tick_post();
             self.clock.record(started.elapsed());
