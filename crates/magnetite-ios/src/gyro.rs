@@ -207,7 +207,11 @@ mod tests {
     #[test]
     fn upright_negates_the_rate_about_the_devices_up() {
         for orientation in [0, 1, 2] {
-            assert_eq!(turn(orientation, [0.0, 1.0, 0.0]), [-1.0, 0.0], "{orientation}");
+            assert_eq!(
+                turn(orientation, [0.0, 1.0, 0.0]),
+                [-1.0, 0.0],
+                "{orientation}"
+            );
         }
     }
 
@@ -215,8 +219,16 @@ mod tests {
     #[test]
     fn upright_negates_the_rate_about_the_devices_right() {
         for orientation in [0, 1, 2] {
-            assert_eq!(turn(orientation, [-1.0, 0.0, 0.0]), [0.0, 1.0], "{orientation}");
-            assert_eq!(turn(orientation, [1.0, 0.0, 0.0]), [0.0, -1.0], "{orientation}");
+            assert_eq!(
+                turn(orientation, [-1.0, 0.0, 0.0]),
+                [0.0, 1.0],
+                "{orientation}"
+            );
+            assert_eq!(
+                turn(orientation, [1.0, 0.0, 0.0]),
+                [0.0, -1.0],
+                "{orientation}"
+            );
         }
     }
 
