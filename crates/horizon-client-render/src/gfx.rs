@@ -250,6 +250,7 @@ pub use prepared_model::{
     cap_prepared_instance_slots, capped_prepared_room, set_test_prepared_generation,
     test_prepared_generation,
 };
+mod arm_asr;
 mod block_entity_positions;
 mod half;
 #[cfg(test)]
@@ -7630,11 +7631,13 @@ impl Renderer {
             hdr_gain,
             hdr_settings,
         ));
-        // SGSR 2's depth clip scales by the camera's horizontal field.
-        self.world_post.set_camera_fov(
-            (frame.fov_degrees.to_radians() * 0.5).tan() * self.config.width as f32
-                / self.config.height.max(1) as f32,
-        );
+        // SGSR 2's and Arm ASR's depth clips read the camera.
+        self.world_post.set_camera(arm_asr::Camera {
+            fov_y: frame.fov_degrees.to_radians(),
+            aspect: self.config.width as f32 / self.config.height.max(1) as f32,
+            near: NEAR_PLANE,
+            far: frame.depth_far,
+        });
         let jitter = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,

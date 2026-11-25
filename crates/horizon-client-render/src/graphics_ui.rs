@@ -792,6 +792,9 @@ fn description(
             Antialiasing::Sgsr2 => {
                 "SGSR 2: temporal upscaling made for phones. At Native, temporal anti-aliasing."
             }
+            Antialiasing::ArmAsr => {
+                "Arm ASR: FSR 2-style temporal upscaling for phones. Sharpest, heaviest. Native: anti-aliasing."
+            }
             _ => text,
         },
         (Item::Horizon(H::Upscaling), _) if s.horizon.sgsr1 => {
@@ -801,6 +804,11 @@ fn description(
             if s.horizon.taa && s.horizon.temporal == crate::graphics::Temporal::Sgsr2 =>
         {
             "Renders the world smaller and rebuilds it with SGSR 2. Native: no upscaling."
+        }
+        (Item::Horizon(H::Upscaling), _)
+            if s.horizon.taa && s.horizon.temporal == crate::graphics::Temporal::ArmAsr =>
+        {
+            "Renders the world smaller and rebuilds it with Arm ASR. Native: no upscaling."
         }
         _ => text,
     }
@@ -1449,17 +1457,19 @@ enum Antialiasing {
     Taa,
     Sgsr1,
     Sgsr2,
+    ArmAsr,
     Msaa4x,
 }
 
 impl Antialiasing {
-    const ALL: [Antialiasing; 7] = [
+    const ALL: [Antialiasing; 8] = [
         Antialiasing::Off,
         Antialiasing::Fxaa,
         Antialiasing::Smaa,
         Antialiasing::Taa,
         Antialiasing::Sgsr1,
         Antialiasing::Sgsr2,
+        Antialiasing::ArmAsr,
         Antialiasing::Msaa4x,
     ];
 
@@ -1472,6 +1482,7 @@ impl Antialiasing {
             Antialiasing::Taa => "TAA",
             Antialiasing::Sgsr1 => "SGSR 1",
             Antialiasing::Sgsr2 => "SGSR 2",
+            Antialiasing::ArmAsr => "Arm ASR",
             Antialiasing::Msaa4x => "4x MSAA",
         }
     }
@@ -1484,6 +1495,7 @@ impl Antialiasing {
         let temporal = match self {
             Antialiasing::Taa => Some(Temporal::Taa),
             Antialiasing::Sgsr2 => Some(Temporal::Sgsr2),
+            Antialiasing::ArmAsr => Some(Temporal::ArmAsr),
             _ => None,
         };
         (g.fxaa, g.smaa, g.taa, g.sgsr1, g.msaa4x) = (
@@ -1497,7 +1509,7 @@ impl Antialiasing {
             g.temporal = temporal;
         }
         match self {
-            Antialiasing::Taa | Antialiasing::Sgsr2 => {}
+            Antialiasing::Taa | Antialiasing::Sgsr2 | Antialiasing::ArmAsr => {}
             Antialiasing::Sgsr1 if g.upscaling == Upscaling::Native => {
                 g.upscaling = Upscaling::Quality;
             }
@@ -1515,6 +1527,7 @@ fn antialiasing(g: &crate::graphics::Graphics, out: &EffectiveOutput) -> Antiali
         match g.temporal {
             crate::graphics::Temporal::Taa => Antialiasing::Taa,
             crate::graphics::Temporal::Sgsr2 => Antialiasing::Sgsr2,
+            crate::graphics::Temporal::ArmAsr => Antialiasing::ArmAsr,
         }
     } else if g.sgsr1 {
         Antialiasing::Sgsr1
@@ -2505,7 +2518,9 @@ mod tests {
         let mut s = Settings::default();
         let item = Item::Horizon(H::Antialiasing);
         let msaa = EffectiveOutput { msaa: true, ..NONE };
-        for label in ["FXAA", "SMAA", "TAA", "SGSR 1", "SGSR 2", "4x MSAA", "Off"] {
+        for label in [
+            "FXAA", "SMAA", "TAA", "SGSR 1", "SGSR 2", "Arm ASR", "4x MSAA", "Off",
+        ] {
             item.cycle(&mut s, false, [854, 480], &msaa);
             assert_eq!(
                 item.label(&s, &msaa).plain(),
@@ -2547,7 +2562,11 @@ mod tests {
             assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: SGSR 2");
         }
         assert!(ratios.contains(&Upscaling::Native));
-        // A renderer that can't draw 4x MSAA goes from SGSR 2 to Off, and to Native.
+        // Arm ASR keeps it too, Native included.
+        item.cycle(&mut s, false, [854, 480], &NONE);
+        assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Arm ASR");
+        assert!(s.horizon.taa);
+        // A renderer that can't draw 4x MSAA goes from Arm ASR to Off, and to Native.
         item.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
         assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Off");
