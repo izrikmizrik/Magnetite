@@ -63,6 +63,13 @@ jobs:
             -o .local/android/jni/arm64-v8a/libmagnetite_android.so \
             target/aarch64-linux-android/fast/libmagnetite_android.so
           cp LICENSE THIRD_PARTY_NOTICES.md .local/android/assets/
+      - name: The wasm mods' standard library member
+        # Every wasm mod links against it. The game looks beside its executable, which on Android
+        # is the system's app_process: the APK carries it as an asset that magnetite-android hands
+        # over. Without it every wasm mod was refused ("no wasm standard library member").
+        run: |
+          mkdir -p .local/android/assets
+          cargo run --locked -p cargo-horizon-mod -- wasm-std "$PWD/.local/android/assets/horizon-wasm-std.wasm"
       - name: Package the APK
         env:
           # The kept test-build key (packaging/android/build.gradle): each APK installs over the

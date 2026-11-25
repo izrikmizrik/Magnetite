@@ -485,6 +485,19 @@ pub fn refusal(id: &str) -> Option<Refusal> {
         })
 }
 
+/// The std member's file, beside the game's executable.
+const STD_FILE: &str = "horizon-wasm-std.wasm";
+
+/// The std member a platform handed over ([`set_std_member`]).
+static STD_MEMBER: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+/// Gives the game the std member every wasm mod links against, for a platform that can't keep it
+/// beside the executable: Android's executable is the system's `app_process`, so the APK carries
+/// the member as an asset. Before [`load_installed`]; a second call keeps the first member.
+pub fn set_std_member(member: Vec<u8>) {
+    let _ = STD_MEMBER.set(member);
+}
+
 /// Loads the wasm mods selected by the actual startup arguments, once at startup.
 /// `player_dir` is the client's already resolved options directory, not the shared game/cache
 /// directory. Dedicated startup reads properties in its game directory instead.
@@ -594,9 +607,15 @@ pub fn load_installed(
             ..Loaded::default()
         },
         Ok(_) => {
-            let std = std::env::current_exe()
-                .ok()
-                .and_then(|exe| std::fs::read(exe.with_file_name("horizon-wasm-std.wasm")).ok());
+            let beside = || {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| std::fs::read(exe.with_file_name(STD_FILE)).ok())
+            };
+            let std = STD_MEMBER
+                .get()
+                .map(|member| std::borrow::Cow::Borrowed(member.as_slice()))
+                .or_else(|| beside().map(std::borrow::Cow::Owned));
             load_available_std(
                 std.as_deref(),
                 packages,
