@@ -10,6 +10,9 @@ fn switching_on_asks_for_its_pipelines_once() {
         requested,
         rebuild: false,
         rebuildable: true,
+        half: true,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        linear: false,
         active: false,
         passes: None,
     };
@@ -50,6 +53,9 @@ fn split_screen_offers_it_only_with_its_pipelines() {
         requested: false,
         rebuild: false,
         rebuildable,
+        half: true,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        linear: false,
         active: false,
         passes: None,
     };
@@ -134,7 +140,7 @@ struct Color {
     });
     let reuse = Reuse::default();
     let kept = reuse.on(&device);
-    let mut both = [false, true].map(|linear| Passes::new(&kept, &device, format, linear));
+    let mut both = [false, true].map(|linear| Passes::new(&kept, &device, format, linear, true));
     // Edge pixels whose resolve kept the sky's sample, and those that kept the geometry's.
     let mut kept_by = [0; 2];
     // The gamma passes keep their targets from one case to the next: a new size or surface

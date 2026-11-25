@@ -251,6 +251,7 @@ pub use prepared_model::{
     test_prepared_generation,
 };
 mod block_entity_positions;
+mod half;
 #[cfg(test)]
 mod inter_stage_tests;
 #[cfg(test)]
@@ -2510,7 +2511,7 @@ impl Renderer {
             &adapter,
             frame_format,
             linear_light,
-            settings.msaa4x,
+            (settings.msaa4x, settings.half_precision),
         );
         let pipelines_step = crate::spans::startup::step("renderer.pipelines_textures");
         let terrain_step = crate::spans::startup::step("renderer.terrain_pipelines");
@@ -4376,7 +4377,7 @@ impl Renderer {
                 Some(cull)
             });
         let depth = Self::depth(&device, &config);
-        let world_post = world_post::Post::new(&device, frame_format);
+        let world_post = world_post::Post::new(&device, frame_format, settings.half_precision);
         let uploads = upload::Uploads::new(&device);
         let section_uploads = upload::Uploads::with_chunk(&device, SECTION_UPLOAD_CHUNK);
         let stars = stars::Stars::new(&device, (frame_format, linear_light));
@@ -6256,6 +6257,7 @@ impl Renderer {
     pub fn output(&self) -> output::EffectiveOutput {
         output::EffectiveOutput {
             msaa: self.msaa_offered(),
+            half: half::available(&self.device),
             ..self.output_with_rays()
         }
     }
@@ -12771,6 +12773,11 @@ mod tests {
             } else if name == "oit_clouds.wgsl" {
                 let base = super::entity_shader() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));
+            } else if HALF_SHADERS.contains(&name) {
+                // The post passes name their colour maths with `half`'s aliases; OpenGL and the
+                // devices without `SHADER_F16` take the f32 ones (`half_shaders_validate_in_f16`
+                // checks the other form).
+                sources.push((path, super::half::F32.to_owned() + &text));
             } else {
                 sources.push((path, text));
             }
@@ -12940,6 +12947,50 @@ mod tests {
             );
         }
         assert!(glsl_checked >= 10, "{glsl_checked} GLSL translations");
+    }
+    /// The shaders that put `half`'s aliases in front of themselves.
+    const HALF_SHADERS: [&str; 2] = ["world_post.wgsl", "msaa.wgsl"];
+
+    /// The half-precision form of the post passes (`half`, on a device with `SHADER_F16`)
+    /// validates and translates to the backends that run it: SPIR-V, Metal and HLSL.
+    #[test]
+    fn half_shaders_validate_in_f16() {
+        for (name, source) in [
+            ("world_post.wgsl", include_str!("world_post.wgsl")),
+            ("msaa.wgsl", include_str!("gfx/msaa.wgsl")),
+        ] {
+            assert!(HALF_SHADERS.contains(&name));
+            let text = super::half::F16_FOR_TESTS.to_owned() + source;
+            let module =
+                naga::front::wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let info = naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            for entry in &module.entry_points {
+                let (module, info) = naga::back::pipeline_constants::process_overrides(
+                    &module,
+                    &info,
+                    Some((entry.stage, &entry.name)),
+                    &Default::default(),
+                )
+                .unwrap();
+                let pipeline = naga::back::spv::PipelineOptions {
+                    shader_stage: entry.stage,
+                    entry_point: entry.name.clone(),
+                };
+                naga::back::spv::write_vec(&module, &info, &Default::default(), Some(&pipeline))
+                    .unwrap_or_else(|e| panic!("{name} {} (SPIR-V): {e}", entry.name));
+                let msl = naga::back::msl::PipelineOptions {
+                    entry_point: Some((entry.stage, entry.name.clone())),
+                    ..Default::default()
+                };
+                naga::back::msl::write_string(&module, &info, &Default::default(), &msl)
+                    .unwrap_or_else(|e| panic!("{name} {} (Metal): {e}", entry.name));
+            }
+        }
     }
     #[test]
     fn gl_sprite_arrays_are_neither_2d_textures_nor_cube_maps() {

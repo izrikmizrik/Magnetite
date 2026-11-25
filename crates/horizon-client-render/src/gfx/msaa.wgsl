@@ -48,16 +48,25 @@ fn kept(p: vec2<i32>) -> i32 {
 }
 fn resolve(p: vec2<i32>) -> Resolved {
     var rgb = vec3(0.0);
-    for (var i = 0; i < 4; i++) {
-        let c = textureLoad(samples, p, i).rgb;
-        rgb += select(c, c / (1.0 + largest(c)), LINEAR);
-    }
-    rgb *= 0.25;
     if LINEAR {
+        for (var i = 0; i < 4; i++) {
+            let c = textureLoad(samples, p, i).rgb;
+            rgb += c / (1.0 + largest(c));
+        }
+        rgb *= 0.25;
         // Each weighted sample stays below 1, so their mean does too. Near half float's largest
         // value the inverse can overshoot it, which the target would store as infinity
-        // (docs/hdr-passes.md, rule 5).
+        // (docs/hdr-passes.md, rule 5). In f32: the weighted mean of bright light lies just
+        // below 1, where half precision's steps would move its inverse by a third.
         rgb = min(rgb / max(1.0 - largest(rgb), 1e-5), vec3(65504.0));
+    } else {
+        // Gamma light averages as stored, in the passes' precision (gfx/half.rs): a quarter of
+        // each sample, so that four bright ones don't sum past half float's largest value.
+        var mean = hv3(0.0);
+        for (var i = 0; i < 4; i++) {
+            mean += 0.25 * hv3(textureLoad(samples, p, i).rgb);
+        }
+        rgb = vec3<f32>(mean);
     }
     let chosen = kept(p);
     let depth = textureLoad(depths, p, chosen).r;

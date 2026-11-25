@@ -2862,7 +2862,7 @@ api = \"0.2\"
         let screen = sized(format, usage | wgpu::TextureUsages::COPY_SRC);
         let screen_view = screen.create_view(&Default::default());
         // The renderer's resolve: `world_post` with FXAA on, onto its world-sized target.
-        let mut world_post = crate::gfx::world_post::Post::new(&device, format);
+        let mut world_post = crate::gfx::world_post::Post::new(&device, format, true);
         world_post.antialias = true;
         assert!(
             (world_post.prepare(&device, [SIZE, SIZE], true, false)).is_some(),
@@ -2904,7 +2904,7 @@ api = \"0.2\"
             return;
         };
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut world_post = crate::gfx::world_post::Post::new(&device, format);
+        let mut world_post = crate::gfx::world_post::Post::new(&device, format, true);
         if !world_post.supports_taa() {
             eprintln!("TAA under a pack GPU skipped: TAA unsupported");
             return;
@@ -3100,7 +3100,7 @@ api = \"0.2\"
             return;
         };
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        if !crate::gfx::world_post::Post::new(&device, format).supports_taa() {
+        if !crate::gfx::world_post::Post::new(&device, format, true).supports_taa() {
             eprintln!("TAA upscaling under a pack GPU skipped: TAA unsupported");
             return;
         }
@@ -3116,7 +3116,7 @@ api = \"0.2\"
         assert!(post.upscalable());
         // A fresh resolve each: the same jitters, the history's first frame and its second.
         let mut shown = |sharpness| {
-            let mut world_post = crate::gfx::world_post::Post::new(&device, format);
+            let mut world_post = crate::gfx::world_post::Post::new(&device, format, true);
             world_post.taa = true;
             world_post.upscale = 2.0;
             world_post.set_sharpness(&device, sharpness);
@@ -3160,7 +3160,7 @@ api = \"0.2\"
             return;
         };
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut world_post = crate::gfx::world_post::Post::new(&device, format);
+        let mut world_post = crate::gfx::world_post::Post::new(&device, format, true);
         if !world_post.supports_taa() {
             eprintln!("TAA upscale hold under a pack GPU skipped: TAA unsupported");
             return;

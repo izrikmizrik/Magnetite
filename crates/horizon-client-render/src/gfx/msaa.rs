@@ -49,6 +49,11 @@ pub(super) struct Msaa {
     rebuild: bool,
     /// The game makes the renderer again when `rebuild` asks (not split-screen's).
     rebuildable: bool,
+    /// The Anti-aliasing Precision setting the resolve is built with (`set_half`), and what its
+    /// passes are built for, to build them again.
+    half: bool,
+    format: wgpu::TextureFormat,
+    linear: bool,
     /// The last frame's terrain drew multisampled.
     active: bool,
     passes: Option<Passes>,
@@ -56,13 +61,14 @@ pub(super) struct Msaa {
 
 impl Msaa {
     /// The passes are built only where the adapter can draw them and the setting is on.
+    /// `settings`: 4x MSAA, and whether its resolve runs in half precision (`half::shader`).
     pub(super) fn new(
         kept: &reuse::On<'_>,
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
         format: wgpu::TextureFormat,
         linear: bool,
-        requested: bool,
+        (requested, half): (bool, bool),
     ) -> Self {
         let supported = supported(adapter, format);
         if requested && !supported {
@@ -73,8 +79,25 @@ impl Msaa {
             requested,
             rebuild: false,
             rebuildable: true,
+            half,
+            format,
+            linear,
             active: false,
-            passes: (requested && supported).then(|| Passes::new(kept, device, format, linear)),
+            passes: (requested && supported)
+                .then(|| Passes::new(kept, device, format, linear, half)),
+        }
+    }
+
+    /// The Anti-aliasing Precision setting: built passes are built again in the precision it
+    /// names; their targets go with them and come back at the next frame's size.
+    pub(super) fn set_half(&mut self, kept: &reuse::On<'_>, device: &wgpu::Device, half: bool) {
+        if half == self.half {
+            return;
+        }
+        self.half = half;
+        if self.passes.is_some() {
+            self.passes = Some(Passes::new(kept, device, self.format, self.linear, half));
+            self.active = false;
         }
     }
 
@@ -183,6 +206,14 @@ impl Renderer {
         self.msaa.offered()
     }
 
+    /// The Anti-aliasing Precision setting (`Graphics::half_precision`): the world's post passes
+    /// and 4x MSAA's resolve are built again in the precision it names when it changed.
+    pub fn set_half_precision(&mut self, half: bool) {
+        self.world_post.set_half(&self.device, half);
+        let kept = self.reuse.on(&self.device);
+        self.msaa.set_half(&kept, &self.device, half);
+    }
+
     /// Whether the game makes this renderer again for 4x MSAA's pipelines when it comes on
     /// (`take_msaa_rebuild`). Split-screen doesn't, so there it is offered only where the
     /// renderer was made with it on.
@@ -225,12 +256,14 @@ pub(super) struct Passes {
 }
 
 impl Passes {
-    /// `linear`: the frame holds linear light, which resolves tone-weighted.
+    /// `linear`: the frame holds linear light, which resolves tone-weighted. `half`: the
+    /// resolve's colour maths in half precision where the device has it (`half::shader`).
     fn new(
         kept: &reuse::On<'_>,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         linear: bool,
+        half: bool,
     ) -> Self {
         let texture = |binding, sample_type, multisampled| wgpu::BindGroupLayoutEntry {
             binding,
@@ -268,7 +301,9 @@ impl Passes {
         });
         let module = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Terrain MSAA seed and resolve"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("msaa.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                super::half::shader(device, half, include_str!("msaa.wgsl")).into(),
+            ),
         });
         let constants = [("LINEAR", f64::from(u8::from(linear)))];
         let pipeline = |entry, groups: &[Option<&wgpu::BindGroupLayout>], count, surface| {

@@ -957,6 +957,9 @@ pub struct Graphics {
     pub upscaling: Upscaling,
     /// How much the upscaled picture is sharpened, 0..=100 (percent of the most).
     pub upscaling_sharpness: u32,
+    /// Anti-aliasing Precision: FXAA, TAA, the sharpening and 4x MSAA's resolve do their colour
+    /// maths in half floats (`f16`, the default) where the device has them, else in `f32`.
+    pub half_precision: bool,
     /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
     pub screenshot_quality: u32,
     /// Frame generation (Horizon setting), off by default.
@@ -1055,6 +1058,7 @@ impl Default for Graphics {
             msaa4x: false,
             upscaling: Upscaling::Native,
             upscaling_sharpness: 85,
+            half_precision: true,
             screenshot_quality: 1,
             frame_generation: FrameGeneration::Off,
             hdr: HdrMode::Off,
@@ -1220,6 +1224,7 @@ impl Graphics {
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "msaa4x" => g.msaa4x = flag(g.msaa4x),
+                "postPrecision" => g.half_precision = value != "f32",
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
                     g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
@@ -1346,6 +1351,10 @@ impl Graphics {
             text += &format!("hdrFailedStart:{driver}\n");
         }
         text += &format!("msaa4x:{}\n", bool_text(self.msaa4x));
+        text += &format!(
+            "postPrecision:{}\n",
+            if self.half_precision { "f16" } else { "f32" }
+        );
         text += &self.blue_map.serialize();
         text
     }
@@ -1749,6 +1758,7 @@ mod tests {
             msaa4x: false,
             upscaling: Upscaling::Balanced,
             upscaling_sharpness: 40,
+            half_precision: false,
             screenshot_quality: 4,
             frame_generation: FrameGeneration::Fsr31,
             hdr: HdrMode::On,

@@ -104,6 +104,8 @@ pub enum H {
     DynamicResolution,
     TargetFps,
     Antialiasing,
+    /// Anti-aliasing Precision: f16 or f32 (`Graphics::half_precision`).
+    AntialiasingPrecision,
     Upscaling,
     UpscalingSharpness,
     ScreenshotQuality,
@@ -388,6 +390,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::Antialiasing,
                             Medium,
                             "FXAA: softer. TAA: may trail. 4x MSAA: terrain and foliage, more GPU memory.",
+                        ),
+                        h(
+                            H::AntialiasingPrecision,
+                            Low,
+                            "f16: faster, above all on phones. f32: exact, for a GPU that draws f16 wrong.",
                         ),
                         h(
                             H::Upscaling,
@@ -960,6 +967,14 @@ impl H {
                     (_, false, false) => "Off",
                 },
             ),
+            H::AntialiasingPrecision => labelled(
+                "Anti-aliasing Precision",
+                if g.half_precision && out.half {
+                    "f16"
+                } else {
+                    "f32"
+                },
+            ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
             H::UpscalingSharpness => {
                 labelled("Upscaling Sharpness", format!("{}%", g.upscaling_sharpness))
@@ -1110,6 +1125,12 @@ impl H {
                 (g.fxaa, g.taa, g.msaa4x) = (i == 1, i == 2, i == 3);
                 if !g.taa {
                     g.upscaling = Upscaling::Native;
+                }
+            }
+            // f16 only where the device has it: elsewhere the row stays at f32.
+            H::AntialiasingPrecision => {
+                if out.half {
+                    g.half_precision = !g.half_precision;
                 }
             }
             // Upscaling is TAA's: picking a ratio turns it on.
@@ -1403,10 +1424,15 @@ impl Item {
     }
 }
 
-/// Whether a setting is on the screen now: Upscaling only while TAA is, which does it.
+/// Whether a setting is on the screen now: Upscaling only while TAA is, which does it, and
+/// Anti-aliasing Precision only while a pass it sets runs.
 fn shown(item: Item, s: &Settings) -> bool {
     match item {
         Item::Horizon(H::Upscaling) => s.horizon.taa,
+        Item::Horizon(H::AntialiasingPrecision) => {
+            let g = &s.horizon;
+            g.fxaa || g.taa || g.msaa4x
+        }
         Item::Extra(crate::extras::Item::Fullbright) => !s.fullbright_held,
         _ => true,
     }
@@ -1740,11 +1766,16 @@ mod tests {
             );
             ui.listed(s, SIZE)
         };
-        // Upscaling shows only with TAA, off by default.
+        // Upscaling shows only with TAA, and Anti-aliasing Precision with a pass it sets: off by
+        // default.
         let on = |page| -> Vec<(Page, Item)> {
             items()
                 .into_iter()
-                .filter(|(p, i)| *p == page && *i != Item::Horizon(H::Upscaling))
+                .filter(|(p, i)| {
+                    *p == page
+                        && *i != Item::Horizon(H::Upscaling)
+                        && *i != Item::Horizon(H::AntialiasingPrecision)
+                })
                 .collect()
         };
         assert_eq!(settings(&mut ui, &s), on(Page::General));
@@ -3005,12 +3036,15 @@ mod tests {
             }
         });
         // `labelled` also looks up values that are already words in the language ("An") or
-        // numbers with a unit ("12 chunks", "Auto (8)"); those are not keys, and "FSR 3.1" is
-        // a name.
+        // numbers with a unit ("12 chunks", "Auto (8)"); those are not keys, and "FSR 3.1",
+        // "f16" and "f32" are names.
         let missed: Vec<_> = missed
             .into_iter()
             .filter(|m| !m.starts_with(|c: char| c.is_ascii_digit()) && !m.starts_with("Auto ("))
-            .filter(|m| !["An", "Aus", "FSR 3.1", "key.keyboard.unknown"].contains(&m.as_str()))
+            .filter(|m| {
+                !["An", "Aus", "FSR 3.1", "f16", "f32", "key.keyboard.unknown"]
+                    .contains(&m.as_str())
+            })
             .collect();
         assert_eq!(missed, Vec::<String>::new());
     }
