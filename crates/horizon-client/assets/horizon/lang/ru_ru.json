@@ -552,6 +552,8 @@
   "Anti-aliasing": "Сглаживание",
   "Anti-aliasing Precision": "Точность сглаживания",
   "SMAA Quality": "Качество SMAA",
+  "Arm ASR: FSR 2-style temporal upscaling for phones. Sharpest, heaviest. Native: anti-aliasing.": "Arm ASR: временной апскейл в духе FSR 2 для телефонов. Самый чёткий и тяжёлый. Нативный: сглаживание.",
+  "Renders the world smaller and rebuilds it with Arm ASR. Native: no upscaling.": "Рисует мир мельче и восстанавливает его через Arm ASR. Нативный: без апскейла.",
   "SGSR 2: temporal upscaling made for phones. At Native, temporal anti-aliasing.": "SGSR 2: временной апскейл, сделанный для телефонов. На нативном — временное сглаживание.",
   "Renders the world smaller and rebuilds it with SGSR 2. Native: no upscaling.": "Рисует мир мельче и восстанавливает его через SGSR 2. Нативный: без апскейла.",
   "Low": "Низко",

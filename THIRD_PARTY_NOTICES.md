@@ -534,3 +534,36 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 ```
+
+## Arm Accuracy Super Resolution
+
+`crates/horizon-client-render/src/gfx/arm_asr.wgsl` is a port to WGSL of Arm ASR's shaders from
+<https://github.com/arm/accuracy-super-resolution-generic-library> (`include/gpu/fsr2`, at commit
+0501f490bd9946a2e1806b5363d7ab8a9a6a5e0a), with its Ultra Performance shader options, and
+`arm_asr.rs` follows its `src/components/fsr2/ffxm_fsr2.cpp` (the passes, their order and the
+depth parameters). Arm ASR derives from AMD FidelityFX Super Resolution 2. Arm and Arm Accuracy
+Super Resolution are Arm Limited's trademarks, AMD and FidelityFX AMD's; Horizon is affiliated
+with neither. Licensed under MIT:
+
+```
+Copyright  © 2023 Advanced Micro Devices, Inc.
+Copyright  © 2024-2025 Arm Limited.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

@@ -630,20 +630,24 @@ pub enum Temporal {
     Taa,
     /// Snapdragon Game Super Resolution 2.
     Sgsr2,
+    /// Arm Accuracy Super Resolution.
+    ArmAsr,
 }
 impl Temporal {
-    pub const ALL: [Temporal; 2] = [Temporal::Taa, Temporal::Sgsr2];
+    pub const ALL: [Temporal; 3] = [Temporal::Taa, Temporal::Sgsr2, Temporal::ArmAsr];
     pub fn name(self) -> &'static str {
         match self {
             Temporal::Taa => "taa",
             Temporal::Sgsr2 => "sgsr2",
+            Temporal::ArmAsr => "armAsr",
         }
     }
-    /// The method's name, as the Anti-aliasing button shows it.
+    /// The method's name, as the Anti-aliasing button shows it and its failure is recorded.
     pub fn label(self) -> &'static str {
         match self {
             Temporal::Taa => "TAA",
             Temporal::Sgsr2 => "SGSR 2",
+            Temporal::ArmAsr => "Arm ASR",
         }
     }
     fn parse(s: &str) -> Self {
