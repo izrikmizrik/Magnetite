@@ -671,6 +671,8 @@
   "Anti-aliasing": "Anti-aliasing",
   "Anti-aliasing Precision": "Anti-aliasing Precision",
   "SMAA Quality": "SMAA Quality",
+  "SGSR 2: temporal upscaling made for phones. At Native, temporal anti-aliasing.": "SGSR 2: temporal upscaling made for phones. At Native, temporal anti-aliasing.",
+  "Renders the world smaller and rebuilds it with SGSR 2. Native: no upscaling.": "Renders the world smaller and rebuilds it with SGSR 2. Native: no upscaling.",
   "Low": "Low",
   "High": "High",
   "How far SMAA searches along an edge. Higher: smoother edges, slower.": "How far SMAA searches along an edge. Higher: smoother edges, slower.",

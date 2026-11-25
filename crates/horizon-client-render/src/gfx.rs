@@ -258,6 +258,7 @@ mod inter_stage_tests;
 mod look_pack_tests;
 mod msaa;
 mod section_fade;
+mod sgsr2;
 mod smaa;
 #[cfg(test)]
 mod sprite_arrays_tests;
@@ -6355,18 +6356,23 @@ impl Renderer {
         sharpness: f32,
     ) {
         self.world_post.set_sharpness(&self.device, sharpness);
-        if taa {
+        if taa && self.world_post.temporal() == crate::graphics::Temporal::Taa {
             match self.world_post.taa_error() {
                 Some(why) => crate::graphics::antialiasing_failed("TAA", why.to_owned()),
                 None => crate::graphics::antialiasing_started("TAA"),
             }
         }
-        let taa = taa && self.world_post.supports_taa();
+        let taa = taa && self.world_post.temporal_supported();
         self.world_post.scale = scale.clamp(0.25, 2.0);
         self.world_post.antialias = antialias && !taa;
         self.world_post.taa = taa;
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
         self.world_post.set_ratio(upscale);
+    }
+    /// The temporal method TAA's setting runs (Horizon's TAA or SGSR 2), from the Anti-aliasing
+    /// setting. Before `set_world_post`, which checks the device can run it.
+    pub fn set_temporal_antialiasing(&mut self, temporal: crate::graphics::Temporal) {
+        self.world_post.set_temporal(&self.device, temporal);
     }
     /// SMAA at its preset (`None`: off) and SGSR 1, from the Anti-aliasing setting; SGSR 1
     /// upscales by `set_world_post`'s ratio. One the device can't build is drawn without, and
@@ -7624,6 +7630,11 @@ impl Renderer {
             hdr_gain,
             hdr_settings,
         ));
+        // SGSR 2's depth clip scales by the camera's horizontal field.
+        self.world_post.set_camera_fov(
+            (frame.fov_degrees.to_radians() * 0.5).tan() * self.config.width as f32
+                / self.config.height.max(1) as f32,
+        );
         let jitter = self.world_post.jitter(
             [self.config.width, self.config.height],
             taa,

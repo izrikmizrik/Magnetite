@@ -622,6 +622,38 @@ impl SmaaQuality {
     }
 }
 
+/// Which temporal method `taa` runs: Horizon's TAA, or a temporal upscaler that also
+/// anti-aliases at Native.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Temporal {
+    #[default]
+    Taa,
+    /// Snapdragon Game Super Resolution 2.
+    Sgsr2,
+}
+impl Temporal {
+    pub const ALL: [Temporal; 2] = [Temporal::Taa, Temporal::Sgsr2];
+    pub fn name(self) -> &'static str {
+        match self {
+            Temporal::Taa => "taa",
+            Temporal::Sgsr2 => "sgsr2",
+        }
+    }
+    /// The method's name, as the Anti-aliasing button shows it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Temporal::Taa => "TAA",
+            Temporal::Sgsr2 => "SGSR 2",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|t| t.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// The anti-aliasing methods that couldn't start on this device, and why: the renderer
 /// records them (`antialiasing_failed`), draws the world without them, and the Anti-aliasing
 /// setting says so instead of the game stopping.
@@ -1022,8 +1054,10 @@ pub struct Graphics {
     /// SMAA over the world (FXAA, TAA and SGSR 1 are off while it is on), at `smaa_quality`.
     pub smaa: bool,
     pub smaa_quality: SmaaQuality,
-    /// TAA over the world (FXAA is off while it is on).
+    /// TAA over the world (FXAA is off while it is on): Horizon's, or the temporal upscaler
+    /// `temporal` names.
     pub taa: bool,
+    pub temporal: Temporal,
     /// SGSR 1: the world drawn smaller by `upscaling`, rebuilt and sharpened in one spatial pass
     /// (no anti-aliasing; the others are off while it is on). Never at `Upscaling::Native`.
     pub sgsr1: bool,
@@ -1133,6 +1167,7 @@ impl Default for Graphics {
             smaa: false,
             smaa_quality: SmaaQuality::High,
             taa: false,
+            temporal: Temporal::Taa,
             sgsr1: false,
             msaa4x: false,
             upscaling: Upscaling::Native,
@@ -1307,6 +1342,7 @@ impl Graphics {
                 "smaa" => g.smaa = flag(g.smaa),
                 "smaaQuality" => g.smaa_quality = SmaaQuality::parse(value),
                 "sgsr1" => g.sgsr1 = flag(g.sgsr1),
+                "temporalAa" => g.temporal = Temporal::parse(value),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
                     g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
@@ -1453,10 +1489,11 @@ impl Graphics {
             if self.half_precision { "f16" } else { "f32" }
         );
         text += &format!(
-            "smaa:{}\nsmaaQuality:{}\nsgsr1:{}\n",
+            "smaa:{}\nsmaaQuality:{}\nsgsr1:{}\ntemporalAa:{}\n",
             bool_text(self.smaa),
             self.smaa_quality.name(),
-            bool_text(self.sgsr1)
+            bool_text(self.sgsr1),
+            self.temporal.name()
         );
         text += &self.blue_map.serialize();
         text
@@ -1860,6 +1897,7 @@ mod tests {
             smaa: false,
             smaa_quality: SmaaQuality::Ultra,
             taa: true,
+            temporal: Temporal::Sgsr2,
             sgsr1: false,
             msaa4x: false,
             upscaling: Upscaling::Balanced,

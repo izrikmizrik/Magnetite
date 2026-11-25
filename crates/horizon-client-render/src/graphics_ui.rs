@@ -789,10 +789,18 @@ fn description(
             Antialiasing::Sgsr1 => {
                 "SGSR 1: renders the world smaller and rebuilds it sharp in one pass. No anti-aliasing."
             }
+            Antialiasing::Sgsr2 => {
+                "SGSR 2: temporal upscaling made for phones. At Native, temporal anti-aliasing."
+            }
             _ => text,
         },
         (Item::Horizon(H::Upscaling), _) if s.horizon.sgsr1 => {
             "Renders the world smaller and rebuilds it with SGSR 1. Faster, a little softer."
+        }
+        (Item::Horizon(H::Upscaling), _)
+            if s.horizon.taa && s.horizon.temporal == crate::graphics::Temporal::Sgsr2 =>
+        {
+            "Renders the world smaller and rebuilds it with SGSR 2. Native: no upscaling."
         }
         _ => text,
     }
@@ -1121,9 +1129,10 @@ impl H {
             H::DynamicResolution => g.dynamic_resolution = !g.dynamic_resolution,
             H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
-            // Off, FXAA, SMAA, TAA, SGSR 1, and 4x MSAA where the renderer can draw it.
+            // Off, FXAA, SMAA, TAA, SGSR 1, SGSR 2, and 4x MSAA where the renderer can draw it.
             H::Antialiasing => {
-                let modes = &Antialiasing::ALL[..if out.msaa { 6 } else { 5 }];
+                let all = Antialiasing::ALL.len();
+                let modes = &Antialiasing::ALL[..if out.msaa { all } else { all - 1 }];
                 let next = step(modes, antialiasing(g, out), back);
                 next.apply(g);
             }
@@ -1439,16 +1448,18 @@ enum Antialiasing {
     Smaa,
     Taa,
     Sgsr1,
+    Sgsr2,
     Msaa4x,
 }
 
 impl Antialiasing {
-    const ALL: [Antialiasing; 6] = [
+    const ALL: [Antialiasing; 7] = [
         Antialiasing::Off,
         Antialiasing::Fxaa,
         Antialiasing::Smaa,
         Antialiasing::Taa,
         Antialiasing::Sgsr1,
+        Antialiasing::Sgsr2,
         Antialiasing::Msaa4x,
     ];
 
@@ -1460,22 +1471,33 @@ impl Antialiasing {
             Antialiasing::Smaa => "SMAA",
             Antialiasing::Taa => "TAA",
             Antialiasing::Sgsr1 => "SGSR 1",
+            Antialiasing::Sgsr2 => "SGSR 2",
             Antialiasing::Msaa4x => "4x MSAA",
         }
     }
 
     /// Turns this method on and the others off. Upscaling stays with a method that upscales:
-    /// TAA keeps its ratio, SGSR 1 takes Quality where it was Native, the others go to Native.
+    /// TAA and SGSR 2 keep their ratio, Native included, SGSR 1 takes Quality where it was
+    /// Native, the others go to Native.
     fn apply(self, g: &mut crate::graphics::Graphics) {
+        use crate::graphics::Temporal;
+        let temporal = match self {
+            Antialiasing::Taa => Some(Temporal::Taa),
+            Antialiasing::Sgsr2 => Some(Temporal::Sgsr2),
+            _ => None,
+        };
         (g.fxaa, g.smaa, g.taa, g.sgsr1, g.msaa4x) = (
             self == Antialiasing::Fxaa,
             self == Antialiasing::Smaa,
-            self == Antialiasing::Taa,
+            temporal.is_some(),
             self == Antialiasing::Sgsr1,
             self == Antialiasing::Msaa4x,
         );
+        if let Some(temporal) = temporal {
+            g.temporal = temporal;
+        }
         match self {
-            Antialiasing::Taa => {}
+            Antialiasing::Taa | Antialiasing::Sgsr2 => {}
             Antialiasing::Sgsr1 if g.upscaling == Upscaling::Native => {
                 g.upscaling = Upscaling::Quality;
             }
@@ -1490,7 +1512,10 @@ fn antialiasing(g: &crate::graphics::Graphics, out: &EffectiveOutput) -> Antiali
     if g.msaa4x && out.msaa {
         Antialiasing::Msaa4x
     } else if g.taa {
-        Antialiasing::Taa
+        match g.temporal {
+            crate::graphics::Temporal::Taa => Antialiasing::Taa,
+            crate::graphics::Temporal::Sgsr2 => Antialiasing::Sgsr2,
+        }
     } else if g.sgsr1 {
         Antialiasing::Sgsr1
     } else if g.smaa {
@@ -2480,7 +2505,7 @@ mod tests {
         let mut s = Settings::default();
         let item = Item::Horizon(H::Antialiasing);
         let msaa = EffectiveOutput { msaa: true, ..NONE };
-        for label in ["FXAA", "SMAA", "TAA", "SGSR 1", "4x MSAA", "Off"] {
+        for label in ["FXAA", "SMAA", "TAA", "SGSR 1", "SGSR 2", "4x MSAA", "Off"] {
             item.cycle(&mut s, false, [854, 480], &msaa);
             assert_eq!(
                 item.label(&s, &msaa).plain(),
@@ -2510,7 +2535,19 @@ mod tests {
             assert_ne!(s.horizon.upscaling, Upscaling::Native);
             assert!(s.horizon.sgsr1);
         }
-        // A renderer that can't draw 4x MSAA goes from SGSR 1 to Off, and to Native.
+        // SGSR 2 keeps the ratio and has Native, as TAA does.
+        item.cycle(&mut s, false, [854, 480], &NONE);
+        assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: SGSR 2");
+        assert!(s.horizon.taa && !s.horizon.sgsr1);
+        assert_ne!(s.horizon.upscaling, Upscaling::Native);
+        let mut ratios = Vec::new();
+        for _ in 0..Upscaling::ALL.len() {
+            upscaling.cycle(&mut s, false, [854, 480], &NONE);
+            ratios.push(s.horizon.upscaling);
+            assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: SGSR 2");
+        }
+        assert!(ratios.contains(&Upscaling::Native));
+        // A renderer that can't draw 4x MSAA goes from SGSR 2 to Off, and to Native.
         item.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
         assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Off");

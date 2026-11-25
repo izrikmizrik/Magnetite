@@ -552,6 +552,8 @@
   "Anti-aliasing": "Сглаживание",
   "Anti-aliasing Precision": "Точность сглаживания",
   "SMAA Quality": "Качество SMAA",
+  "SGSR 2: temporal upscaling made for phones. At Native, temporal anti-aliasing.": "SGSR 2: временной апскейл, сделанный для телефонов. На нативном — временное сглаживание.",
+  "Renders the world smaller and rebuilds it with SGSR 2. Native: no upscaling.": "Рисует мир мельче и восстанавливает его через SGSR 2. Нативный: без апскейла.",
   "Low": "Низко",
   "High": "Высоко",
   "How far SMAA searches along an edge. Higher: smoother edges, slower.": "Как далеко SMAA ищет вдоль границы. Выше: ровнее края, но медленнее.",

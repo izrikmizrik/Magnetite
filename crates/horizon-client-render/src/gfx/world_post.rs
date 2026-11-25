@@ -8,7 +8,7 @@
 //! vectors are the camera's, so what moves on its own leans on the neighbourhood
 //! clamp alone.
 
-use crate::graphics::SmaaQuality;
+use crate::graphics::{SmaaQuality, Temporal};
 use glam::{DMat4, DVec3, Mat4, Vec2};
 
 /// The least a world is scaled to when memory runs out.
@@ -181,6 +181,12 @@ pub struct Post {
     output: [u32; 2],
     /// Why TAA couldn't be built, where it couldn't.
     taa_error: Option<String>,
+    /// Which temporal method `taa` runs (`set_temporal`), and SGSR 2's passes once built, or
+    /// what kept the device from building them.
+    temporal: Temporal,
+    sgsr2: Option<Result<super::sgsr2::Sgsr2, String>>,
+    /// tan(vertical fov / 2) * width / height (`set_camera_fov`), for SGSR 2's depth clip.
+    fov_hor: f32,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
     pub antialias: bool,
@@ -345,6 +351,9 @@ impl Post {
             engine_resolves: false,
             output: [0; 2],
             taa_error,
+            temporal: Temporal::Taa,
+            sgsr2: None,
+            fov_hor: 1.0,
             scale: 1.0,
             antialias: false,
             taa: false,
@@ -386,6 +395,7 @@ impl Post {
     }
 
     /// Whether TAA is supported on this GPU/backend.
+    #[cfg(test)]
     pub fn supports_taa(&self) -> bool {
         self.taa_resources.is_some()
     }
@@ -393,6 +403,49 @@ impl Post {
     /// Why TAA couldn't be built on this device, where it couldn't.
     pub(super) fn taa_error(&self) -> Option<&str> {
         self.taa_error.as_deref()
+    }
+
+    /// The temporal method `taa` runs, from the Anti-aliasing setting. SGSR 2 is built the
+    /// first time it is asked for; one the device can't build is recorded with why
+    /// (`graphics::antialiasing_failed`), and the world draws without temporal anti-aliasing.
+    pub(super) fn set_temporal(&mut self, device: &wgpu::Device, temporal: Temporal) {
+        if temporal != self.temporal {
+            // The history the other method kept means nothing to this one.
+            self.taa_previous = None;
+            self.temporal = temporal;
+        }
+        if temporal == Temporal::Sgsr2 && self.sgsr2.is_none() {
+            let built = super::sgsr2::Sgsr2::new(device, self.half);
+            match &built {
+                Ok(_) => crate::graphics::antialiasing_started("SGSR 2"),
+                Err(e) => crate::graphics::antialiasing_failed("SGSR 2", e.clone()),
+            }
+            self.sgsr2 = Some(built);
+        }
+    }
+
+    /// The temporal method `taa` runs.
+    pub(super) fn temporal(&self) -> Temporal {
+        self.temporal
+    }
+
+    /// The temporal method the setting names can run on this device.
+    pub(super) fn temporal_supported(&self) -> bool {
+        match self.temporal {
+            Temporal::Taa => self.taa_resources.is_some(),
+            Temporal::Sgsr2 => matches!(self.sgsr2, Some(Ok(_))),
+        }
+    }
+
+    /// The temporal method is SGSR 2, built.
+    fn sgsr2_active(&self) -> bool {
+        self.temporal == Temporal::Sgsr2 && matches!(self.sgsr2, Some(Ok(_)))
+    }
+
+    /// The camera's horizontal field, as tan(vertical fov / 2) * width / height: SGSR 2's
+    /// depth clip scales by it. Set before `jitter`, each frame.
+    pub(super) fn set_camera_fov(&mut self, fov_hor: f32) {
+        self.fov_hor = fov_hor;
     }
 
     /// SMAA (`smaa`, at its preset) and SGSR 1 (`sgsr1`), set from the Anti-aliasing setting.
@@ -523,7 +576,7 @@ impl Post {
     /// projection, relative to `camera`. Call it before `prepare`, once per frame.
     pub fn jitter(&mut self, window: [u32; 2], on: bool, view_proj: Mat4, camera: DVec3) -> Mat4 {
         self.engine_resolves = on;
-        self.taa_on = on && self.taa && self.taa_resources.is_some();
+        self.taa_on = on && self.taa && self.temporal_supported();
         if !self.taa_on {
             self.taa_previous = None;
             return Mat4::IDENTITY;
@@ -595,7 +648,11 @@ impl Post {
         // targets together, and the sum is what runs a small GPU out of memory.
         loop {
             let (size, output) = self.sizes(window, pack);
-            let history_size = self.taa_on.then_some(output);
+            // TAA's own history; SGSR 2 keeps its own (`fit_sgsr2`).
+            let history_size = self
+                .taa_on
+                .then_some(output)
+                .filter(|_| self.temporal == Temporal::Taa);
             if self
                 .target
                 .as_ref()
@@ -617,6 +674,9 @@ impl Post {
                 self.smaa_out = None;
                 if let Some(Ok(smaa)) = &mut self.smaa_passes {
                     smaa.forget();
+                }
+                if let Some(Ok(sgsr2)) = &mut self.sgsr2 {
+                    sgsr2.forget();
                 }
                 break;
             }
@@ -645,9 +705,49 @@ impl Post {
         if self.smaa_on() {
             self.fit_smaa(device, window);
         }
+        if self.taa_on && self.sgsr2_active() {
+            self.fit_sgsr2(device);
+        }
         self.target
             .as_ref()
             .map(|t| (t.color.clone(), t.depth.clone()))
+    }
+
+    /// SGSR 2's motion and histories for the world's target and the output's size. Out of video
+    /// memory, SGSR 2 is recorded as failed and the world draws without it.
+    fn fit_sgsr2(&mut self, device: &wgpu::Device) {
+        let Some(target) = &self.target else { return };
+        let (color, depth, render) = (target.color.clone(), target.depth.clone(), target.size);
+        let (layout, sampler) = (self.layout.clone(), self.sampler.clone());
+        let bind = move |view: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Horizon post"),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            })
+        };
+        let output = self.output;
+        let Some(Ok(sgsr2)) = &mut self.sgsr2 else {
+            return;
+        };
+        match sgsr2.fit(device, (&color, &depth), (render, output), bind) {
+            // New histories hold nothing yet.
+            Ok(true) => self.taa_this_frame.jitter[2] = 1.0,
+            Ok(false) => {}
+            Err(e) => {
+                crate::graphics::antialiasing_failed("SGSR 2", e.clone());
+                self.sgsr2 = Some(Err(e));
+            }
+        }
     }
 
     /// SMAA's targets for the world's, and where it blends a world of another size than the
@@ -836,6 +936,12 @@ impl Post {
             crate::graphics::antialiasing_failed("SMAA", e.clone());
             self.smaa_passes = Some(Err(e));
         }
+        if let Some(Ok(sgsr2)) = &mut self.sgsr2
+            && let Err(e) = sgsr2.set_half(device, half)
+        {
+            crate::graphics::antialiasing_failed("SGSR 2", e.clone());
+            self.sgsr2 = Some(Err(e));
+        }
         if self.sgsr1_pipeline.is_some() {
             let built = sgsr1_pipeline(device, &self.pipeline_layout, self.format, half);
             match &built {
@@ -898,7 +1004,7 @@ impl Post {
     /// upscaling makes larger than the world's, else the world's target's.
     pub(super) fn resolved_size(&self) -> Option<[u32; 2]> {
         let target = self.target.as_ref()?;
-        let spatial = if self.sgsr1_on() {
+        let spatial = if self.sgsr1_on() || (self.taa_on && self.sgsr2_active()) {
             self.output
         } else {
             target.size
@@ -933,6 +1039,20 @@ impl Post {
         mut timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let Some(target) = &self.target else { return };
+        if self.taa_on
+            && let Some(frame) = self.upscale_frame(self.output)
+            && let Some(Ok(sgsr2)) = self.sgsr2.as_ref().filter(|_| self.sgsr2_active())
+            && let Some(shown) =
+                sgsr2.resolve(queue, encoder, &frame, self.fov_hor, timing.as_deref_mut())
+        {
+            let pipeline = if self.taa_upscale() > 1.0 {
+                &self.sharpen
+            } else {
+                &self.copy
+            };
+            self.draw_onto(encoder, screen, shown, pipeline, timing);
+            return;
+        }
         let Some((res, frame, taa)) = self.taa_frame() else {
             if self.sgsr1_on()
                 && let Some(Ok(sgsr1)) = &self.sgsr1_pipeline
@@ -979,6 +1099,23 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         mut timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> Option<wgpu::TextureView> {
+        // SGSR 2 in TAA's place: its history, sharpened as TAA's where it upscales.
+        if self.taa_on && self.sgsr2_active() {
+            let sharpened = (self.taa_upscale() > 1.0)
+                .then(|| self.resolved(device))
+                .flatten();
+            let frame = self.upscale_frame(self.output)?;
+            let Some(Ok(sgsr2)) = &self.sgsr2 else {
+                return None;
+            };
+            let shown =
+                sgsr2.resolve(queue, encoder, &frame, self.fov_hor, timing.as_deref_mut())?;
+            let Some(sharpened) = sharpened else {
+                return sgsr2.history(frame.index).cloned();
+            };
+            self.draw_onto(encoder, &sharpened, shown, &self.sharpen, timing);
+            return Some(sharpened);
+        }
         // Made only for a frame TAA resolves.
         let sharpened = (self.taa_frame().is_some() && self.taa_upscale() > 1.0)
             .then(|| self.resolved(device))
@@ -994,24 +1131,28 @@ impl Post {
 
     /// What TAA resolves this frame, when `jitter` had it on and the target has a history.
     fn taa_frame(&self) -> Option<(&TaaResources, UpscaleFrame<'_>, &History)> {
-        let target = self.target.as_ref()?;
-        let taa = target
-            .taa
+        let taa = self.target.as_ref()?.taa.as_ref()?;
+        let res = self.taa_resources.as_ref()?;
+        Some((res, self.upscale_frame(taa.size)?, taa))
+    }
+
+    /// This frame for a temporal method, at `output_size`, when `jitter` had it on.
+    fn upscale_frame(&self, output_size: [u32; 2]) -> Option<UpscaleFrame<'_>> {
+        let target = self
+            .target
             .as_ref()
             .filter(|_| self.taa_previous.is_some())?;
-        let res = self.taa_resources.as_ref()?;
-        let frame = UpscaleFrame {
+        Some(UpscaleFrame {
             color: &target.color,
             depth: &target.depth,
             render_size: target.size,
-            output_size: taa.size,
+            output_size,
             jitter_clip: [self.taa_this_frame.jitter[0], self.taa_this_frame.jitter[1]],
             jitter_pixels: self.jitter_pixels(),
             reproject: self.taa_this_frame.reproject,
             reset: self.taa_this_frame.jitter[2] > 0.5,
             index: self.taa_frame,
-        };
-        Some((res, frame, taa))
+        })
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
