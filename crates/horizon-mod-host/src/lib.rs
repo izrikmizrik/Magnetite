@@ -12,7 +12,7 @@ pub use loading::main_with;
 
 /// Establish main-thread stack capacity before compiler-child handling.
 pub use horizon_guest_stack::prepare_main as prepare_main_stack;
-pub use horizon_mod_wasm::compile_child;
+pub use horizon_mod_wasm::{compile_child, set_std_member as set_wasm_std_member};
 
 /// Handles the private compiler invocation before any game startup work.
 pub fn exit_if_compile_child() {

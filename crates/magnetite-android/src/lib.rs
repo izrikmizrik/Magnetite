@@ -418,6 +418,28 @@ extern "C" fn size_rust_threads() {
 #[unsafe(link_section = ".init_array")]
 static SIZE_RUST_THREADS: extern "C" fn() = size_rust_threads;
 
+/// The std member every wasm mod links against, from the APK's assets (android-apk.yml builds it):
+/// the game looks for it beside its executable, and on Android that is the system's
+/// `app_process`. An APK without it loads no wasm mod, and the Mods page says why.
+fn wasm_std_member(app: &AndroidApp) {
+    use std::io::Read;
+    let Some(mut asset) = app.asset_manager().open(c"horizon-wasm-std.wasm") else {
+        early(
+            log::Level::Warn,
+            "This APK has no horizon-wasm-std.wasm: wasm mods will not load",
+        );
+        return;
+    };
+    let mut member = Vec::with_capacity(asset.length());
+    match asset.read_to_end(&mut member) {
+        Ok(_) => horizon_mod_host::set_wasm_std_member(member),
+        Err(error) => early(
+            log::Level::Warn,
+            &format!("horizon-wasm-std.wasm from the APK: {error}"),
+        ),
+    }
+}
+
 /// android-activity's optional onCreate entry point: the Java UI thread, before `android_main`.
 /// The keyboard's hidden EditText belongs to that thread (View operations check their thread),
 /// so its initialize runs here, as the fork's `android_on_create` does. A panic inside this JNI
@@ -532,6 +554,7 @@ fn android_main(app: AndroidApp) {
         &format!("Starting Magnetite in {}", game_dir.display()),
     );
     let _ = ACTIVITY.set(app.clone());
+    wasm_std_member(&app);
     let activity = app.clone();
     horizon_client::window::set_event_loop_factory(Box::new(move || {
         EventLoop::builder().with_android_app(activity).build()
