@@ -55,6 +55,13 @@ LuaJIT needs `TARGET_SYS=iOS`, and its host tools must build for the Mac: with
 workflow sets `HOST_CFLAGS`/`HOST_LDFLAGS=-mmacosx-version-min=12.0`. The `ci` workflow's iOS job is a
 `cargo check` without the deployment target: only `ios-ipa` catches a full-build failure.
 
+- Runtime gotchas already solved, don't undo them: UIKit's main thread runs the boot loop and the
+  whole game, and iOS gives it 1 MiB of stack, which the hand-over from the loading screen to the
+  game overflowed (the app closed with nothing in the log). `magnetite-ios` moves the thread onto a
+  guest-sized `horizon_guest_stack::OwnStack` before `boot::run`; `-Wl,-stack_size` is not relied on.
+- The IPA carries `horizon-wasm-std.wasm` beside the executable (`package.sh`'s third argument,
+  built by `cargo-horizon-mod wasm-std` in `ios-ipa`): without it every wasm mod is refused.
+
 ## PC
 
 `cargo build -p horizon-game --bin magnetite --profile fast` gives the launcher-first executable; it keeps

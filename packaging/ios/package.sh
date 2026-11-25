@@ -2,10 +2,13 @@
 # Wraps Magnetite iOS's executable in Magnetite.app and zips it as an .ipa with an ad hoc
 # signature: SideStore and AltStore re-sign it with the player's own Apple ID, TrollStore installs
 # it as is. The .ipa holds no Minecraft file (AGENTS.md); the game's prepared files come later.
-# Usage: packaging/ios/package.sh <path to the magnetite executable> <output .ipa>
+# Usage: packaging/ios/package.sh <path to the magnetite executable> <output .ipa> [horizon-wasm-std.wasm]
+# The third argument is the wasm mods' standard library member (`cargo-horizon-mod wasm-std`): the
+# game reads it beside its executable and refuses every wasm mod without it.
 set -euo pipefail
 binary="$1"
 out="$2"
+wasm_std="${3:-}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 work="$(mktemp -d)"
 app="$work/Payload/Magnetite.app"
@@ -13,6 +16,9 @@ mkdir -p "$app"
 cp "$binary" "$app/magnetite"
 chmod 755 "$app/magnetite"
 cp "$root/packaging/ios/Info.plist" "$app/Info.plist"
+if [ -n "$wasm_std" ]; then
+  cp "$wasm_std" "$app/horizon-wasm-std.wasm"
+fi
 # Each build its own version, so AltStore and SideStore see a new one as an update.
 if [ -n "${MAGNETITE_IOS_VERSION:-}" ]; then
   plutil -replace CFBundleShortVersionString -string "$MAGNETITE_IOS_VERSION" "$app/Info.plist"

@@ -80,8 +80,8 @@ fn main() {
         open_link,
         keep_awake,
         install: horizon_client::boot::installer_from_build(resources, work),
-        // Not horizon_game::main: iOS's main thread can't take the guest stack (the core calls
-        // guests from its own guest-sized threads), and there is no compiler child or argv.
+        // Not horizon_game::main: its `prepare_main` measures the main thread's own 1 MiB stack,
+        // not the one the loop runs on (below), and there is no compiler child or argv.
         start: Box::new(|args: Vec<String>| {
             let startup = horizon_client::entry::prepare_with_args(args);
             horizon_mod_host::main_with(Vec::new(), &[], &[], startup);
@@ -99,8 +99,22 @@ fn main() {
         set_cutout: None,
         jit: Some(jit::enabled),
     };
-    if let Err(error) = horizon_client::boot::run(config) {
-        eprintln!("Magnetite: the boot loop stopped: {error}");
+    let boot = move || {
+        if let Err(error) = horizon_client::boot::run(config) {
+            eprintln!("Magnetite: the boot loop stopped: {error}");
+        }
+    };
+    // UIKit's event loop runs on this thread, and the game with it (winit's `run_app` is
+    // `UIApplicationMain`), but iOS gives the main thread 1 MiB of stack: the game's start
+    // overflowed it at the hand-over from the loading screen and the app closed without a word
+    // in the log. Android's loop thread and the PC's main thread have the guest stack; here the
+    // thread moves onto one of that size for the whole loop.
+    match horizon_guest_stack::OwnStack::map() {
+        Ok(stack) => stack.run(boot),
+        Err(error) => {
+            eprintln!("Magnetite: no stack of the game's size ({error}): starting on 1 MiB");
+            boot();
+        }
     }
 }
 

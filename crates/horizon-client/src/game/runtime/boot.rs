@@ -149,6 +149,9 @@ pub fn run(mut config: BootConfig) -> Result<()> {
     // The fonts and the icon, before the first window: the screen draws in the design system's
     // look, not the engine's neutral one. `entry::start` gives it again later; that is harmless.
     crate::entry::horizon_look::give();
+    // The engine's own settings stores and hooks, before `Boot::new`'s `Settings::load` reads the
+    // stores and so fixes their list: registered later, by the game's start, they came too late.
+    crate::entry::register_engine_parts();
     // A host that brought no installer of its own still gets one when the build names its
     // tables: the same code path serves every platform.
     if config.install.is_none() {
@@ -3018,6 +3021,13 @@ impl Boot {
             Some(mut app) => {
                 // The loop's own `resumed` came before there was an app to hear it.
                 app.resumed(event_loop);
+                // The game's window is a new one, which iOS lets take any orientation: the turn
+                // asked of the launcher's window went with it, and the game came up upright.
+                if self.launcher.is_some()
+                    && let Some(window) = app.window()
+                {
+                    (self.set_orientation)(window, false);
+                }
                 self.app = Some(app);
                 event_loop.set_control_flow(ControlFlow::Poll);
             }

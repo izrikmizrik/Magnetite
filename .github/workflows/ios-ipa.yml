@@ -54,13 +54,22 @@ jobs:
           HOST_CFLAGS: -mmacosx-version-min=12.0
           HOST_LDFLAGS: -mmacosx-version-min=12.0
         run: cargo build --locked -p magnetite-ios --target aarch64-apple-ios --profile fast
+      - name: The wasm mods' standard library member
+        # The game links every wasm mod against it and reads it beside its executable: an IPA
+        # without it refused them all ("this game has no wasm standard library member"). Built
+        # for the Mac's own cargo-horizon-mod, not for iOS: no deployment target here.
+        run: |
+          mkdir -p dist
+          env -u IPHONEOS_DEPLOYMENT_TARGET \
+            cargo run --locked -p cargo-horizon-mod -- wasm-std "$PWD/dist/horizon-wasm-std.wasm"
       - name: Package the .ipa
         env:
           MAGNETITE_IOS_BUILD: ${{ github.run_number }}
         # The bundle's short version is digits and dots only: a dev build's suffix stays out.
         run: |
           export MAGNETITE_IOS_VERSION="${MAGNETITE_VERSION%%-*}"
-          bash packaging/ios/package.sh target/aarch64-apple-ios/fast/magnetite "dist/Magnetite-$MAGNETITE_VERSION-ios-unsigned.ipa"
+          bash packaging/ios/package.sh target/aarch64-apple-ios/fast/magnetite \
+            "dist/Magnetite-$MAGNETITE_VERSION-ios-unsigned.ipa" dist/horizon-wasm-std.wasm
       - uses: actions/upload-artifact@v4
         with:
           name: magnetite-ios

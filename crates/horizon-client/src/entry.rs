@@ -98,6 +98,21 @@ fn installation_refusals(patched: &[(&str, &[&str], bool)]) -> Vec<String> {
     }).collect()
 }
 
+/// Registers the Horizon parts still in this crate with `horizon_hooks`, once: the cosmetics, and
+/// `horizon-controller.txt` (platform, still in this crate's input until the controllers move
+/// out, layer plan M6), one player's side per seat. [`start`] does it before it seals the lists;
+/// a phone's boot loop does it first, as its own `Settings::load` reads the settings stores, which
+/// seals them before the game starts.
+pub(crate) fn register_engine_parts() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        game::player_hooks::register();
+        if let Err(e) = horizon_hooks::settings::register(&horizon_client::gamepad::store::STORE) {
+            log::error!("Controllers: their settings came too late: {e}");
+        }
+    });
+}
+
 /// Code-runtime services supplied by the platform at startup.
 pub struct CodeRuntime {
     pub initialize: fn(&[mod_api::PackageInfo]),
@@ -157,12 +172,7 @@ pub fn start<G>(
     crash::on_report(horizon_client::telemetry::keep_crash);
     // Crates above the engine registered their hooks before this (horizon-official's `main`),
     // then the Horizon parts still in this crate; none registers after this point.
-    game::player_hooks::register();
-    // `horizon-controller.txt` (platform, still in this crate's input until the controllers move
-    // out, layer plan M6), one player's side per seat.
-    if let Err(e) = horizon_hooks::settings::register(&horizon_client::gamepad::store::STORE) {
-        log::error!("Controllers: their settings came too late: {e}");
-    }
+    register_engine_parts();
     horizon_hooks::engine::seal();
     // The text crates ship (`horizon_hooks::lang`), loaded with the game's own languages.
     horizon_client::lang::install_crate_files(horizon_hooks::lang::engine::all());

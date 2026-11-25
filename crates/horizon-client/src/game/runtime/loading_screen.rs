@@ -530,6 +530,17 @@ pub fn take_app_sink() -> Option<fn(App)> {
     given.as_mut()?.take()
 }
 
+impl App {
+    /// The app's window, once it made one.
+    pub(super) fn window(&self) -> Option<&Arc<Window>> {
+        match self {
+            App::Loading(loading) => loading.window.as_ref(),
+            App::Ready(split) => split.host.window.as_ref(),
+            App::Missing(missing) => missing.window.as_ref(),
+        }
+    }
+}
+
 impl ApplicationHandler for App {
     /// The app went to the background (phones: winit sends this on Android and iOS only). The
     /// surface goes, in whichever phase the app is.
