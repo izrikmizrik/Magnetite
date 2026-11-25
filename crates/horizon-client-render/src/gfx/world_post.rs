@@ -8,6 +8,7 @@
 //! vectors are the camera's, so what moves on its own leans on the neighbourhood
 //! clamp alone.
 
+use crate::graphics::SmaaQuality;
 use glam::{DMat4, DVec3, Mat4, Vec2};
 
 /// The least a world is scaled to when memory runs out.
@@ -162,6 +163,24 @@ pub struct Post {
     format: wgpu::TextureFormat,
     /// The Anti-aliasing Precision setting the pipelines were built with (`half`, `set_half`).
     half: bool,
+    /// SMAA's preset while the setting has it on (`set_spatial`), and its passes once built;
+    /// `Err`: what kept the device from building them, and the world draws without.
+    smaa: Option<SmaaQuality>,
+    smaa_passes: Option<Result<super::smaa::Smaa, String>>,
+    /// Where SMAA blends a world smaller or larger than the screen, and the bindings that copy
+    /// it on (`prepare`).
+    smaa_out: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    /// SGSR 1 (`set_spatial`), and its pass once built, or what kept the device from it.
+    sgsr1: bool,
+    sgsr1_pipeline: Option<Result<wgpu::RenderPipeline, String>>,
+    /// The Upscaling setting's ratio, whichever method runs it: TAA's `upscale`, SGSR 1's.
+    ratio: f32,
+    /// This frame's world is the engine's to resolve (`jitter`'s `on`): SMAA and SGSR 1 run.
+    engine_resolves: bool,
+    /// The output's size at the last `prepare`: the window's at the resolution scale.
+    output: [u32; 2],
+    /// Why TAA couldn't be built, where it couldn't.
+    taa_error: Option<String>,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
     pub antialias: bool,
@@ -244,6 +263,7 @@ impl Post {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
+        let mut taa_error = None;
         let taa_resources = {
             let taa_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Horizon TAA bindings"),
@@ -294,6 +314,7 @@ impl Post {
                 }
                 Err(e) => {
                     log::warn!("Horizon renderer: temporal anti-aliasing unavailable ({e})");
+                    taa_error = Some(e.to_string());
                     None
                 }
             }
@@ -315,6 +336,15 @@ impl Post {
             sampler,
             format,
             half,
+            smaa: None,
+            smaa_passes: None,
+            smaa_out: None,
+            sgsr1: false,
+            sgsr1_pipeline: None,
+            ratio: 1.0,
+            engine_resolves: false,
+            output: [0; 2],
+            taa_error,
             scale: 1.0,
             antialias: false,
             taa: false,
@@ -360,6 +390,88 @@ impl Post {
         self.taa_resources.is_some()
     }
 
+    /// Why TAA couldn't be built on this device, where it couldn't.
+    pub(super) fn taa_error(&self) -> Option<&str> {
+        self.taa_error.as_deref()
+    }
+
+    /// SMAA (`smaa`, at its preset) and SGSR 1 (`sgsr1`), set from the Anti-aliasing setting.
+    /// Each is built the first time it is asked for, and built again when its preset or the
+    /// precision changes; one the device can't build is recorded with why
+    /// (`graphics::antialiasing_failed`) and the world draws without it.
+    pub(super) fn set_spatial(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        smaa: Option<SmaaQuality>,
+        sgsr1: bool,
+    ) {
+        self.smaa = smaa;
+        self.sgsr1 = sgsr1;
+        if let Some(quality) = smaa {
+            let built = match self.smaa_passes.take() {
+                Some(Ok(mut passes)) => passes.set(device, quality, self.half).map(|()| passes),
+                // A failure is tried again only when the setting is turned off and on.
+                Some(Err(e)) => Err(e),
+                None => super::smaa::Smaa::new(device, queue, self.format, quality, self.half),
+            };
+            match &built {
+                Ok(_) => crate::graphics::antialiasing_started("SMAA"),
+                Err(e) => crate::graphics::antialiasing_failed("SMAA", e.clone()),
+            }
+            self.smaa_passes = Some(built);
+        } else if matches!(self.smaa_passes, Some(Err(_))) {
+            self.smaa_passes = None;
+        }
+        if sgsr1 {
+            if self.sgsr1_pipeline.is_none() {
+                let built = sgsr1_pipeline(device, &self.pipeline_layout, self.format, self.half);
+                match &built {
+                    Ok(_) => crate::graphics::antialiasing_started("SGSR 1"),
+                    Err(e) => crate::graphics::antialiasing_failed("SGSR 1", e.clone()),
+                }
+                self.sgsr1_pipeline = Some(built);
+            }
+        } else if matches!(self.sgsr1_pipeline, Some(Err(_))) {
+            self.sgsr1_pipeline = None;
+        }
+    }
+
+    /// The Upscaling setting's ratio (1: Native), for whichever method runs it.
+    pub(super) fn set_ratio(&mut self, ratio: f32) {
+        self.ratio = ratio.clamp(1.0, 4.0);
+    }
+
+    /// SGSR 1's ratio: the setting's while it is on and built, else 1.
+    fn sgsr1_ratio(&self) -> f32 {
+        if self.sgsr1 && matches!(self.sgsr1_pipeline, Some(Ok(_))) {
+            self.ratio
+        } else {
+            1.0
+        }
+    }
+
+    /// SGSR 1 upscales this frame: on and built, the engine resolves the world, TAA doesn't
+    /// run, and no native pack holds the upscaling (`hold_upscale`).
+    fn sgsr1_on(&self) -> bool {
+        self.engine_resolves && !self.taa_on && !self.upscale_held && self.sgsr1_ratio() > 1.0
+    }
+
+    /// SMAA runs this frame: on and built, where the engine resolves the world without TAA.
+    fn smaa_on(&self) -> bool {
+        self.engine_resolves
+            && !self.taa_on
+            && !self.sgsr1_on()
+            && matches!(self.smaa_passes, Some(Ok(_)))
+            && self.smaa.is_some()
+    }
+
+    /// Whether the engine resolves the world this frame without TAA, onto a target of its own
+    /// for a native pack to read (`resolved`): FXAA, SMAA or SGSR 1.
+    pub(super) fn resolves_spatially(&self) -> bool {
+        self.antialias || self.smaa_on() || self.sgsr1_on()
+    }
+
     /// The world's rendered size and the size it is shown at (TAA's history), smaller by the
     /// upscaling ratio `pack` renders it for (`prepare`).
     fn sizes(&self, window: [u32; 2], pack: bool) -> ([u32; 2], [u32; 2]) {
@@ -367,6 +479,8 @@ impl Post {
             self.upscale
         } else if self.taa_on {
             self.taa_upscale()
+        } else if self.sgsr1_on() {
+            self.ratio
         } else {
             1.0
         };
@@ -382,7 +496,12 @@ impl Post {
     /// where TAA upscales it (`upscaled`: `Capabilities::engine_upscale`); `upscale` is 1
     /// while TAA is off.
     pub(super) fn pack_render_size(&self, window: [u32; 2], upscaled: bool) -> [u32; 2] {
-        let upscale = if upscaled { self.upscale } else { 1.0 };
+        // `upscale` is TAA's, 1 while it is off: SGSR 1's ratio then, where it upscales.
+        let upscale = match (upscaled, self.upscale > 1.0) {
+            (false, _) => 1.0,
+            (true, true) => self.upscale,
+            (true, false) => self.sgsr1_ratio(),
+        };
         self.sizes_with_upscale(window, upscale).0
     }
 
@@ -403,6 +522,7 @@ impl Post {
     /// world's projection (identity while `on` is false); `view_proj` is the unjittered
     /// projection, relative to `camera`. Call it before `prepare`, once per frame.
     pub fn jitter(&mut self, window: [u32; 2], on: bool, view_proj: Mat4, camera: DVec3) -> Mat4 {
+        self.engine_resolves = on;
         self.taa_on = on && self.taa && self.taa_resources.is_some();
         if !self.taa_on {
             self.taa_previous = None;
@@ -465,8 +585,10 @@ impl Post {
         always: bool,
         pack: bool,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
+        let spatial = self.smaa_on() || self.sgsr1_on();
+        if self.scale == 1.0 && !self.antialias && !self.taa_on && !spatial && !always {
             self.target = None;
+            self.smaa_out = None;
             return None;
         }
         // The old target goes first: a slider drag would otherwise hold the old and the new
@@ -489,9 +611,13 @@ impl Post {
             let target = self.build_target(device, size, history_size);
             let error = pollster::block_on(memory.pop()).or(pollster::block_on(validation.pop()));
             if error.is_none() {
-                // New textures: no history yet.
+                // New textures: no history yet, and SMAA's bindings read the old ones.
                 self.taa_this_frame.jitter[2] = 1.0;
                 self.target = Some(target);
+                self.smaa_out = None;
+                if let Some(Ok(smaa)) = &mut self.smaa_passes {
+                    smaa.forget();
+                }
                 break;
             }
             drop(target);
@@ -511,13 +637,65 @@ impl Post {
                 error.map_or_else(String::new, |e| e.to_string())
             );
             self.scale = reduced;
-            if self.scale == 1.0 && !self.antialias && !self.taa_on && !always {
+            if self.scale == 1.0 && !self.antialias && !self.taa_on && !spatial && !always {
                 return None;
             }
+        }
+        self.output = self.sizes(window, pack).1;
+        if self.smaa_on() {
+            self.fit_smaa(device, window);
         }
         self.target
             .as_ref()
             .map(|t| (t.color.clone(), t.depth.clone()))
+    }
+
+    /// SMAA's targets for the world's, and where it blends a world of another size than the
+    /// window's. Out of video memory, SMAA is recorded as failed and the world draws without.
+    fn fit_smaa(&mut self, device: &wgpu::Device, window: [u32; 2]) {
+        let Some(target) = &self.target else { return };
+        let (color, size) = (target.color.clone(), target.size);
+        let Some(Ok(smaa)) = &mut self.smaa_passes else {
+            return;
+        };
+        let mut fitted = smaa.fit(device, &color, size);
+        let needs_out = size != window;
+        if fitted.is_ok() && needs_out != self.smaa_out.is_some() {
+            self.smaa_out = None;
+            if needs_out {
+                let format = self.format;
+                let out = super::smaa::caught(device, || {
+                    let view = device
+                        .create_texture(&wgpu::TextureDescriptor {
+                            label: Some("SMAA output"),
+                            size: wgpu::Extent3d {
+                                width: size[0],
+                                height: size[1],
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                            view_formats: &[],
+                        })
+                        .create_view(&Default::default());
+                    let group = self.bind(device, &view);
+                    (view, group)
+                });
+                match out {
+                    Ok(out) => self.smaa_out = Some(out),
+                    Err(e) => fitted = Err(e),
+                }
+            }
+        }
+        if let Err(e) = fitted {
+            crate::graphics::antialiasing_failed("SMAA", e.clone());
+            self.smaa_passes = Some(Err(e));
+            self.smaa_out = None;
+        }
     }
 
     /// The world's colour and depth targets at `size`, and TAA's history when `history_size`
@@ -651,6 +829,21 @@ impl Post {
             }
         }
         self.shader = shader;
+        if let Some(Ok(smaa)) = &mut self.smaa_passes
+            && let Some(quality) = self.smaa
+            && let Err(e) = smaa.set(device, quality, half)
+        {
+            crate::graphics::antialiasing_failed("SMAA", e.clone());
+            self.smaa_passes = Some(Err(e));
+        }
+        if self.sgsr1_pipeline.is_some() {
+            let built = sgsr1_pipeline(device, &self.pipeline_layout, self.format, half);
+            match &built {
+                Ok(_) => crate::graphics::antialiasing_started("SGSR 1"),
+                Err(e) => crate::graphics::antialiasing_failed("SGSR 1", e.clone()),
+            }
+            self.sgsr1_pipeline = Some(built);
+        }
     }
 
     /// A target in the world's format for `finish` or the sharpening to draw onto, where
@@ -705,7 +898,12 @@ impl Post {
     /// upscaling makes larger than the world's, else the world's target's.
     pub(super) fn resolved_size(&self) -> Option<[u32; 2]> {
         let target = self.target.as_ref()?;
-        Some(target.taa.as_ref().map_or(target.size, |h| h.size))
+        let spatial = if self.sgsr1_on() {
+            self.output
+        } else {
+            target.size
+        };
+        Some(target.taa.as_ref().map_or(spatial, |h| h.size))
     }
 
     /// Bindings that copy (or anti-alias) `view` onto the screen in `finish_with`.
@@ -736,6 +934,27 @@ impl Post {
     ) {
         let Some(target) = &self.target else { return };
         let Some((res, frame, taa)) = self.taa_frame() else {
+            if self.sgsr1_on()
+                && let Some(Ok(sgsr1)) = &self.sgsr1_pipeline
+            {
+                self.draw_onto(encoder, screen, &target.group, sgsr1, timing);
+                return;
+            }
+            if self.smaa_on()
+                && let Some(Ok(smaa)) = &self.smaa_passes
+                && smaa.ready()
+            {
+                let screen_size = screen.texture().size();
+                if [screen_size.width, screen_size.height] == target.size {
+                    smaa.run(encoder, screen, timing);
+                    return;
+                }
+                if let Some((out, group)) = &self.smaa_out {
+                    smaa.run(encoder, out, timing.as_deref_mut());
+                    self.draw_onto(encoder, screen, group, &self.copy, timing);
+                    return;
+                }
+            }
             self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
@@ -886,6 +1105,25 @@ fn post_pipeline(
     })
 }
 
+/// SGSR 1's pass (`sgsr1.wgsl`) in `half`'s precision, drawing onto `format`, or the error that
+/// kept the device from building it.
+fn sgsr1_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    half: bool,
+) -> Result<wgpu::RenderPipeline, String> {
+    super::smaa::caught(device, || {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Horizon SGSR 1"),
+            source: wgpu::ShaderSource::Wgsl(
+                super::half::shader(device, half, include_str!("sgsr1.wgsl")).into(),
+            ),
+        });
+        post_pipeline(device, &shader, layout, "fs_sgsr1", format)
+    })
+}
+
 /// TAA's resolve into its history, or the error that kept the device from building it.
 fn taa_pipeline(
     device: &wgpu::Device,
@@ -1000,6 +1238,49 @@ fn halton(mut i: u32, base: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SGSR 1 rebuilds a picture at twice its size: the flat parts on each side of an edge as
+    /// they were, light above paper white included (no clamp at 1), nothing outside the edge's
+    /// own range or half float's, and each pixel's alpha.
+    #[test]
+    fn sgsr1_upscales_without_clipping_light_above_white() {
+        use crate::gfx::smaa::tests::{device, float_texture, read};
+        let _gpu = crate::gfx::test_gpu::lock();
+        let Some((device, queue, has_half)) = device() else {
+            eprintln!("SGSR 1 GPU test skipped: no device");
+            return;
+        };
+        // As the half-float texture holds them.
+        let (bright, dark) = (3.0, half::f16::from_f32(0.2).to_f32());
+        // A vertical edge, and a slanted one, so that the edge-adaptive filter has work to do.
+        let input = float_texture(&device, &queue, [24, 24], |x, y| {
+            let c = if x < 12 && y + x < 30 { bright } else { dark };
+            [c, c * 0.5, c, 0.25]
+        });
+        for half in [false, true].into_iter().filter(|h| !h || has_half) {
+            let format = wgpu::TextureFormat::Rgba16Float;
+            let post = Post::new(&device, format, half);
+            let pipeline = sgsr1_pipeline(&device, &post.pipeline_layout, format, half)
+                .unwrap_or_else(|e| panic!("SGSR 1 (half: {half}): {e}"));
+            let group = post.bind(&device, &input.create_view(&Default::default()));
+            let out = float_texture(&device, &queue, [48, 48], |_, _| [0.0; 4]);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            let view = out.create_view(&Default::default());
+            post.draw_onto(&mut encoder, &view, &group, &pipeline, None);
+            let pixels = read(&device, &queue, encoder, &out);
+            for p in &pixels {
+                assert!(p.iter().all(|c| c.is_finite()), "half: {half}: {p:?}");
+                assert!(
+                    (dark - 1e-3..=bright + 1e-3).contains(&p[0]),
+                    "half: {half}: {p:?} outside the edge's range"
+                );
+                assert_eq!(p[3], 0.25, "half: {half}: the alpha is the pixel's own");
+            }
+            let at = |x: usize, y: usize| pixels[y * 48 + x];
+            assert_eq!(at(4, 4)[0], bright, "half: {half}: light above 1 stays");
+            assert_eq!(at(44, 44)[0], dark, "half: {half}");
+        }
+    }
 
     #[test]
     fn reprojection_finds_where_a_block_was_last_frame() {

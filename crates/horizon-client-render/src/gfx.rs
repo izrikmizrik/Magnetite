@@ -258,6 +258,7 @@ mod inter_stage_tests;
 mod look_pack_tests;
 mod msaa;
 mod section_fade;
+mod smaa;
 #[cfg(test)]
 mod sprite_arrays_tests;
 mod terrain_model;
@@ -6354,11 +6355,29 @@ impl Renderer {
         sharpness: f32,
     ) {
         self.world_post.set_sharpness(&self.device, sharpness);
+        if taa {
+            match self.world_post.taa_error() {
+                Some(why) => crate::graphics::antialiasing_failed("TAA", why.to_owned()),
+                None => crate::graphics::antialiasing_started("TAA"),
+            }
+        }
         let taa = taa && self.world_post.supports_taa();
         self.world_post.scale = scale.clamp(0.25, 2.0);
         self.world_post.antialias = antialias && !taa;
         self.world_post.taa = taa;
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
+        self.world_post.set_ratio(upscale);
+    }
+    /// SMAA at its preset (`None`: off) and SGSR 1, from the Anti-aliasing setting; SGSR 1
+    /// upscales by `set_world_post`'s ratio. One the device can't build is drawn without, and
+    /// the setting says why (`graphics::antialiasing_failure`).
+    pub fn set_spatial_antialiasing(
+        &mut self,
+        smaa: Option<crate::graphics::SmaaQuality>,
+        sgsr1: bool,
+    ) {
+        self.world_post
+            .set_spatial(&self.device, &self.queue, smaa, sgsr1);
     }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each source state its model and fluid material ids (two values
@@ -11019,7 +11038,7 @@ impl Renderer {
                 })
                 .flatten();
             let resolved = taa_resolved.or_else(|| {
-                let fxaa = (engine_resolve && self.world_post.antialias)
+                let fxaa = (engine_resolve && self.world_post.resolves_spatially())
                     .then(|| self.world_post.resolved(&self.device))
                     .flatten()?;
                 self.world_post
@@ -12949,7 +12968,13 @@ mod tests {
         assert!(glsl_checked >= 10, "{glsl_checked} GLSL translations");
     }
     /// The shaders that put `half`'s aliases in front of themselves.
-    const HALF_SHADERS: [&str; 2] = ["world_post.wgsl", "msaa.wgsl"];
+    const HALF_SHADERS: [&str; 5] = [
+        "world_post.wgsl",
+        "msaa.wgsl",
+        "smaa.wgsl",
+        "sgsr1.wgsl",
+        "sgsr2.wgsl",
+    ];
 
     /// The half-precision form of the post passes (`half`, on a device with `SHADER_F16`)
     /// validates and translates to the backends that run it: SPIR-V, Metal and HLSL.
@@ -12958,6 +12983,9 @@ mod tests {
         for (name, source) in [
             ("world_post.wgsl", include_str!("world_post.wgsl")),
             ("msaa.wgsl", include_str!("gfx/msaa.wgsl")),
+            ("smaa.wgsl", include_str!("gfx/smaa.wgsl")),
+            ("sgsr1.wgsl", include_str!("gfx/sgsr1.wgsl")),
+            ("sgsr2.wgsl", include_str!("gfx/sgsr2.wgsl")),
         ] {
             assert!(HALF_SHADERS.contains(&name));
             let text = super::half::F16_FOR_TESTS.to_owned() + source;

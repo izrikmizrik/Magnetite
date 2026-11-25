@@ -106,6 +106,8 @@ pub enum H {
     Antialiasing,
     /// Anti-aliasing Precision: f16 or f32 (`Graphics::half_precision`).
     AntialiasingPrecision,
+    /// SMAA's preset, while SMAA is the anti-aliasing.
+    SmaaQuality,
     Upscaling,
     UpscalingSharpness,
     ScreenshotQuality,
@@ -390,6 +392,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::Antialiasing,
                             Medium,
                             "FXAA: softer. TAA: may trail. 4x MSAA: terrain and foliage, more GPU memory.",
+                        ),
+                        h(
+                            H::SmaaQuality,
+                            Low,
+                            "How far SMAA searches along an edge. Higher: smoother edges, slower.",
                         ),
                         h(
                             H::AntialiasingPrecision,
@@ -777,6 +784,16 @@ fn description(
                 "Skips offscreen, subpixel and terrain-hidden particles with less render-thread work."
             }
         },
+        (Item::Horizon(H::Antialiasing), _) => match antialiasing(&s.horizon, out) {
+            Antialiasing::Smaa => "SMAA: crisp edges from their shapes, a little slower than FXAA.",
+            Antialiasing::Sgsr1 => {
+                "SGSR 1: renders the world smaller and rebuilds it sharp in one pass. No anti-aliasing."
+            }
+            _ => text,
+        },
+        (Item::Horizon(H::Upscaling), _) if s.horizon.sgsr1 => {
+            "Renders the world smaller and rebuilds it with SGSR 1. Faster, a little softer."
+        }
         _ => text,
     }
 }
@@ -958,15 +975,8 @@ impl H {
             H::ResolutionScale => labelled_percent("Resolution Scale", g.resolution_scale),
             H::DynamicResolution => labelled("Dynamic Resolution", on_off(g.dynamic_resolution)),
             H::TargetFps => labelled("Target FPS", g.target_fps),
-            H::Antialiasing => labelled(
-                "Anti-aliasing",
-                match (g.msaa4x && out.msaa, g.fxaa, g.taa) {
-                    (true, _, _) => "4x MSAA",
-                    (_, _, true) => "TAA",
-                    (_, true, false) => "FXAA",
-                    (_, false, false) => "Off",
-                },
-            ),
+            H::Antialiasing => labelled("Anti-aliasing", antialiasing(g, out).label()),
+            H::SmaaQuality => labelled("SMAA Quality", g.smaa_quality.label()),
             H::AntialiasingPrecision => labelled(
                 "Anti-aliasing Precision",
                 if g.half_precision && out.half {
@@ -1111,21 +1121,14 @@ impl H {
             H::DynamicResolution => g.dynamic_resolution = !g.dynamic_resolution,
             H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
-            // Off, FXAA, TAA, and 4x MSAA where the renderer can draw it.
+            // Off, FXAA, SMAA, TAA, SGSR 1, and 4x MSAA where the renderer can draw it.
             H::Antialiasing => {
-                let modes = if out.msaa { 4 } else { 3 };
-                let i = if g.msaa4x {
-                    3
-                } else if g.taa {
-                    2
-                } else {
-                    usize::from(g.fxaa)
-                };
-                let i = (i + if back { modes - 1 } else { 1 }) % modes;
-                (g.fxaa, g.taa, g.msaa4x) = (i == 1, i == 2, i == 3);
-                if !g.taa {
-                    g.upscaling = Upscaling::Native;
-                }
+                let modes = &Antialiasing::ALL[..if out.msaa { 6 } else { 5 }];
+                let next = step(modes, antialiasing(g, out), back);
+                next.apply(g);
+            }
+            H::SmaaQuality => {
+                g.smaa_quality = step(&crate::graphics::SmaaQuality::ALL, g.smaa_quality, back);
             }
             // f16 only where the device has it: elsewhere the row stays at f32.
             H::AntialiasingPrecision => {
@@ -1133,12 +1136,16 @@ impl H {
                     g.half_precision = !g.half_precision;
                 }
             }
-            // Upscaling is TAA's: picking a ratio turns it on.
+            // Upscaling is TAA's or SGSR 1's: with neither, picking a ratio turns TAA on. SGSR 1
+            // only upscales, so it has no Native.
             H::Upscaling => {
-                g.upscaling = step(&Upscaling::ALL, g.upscaling, back);
-                if g.upscaling != Upscaling::Native {
-                    (g.fxaa, g.taa) = (false, true);
-                    g.msaa4x = false;
+                if g.sgsr1 {
+                    g.upscaling = step(&Upscaling::ALL[1..], g.upscaling, back);
+                } else {
+                    g.upscaling = step(&Upscaling::ALL, g.upscaling, back);
+                    if g.upscaling != Upscaling::Native && !g.taa {
+                        Antialiasing::Taa.apply(g);
+                    }
                 }
             }
             H::ScreenshotQuality => {
@@ -1424,14 +1431,86 @@ impl Item {
     }
 }
 
+/// The Anti-aliasing setting's choices, in the button's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Antialiasing {
+    Off,
+    Fxaa,
+    Smaa,
+    Taa,
+    Sgsr1,
+    Msaa4x,
+}
+
+impl Antialiasing {
+    const ALL: [Antialiasing; 6] = [
+        Antialiasing::Off,
+        Antialiasing::Fxaa,
+        Antialiasing::Smaa,
+        Antialiasing::Taa,
+        Antialiasing::Sgsr1,
+        Antialiasing::Msaa4x,
+    ];
+
+    /// The method's name, as the button shows it and failures are recorded under.
+    fn label(self) -> &'static str {
+        match self {
+            Antialiasing::Off => "Off",
+            Antialiasing::Fxaa => "FXAA",
+            Antialiasing::Smaa => "SMAA",
+            Antialiasing::Taa => "TAA",
+            Antialiasing::Sgsr1 => "SGSR 1",
+            Antialiasing::Msaa4x => "4x MSAA",
+        }
+    }
+
+    /// Turns this method on and the others off. Upscaling stays with a method that upscales:
+    /// TAA keeps its ratio, SGSR 1 takes Quality where it was Native, the others go to Native.
+    fn apply(self, g: &mut crate::graphics::Graphics) {
+        (g.fxaa, g.smaa, g.taa, g.sgsr1, g.msaa4x) = (
+            self == Antialiasing::Fxaa,
+            self == Antialiasing::Smaa,
+            self == Antialiasing::Taa,
+            self == Antialiasing::Sgsr1,
+            self == Antialiasing::Msaa4x,
+        );
+        match self {
+            Antialiasing::Taa => {}
+            Antialiasing::Sgsr1 if g.upscaling == Upscaling::Native => {
+                g.upscaling = Upscaling::Quality;
+            }
+            Antialiasing::Sgsr1 => {}
+            _ => g.upscaling = Upscaling::Native,
+        }
+    }
+}
+
+/// The method the settings have on; 4x MSAA only where the renderer draws it.
+fn antialiasing(g: &crate::graphics::Graphics, out: &EffectiveOutput) -> Antialiasing {
+    if g.msaa4x && out.msaa {
+        Antialiasing::Msaa4x
+    } else if g.taa {
+        Antialiasing::Taa
+    } else if g.sgsr1 {
+        Antialiasing::Sgsr1
+    } else if g.smaa {
+        Antialiasing::Smaa
+    } else if g.fxaa {
+        Antialiasing::Fxaa
+    } else {
+        Antialiasing::Off
+    }
+}
+
 /// Whether a setting is on the screen now: Upscaling only while TAA is, which does it, and
 /// Anti-aliasing Precision only while a pass it sets runs.
 fn shown(item: Item, s: &Settings) -> bool {
     match item {
-        Item::Horizon(H::Upscaling) => s.horizon.taa,
+        Item::Horizon(H::Upscaling) => s.horizon.taa || s.horizon.sgsr1,
+        Item::Horizon(H::SmaaQuality) => s.horizon.smaa,
         Item::Horizon(H::AntialiasingPrecision) => {
             let g = &s.horizon;
-            g.fxaa || g.taa || g.msaa4x
+            g.fxaa || g.smaa || g.taa || g.sgsr1 || g.msaa4x
         }
         Item::Extra(crate::extras::Item::Fullbright) => !s.fullbright_held,
         _ => true,
@@ -1457,7 +1536,17 @@ fn row(setting: Setting, s: &Settings, out: &EffectiveOutput) -> Row<Item> {
         _ => value.map_or(Value::Press, Value::Choice),
     };
     let about = lang::get(setting.text);
-    let chosen = lang::get(description(item, s, out, setting.text));
+    let mut chosen = lang::get(description(item, s, out, setting.text));
+    // A method the device couldn't start: the world draws without it, and the row says why.
+    if let Item::Horizon(H::Antialiasing | H::Upscaling | H::SmaaQuality) = item {
+        let method = antialiasing(&s.horizon, out).label();
+        if let Some(why) = crate::graphics::antialiasing_failure(method) {
+            chosen = lang::tr(
+                "%s couldn't start on this GPU, so the world draws without it: %s",
+                &[&method, &why],
+            );
+        }
+    }
     Row {
         chosen: (chosen != about).then_some(chosen),
         ..Row::new(item, name, value)
@@ -1766,16 +1855,12 @@ mod tests {
             );
             ui.listed(s, SIZE)
         };
-        // Upscaling shows only with TAA, and Anti-aliasing Precision with a pass it sets: off by
-        // default.
+        // Upscaling shows only with TAA or SGSR 1, SMAA Quality with SMAA, and Anti-aliasing
+        // Precision with a pass it sets: off by default.
         let on = |page| -> Vec<(Page, Item)> {
             items()
                 .into_iter()
-                .filter(|(p, i)| {
-                    *p == page
-                        && *i != Item::Horizon(H::Upscaling)
-                        && *i != Item::Horizon(H::AntialiasingPrecision)
-                })
+                .filter(|(p, i)| *p == page && shown(*i, &Settings::default()))
                 .collect()
         };
         assert_eq!(settings(&mut ui, &s), on(Page::General));
@@ -2395,7 +2480,7 @@ mod tests {
         let mut s = Settings::default();
         let item = Item::Horizon(H::Antialiasing);
         let msaa = EffectiveOutput { msaa: true, ..NONE };
-        for label in ["FXAA", "TAA", "4x MSAA", "Off"] {
+        for label in ["FXAA", "SMAA", "TAA", "SGSR 1", "4x MSAA", "Off"] {
             item.cycle(&mut s, false, [854, 480], &msaa);
             assert_eq!(
                 item.label(&s, &msaa).plain(),
@@ -2415,15 +2500,40 @@ mod tests {
         upscaling.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(upscaling.label(&s, &NONE).plain(), "Upscaling: Quality");
         assert!(s.horizon.taa);
-        // A renderer that can't draw 4x MSAA goes from TAA to Off.
+        // SGSR 1 keeps the ratio; it has no Native, and its Upscaling never reaches it.
+        item.cycle(&mut s, false, [854, 480], &NONE);
+        assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: SGSR 1");
+        assert_eq!((s.horizon.sgsr1, s.horizon.taa), (true, false));
+        assert_eq!(s.horizon.upscaling, Upscaling::Quality);
+        for _ in 0..Upscaling::ALL.len() {
+            upscaling.cycle(&mut s, false, [854, 480], &NONE);
+            assert_ne!(s.horizon.upscaling, Upscaling::Native);
+            assert!(s.horizon.sgsr1);
+        }
+        // A renderer that can't draw 4x MSAA goes from SGSR 1 to Off, and to Native.
         item.cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.upscaling, Upscaling::Native);
         assert_eq!(item.label(&s, &NONE).plain(), "Anti-aliasing: Off");
+        // SGSR 1 from Native starts at Quality.
+        for _ in 0..4 {
+            item.cycle(&mut s, false, [854, 480], &NONE);
+        }
+        assert!(s.horizon.sgsr1);
+        assert_eq!(s.horizon.upscaling, Upscaling::Quality);
 
-        // The Upscaling row is only on the screen while TAA is on.
+        // The Upscaling row is only on the screen while TAA or SGSR 1 is on, SMAA's preset
+        // with SMAA.
+        Antialiasing::Off.apply(&mut s.horizon);
         assert!(!shown(upscaling, &s));
         s.horizon.taa = true;
         assert!(shown(upscaling, &s));
+        let smaa = Item::Horizon(H::SmaaQuality);
+        assert!(!shown(smaa, &s));
+        Antialiasing::Smaa.apply(&mut s.horizon);
+        assert!(shown(smaa, &s));
+        assert_eq!(smaa.label(&s, &NONE).plain(), "SMAA Quality: High");
+        smaa.cycle(&mut s, false, [854, 480], &NONE);
+        assert_eq!(smaa.label(&s, &NONE).plain(), "SMAA Quality: Ultra");
     }
 
     #[test]

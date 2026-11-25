@@ -581,6 +581,76 @@ impl Upscaling {
     }
 }
 
+/// SMAA's preset: SMAA.hlsl's LOW, MEDIUM, HIGH and ULTRA, from fewer search steps and no
+/// diagonal or corner handling up to the longest searches at the lowest threshold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SmaaQuality {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Ultra,
+}
+impl SmaaQuality {
+    pub const ALL: [SmaaQuality; 4] = [
+        SmaaQuality::Low,
+        SmaaQuality::Medium,
+        SmaaQuality::High,
+        SmaaQuality::Ultra,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            SmaaQuality::Low => "low",
+            SmaaQuality::Medium => "medium",
+            SmaaQuality::High => "high",
+            SmaaQuality::Ultra => "ultra",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            SmaaQuality::Low => "Low",
+            SmaaQuality::Medium => "Medium",
+            SmaaQuality::High => "High",
+            SmaaQuality::Ultra => "Ultra",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|q| q.name() == s)
+            .unwrap_or_default()
+    }
+}
+
+/// The anti-aliasing methods that couldn't start on this device, and why: the renderer
+/// records them (`antialiasing_failed`), draws the world without them, and the Anti-aliasing
+/// setting says so instead of the game stopping.
+static AA_FAILURES: std::sync::Mutex<Vec<(&'static str, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// `method` ("SMAA", "SGSR 1"...) couldn't start: `why` is the device's error.
+pub fn antialiasing_failed(method: &'static str, why: String) {
+    log::warn!("Horizon renderer: {method} couldn't start, drawing without it: {why}");
+    let mut failures = AA_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    failures.retain(|(m, _)| *m != method);
+    failures.push((method, why));
+}
+
+/// `method` started (again): what failed before is forgotten.
+pub fn antialiasing_started(method: &'static str) {
+    let mut failures = AA_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    failures.retain(|(m, _)| *m != method);
+}
+
+/// Why `method` couldn't start on this device, if it couldn't.
+pub fn antialiasing_failure(method: &str) -> Option<String> {
+    let failures = AA_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    failures
+        .iter()
+        .find(|(m, _)| *m == method)
+        .map(|(_, why)| why.clone())
+}
+
 static REDUCED_SUGGESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether the settings suggest Reduced far detail: set when the renderer
 /// starts, on the GPUs `lod_capped` names (far terrain slows them most).
@@ -949,8 +1019,14 @@ pub struct Graphics {
     pub target_fps: u32,
     /// FXAA over the world.
     pub fxaa: bool,
+    /// SMAA over the world (FXAA, TAA and SGSR 1 are off while it is on), at `smaa_quality`.
+    pub smaa: bool,
+    pub smaa_quality: SmaaQuality,
     /// TAA over the world (FXAA is off while it is on).
     pub taa: bool,
+    /// SGSR 1: the world drawn smaller by `upscaling`, rebuilt and sharpened in one spatial pass
+    /// (no anti-aliasing; the others are off while it is on). Never at `Upscaling::Native`.
+    pub sgsr1: bool,
     /// 4x MSAA on opaque and cutout terrain (FXAA and TAA are off while it is on).
     pub msaa4x: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
@@ -1054,7 +1130,10 @@ impl Default for Graphics {
             dynamic_resolution: false,
             target_fps: 60,
             fxaa: false,
+            smaa: false,
+            smaa_quality: SmaaQuality::High,
             taa: false,
+            sgsr1: false,
             msaa4x: false,
             upscaling: Upscaling::Native,
             upscaling_sharpness: 85,
@@ -1225,6 +1304,9 @@ impl Graphics {
                 "taa" => g.taa = flag(g.taa),
                 "msaa4x" => g.msaa4x = flag(g.msaa4x),
                 "postPrecision" => g.half_precision = value != "f32",
+                "smaa" => g.smaa = flag(g.smaa),
+                "smaaQuality" => g.smaa_quality = SmaaQuality::parse(value),
+                "sgsr1" => g.sgsr1 = flag(g.sgsr1),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
                 "upscalingSharpness" => {
                     g.upscaling_sharpness = number(g.upscaling_sharpness).min(100)
@@ -1279,9 +1361,24 @@ impl Graphics {
             _ => HdrLook::Horizon,
         });
         // 4x MSAA replaces FXAA and TAA, and TAA's upscaling with it: a file naming them too
-        // (edited by hand) keeps it, as the Anti-aliasing button would.
+        // (edited by hand) keeps it, as the Anti-aliasing button would. One method at a time
+        // otherwise, as the button picks them: TAA, then SGSR 1, then SMAA, then FXAA.
         if g.msaa4x {
             (g.fxaa, g.taa, g.upscaling) = (false, false, Upscaling::Native);
+            (g.smaa, g.sgsr1) = (false, false);
+        }
+        if g.taa {
+            (g.fxaa, g.smaa, g.sgsr1) = (false, false, false);
+        }
+        if g.sgsr1 {
+            (g.fxaa, g.smaa) = (false, false);
+            // SGSR 1 only upscales: Native would leave it nothing to do.
+            if g.upscaling == Upscaling::Native {
+                g.upscaling = Upscaling::Quality;
+            }
+        }
+        if g.smaa {
+            g.fxaa = false;
         }
         g
     }
@@ -1354,6 +1451,12 @@ impl Graphics {
         text += &format!(
             "postPrecision:{}\n",
             if self.half_precision { "f16" } else { "f32" }
+        );
+        text += &format!(
+            "smaa:{}\nsmaaQuality:{}\nsgsr1:{}\n",
+            bool_text(self.smaa),
+            self.smaa_quality.name(),
+            bool_text(self.sgsr1)
         );
         text += &self.blue_map.serialize();
         text
@@ -1753,8 +1856,11 @@ mod tests {
             resolution_scale: 75,
             dynamic_resolution: false,
             target_fps: 60,
-            fxaa: true,
+            fxaa: false,
+            smaa: false,
+            smaa_quality: SmaaQuality::Ultra,
             taa: true,
+            sgsr1: false,
             msaa4x: false,
             upscaling: Upscaling::Balanced,
             upscaling_sharpness: 40,
@@ -1779,10 +1885,31 @@ mod tests {
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
         // 4x MSAA replaces FXAA, TAA and its upscaling, in a file that names them too.
-        let msaa = Graphics::parse(&Graphics { msaa4x: true, ..g }.serialize());
+        let msaa = Graphics::parse(
+            &Graphics {
+                msaa4x: true,
+                ..g.clone()
+            }
+            .serialize(),
+        );
         assert_eq!(
             (msaa.msaa4x, msaa.fxaa, msaa.taa, msaa.upscaling),
             (true, false, false, Upscaling::Native)
+        );
+        // One method at a time, as the button picks them, and SGSR 1 never at Native, where it
+        // would have nothing to upscale.
+        let sgsr = Graphics {
+            sgsr1: true,
+            smaa: true,
+            fxaa: true,
+            taa: false,
+            upscaling: Upscaling::Native,
+            ..g.clone()
+        };
+        let sgsr = Graphics::parse(&sgsr.serialize());
+        assert_eq!(
+            (sgsr.sgsr1, sgsr.smaa, sgsr.fxaa, sgsr.upscaling),
+            (true, false, false, Upscaling::Quality)
         );
         // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
         for failed in [Some(String::new()), None] {
