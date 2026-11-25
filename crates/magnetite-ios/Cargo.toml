@@ -17,6 +17,8 @@ horizon-client = { path = "../horizon-client", default-features = false, feature
 horizon-mod-host = { path = "../horizon-mod-host", default-features = false, features = ["mobile"] }
 # The refresh-secret store the boot loop keeps (a private file in Application Support).
 horizon-account = { path = "../horizon-account" }
+# The main thread's stack: UIKit fixes it at 1 MiB, and the game moves onto a guest-sized one.
+horizon-guest-stack = { path = "../horizon-guest-stack" }
 # The window's orientations (`WindowExtIOS`): the workspace patches this to third_party/winit.
 winit = "0.30.13"
 

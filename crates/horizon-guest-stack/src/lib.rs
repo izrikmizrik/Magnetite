@@ -4,6 +4,12 @@
 mod constants;
 pub use constants::{GUEST_STACK_BYTES, HOST_HEADROOM};
 
+// iOS's main thread, whose 1 MiB stack the platform fixes; built for the host's tests too.
+#[cfg(any(target_os = "ios", all(test, unix)))]
+mod own_stack;
+#[cfg(any(target_os = "ios", all(test, unix)))]
+pub use own_stack::OwnStack;
+
 /// Spawn guarantees the reservation even on platforms without a stack-size query.
 pub fn builder() -> std::thread::Builder {
     std::thread::Builder::new().stack_size(GUEST_STACK_BYTES + HOST_HEADROOM)
@@ -120,6 +126,10 @@ fn prepare() -> std::io::Result<()> {
 /// Refuse guest entry when the calling thread's stack reservation is too small.
 /// Cache the platform query once per thread; the hot path reads only thread-local state.
 pub fn check_current() -> Result<(), &'static str> {
+    #[cfg(any(target_os = "ios", all(test, unix)))]
+    if own_stack::on_own_stack() {
+        return Ok(());
+    }
     thread_local! {
         static CHECK: std::cell::OnceCell<Result<(), &'static str>> = const { std::cell::OnceCell::new() };
     }

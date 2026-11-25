@@ -9,5 +9,12 @@ description = "Guest stack reservations and executable startup without allocator
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Moving a thread onto a stack of its own (`OwnStack`): iOS's main thread.
+[target.'cfg(target_os = "ios")'.dependencies]
+psm = "0.1.32"
+
+[dev-dependencies]
+psm = "0.1.32"
+
 [lints]
 workspace = true
