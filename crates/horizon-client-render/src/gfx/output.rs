@@ -173,6 +173,9 @@ pub struct EffectiveOutput {
     pub(crate) pack_lights: bool,
     /// The renderer can draw 4x terrain MSAA (`Renderer::output`).
     pub(crate) msaa: bool,
+    /// The device runs the post passes in half precision (`half::available`): the Anti-aliasing
+    /// Precision setting has f16 to offer.
+    pub(crate) half: bool,
     /// What its ray tracing is to a pack that asks for it; `None` before a renderer.
     pub(crate) rays: Option<RayStatus>,
 }
@@ -218,6 +221,7 @@ impl EffectiveOutput {
         compositor: false,
         pack_lights: false,
         msaa: false,
+        half: false,
         rays: None,
     };
     /// This output while a shader pack runs (`pack`), a `shaders/` one or one of Horizon's
@@ -357,6 +361,7 @@ pub(crate) fn resolve_output(
         compositor: reading.compositor,
         pack_lights: false,
         msaa: false,
+        half: false,
         rays: None,
     }
 }

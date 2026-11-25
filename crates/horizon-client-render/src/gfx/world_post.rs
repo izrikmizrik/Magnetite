@@ -49,6 +49,8 @@ struct TaaUniform {
 /// TAA's GPU resources, absent when the device cannot compile the shader.
 struct TaaResources {
     layout: wgpu::BindGroupLayout,
+    /// What `pipeline` is built on, to build it again in the other precision (`set_half`).
+    pipeline_layout: wgpu::PipelineLayout,
     pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
 }
@@ -158,6 +160,8 @@ pub struct Post {
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
+    /// The Anti-aliasing Precision setting the pipelines were built with (`half`, `set_half`).
+    half: bool,
     /// World resolution relative to the window (0.5..=2.0).
     pub scale: f32,
     pub antialias: bool,
@@ -200,11 +204,9 @@ impl LightKey {
 }
 
 impl Post {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Horizon post"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../world_post.wgsl").into()),
-        });
+    /// `half`: the Anti-aliasing Precision setting (`half::shader`).
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, half: bool) -> Self {
+        let shader = post_shader(device, half);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon post bindings"),
             entries: &[
@@ -242,33 +244,6 @@ impl Post {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let pipeline = |entry: &str, layout: &wgpu::PipelineLayout, format| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Horizon post"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_post"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
         let taa_resources = {
             let taa_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Horizon TAA bindings"),
@@ -302,36 +277,8 @@ impl Post {
                     bind_group_layouts: &[Some(&taa_layout)],
                     ..Default::default()
                 });
-            let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
-            let taa_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Horizon TAA"),
-                layout: Some(&taa_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_post"),
-                    compilation_options: Default::default(),
-                    buffers: &[],
-                },
-                primitive: Default::default(),
-                depth_stencil: None,
-                multisample: Default::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_taa"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: HISTORY_FORMAT,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            });
-            let internal = pollster::block_on(internal.pop());
-            match internal.or(pollster::block_on(validation.pop())) {
-                None => {
+            match taa_pipeline(device, &shader, &taa_pipeline_layout) {
+                Ok(taa_pipeline) => {
                     let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("Horizon TAA"),
                         size: std::mem::size_of::<TaaUniform>() as u64,
@@ -340,11 +287,12 @@ impl Post {
                     });
                     Some(TaaResources {
                         layout: taa_layout,
+                        pipeline_layout: taa_pipeline_layout,
                         pipeline: taa_pipeline,
                         uniform,
                     })
                 }
-                Some(e) => {
+                Err(e) => {
                     log::warn!("Horizon renderer: temporal anti-aliasing unavailable ({e})");
                     None
                 }
@@ -359,13 +307,14 @@ impl Post {
         Self {
             shader: shader.clone(),
             pipeline_layout: pipeline_layout.clone(),
-            copy: pipeline("fs_copy", &pipeline_layout, format),
-            fxaa: pipeline("fs_fxaa", &pipeline_layout, format),
+            copy: post_pipeline(device, &shader, &pipeline_layout, "fs_copy", format),
+            fxaa: post_pipeline(device, &shader, &pipeline_layout, "fs_fxaa", format),
             sharpen: sharpen_pipeline(device, &shader, &pipeline_layout, format, 0.85),
             sharpness: 0.85,
             layout,
             sampler,
             format,
+            half,
             scale: 1.0,
             antialias: false,
             taa: false,
@@ -680,6 +629,30 @@ impl Post {
         }
     }
 
+    /// The Anti-aliasing Precision setting (`half::shader`): builds the passes again in the
+    /// precision it names when it changed. The targets and TAA's history stay.
+    pub fn set_half(&mut self, device: &wgpu::Device, half: bool) {
+        if half == self.half {
+            return;
+        }
+        self.half = half;
+        let shader = post_shader(device, half);
+        let layout = &self.pipeline_layout;
+        self.copy = post_pipeline(device, &shader, layout, "fs_copy", self.format);
+        self.fxaa = post_pipeline(device, &shader, layout, "fs_fxaa", self.format);
+        self.sharpen = sharpen_pipeline(device, &shader, layout, self.format, self.sharpness);
+        if let Some(res) = &mut self.taa_resources {
+            match taa_pipeline(device, &shader, &res.pipeline_layout) {
+                Ok(pipeline) => res.pipeline = pipeline,
+                Err(e) => log::warn!(
+                    "Horizon renderer: TAA in {} unavailable, keeping the other ({e})",
+                    if half { "f16" } else { "f32" }
+                ),
+            }
+        }
+        self.shader = shader;
+    }
+
     /// A target in the world's format for `finish` or the sharpening to draw onto, where
     /// something after it reads the world resolved (a native pack without a post chain,
     /// #16126), at `resolved_size`. Made on first use, and dropped with the world's target.
@@ -868,6 +841,91 @@ impl Post {
     }
 }
 
+/// `world_post.wgsl` in the precision `half` asks for, where the device has it (`half::shader`).
+fn post_shader(device: &wgpu::Device, half: bool) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Horizon post"),
+        source: wgpu::ShaderSource::Wgsl(
+            super::half::shader(device, half, include_str!("../world_post.wgsl")).into(),
+        ),
+    })
+}
+
+/// One of `world_post.wgsl`'s full-screen passes, `entry`, drawing onto `format`.
+fn post_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    entry: &str,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Horizon post"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_post"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some(entry),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// TAA's resolve into its history, or the error that kept the device from building it.
+fn taa_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+) -> Result<wgpu::RenderPipeline, wgpu::Error> {
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Horizon TAA"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_post"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: Default::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_taa"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: HISTORY_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    let internal = pollster::block_on(internal.pop());
+    match internal.or(pollster::block_on(validation.pop())) {
+        None => Ok(pipeline),
+        Some(e) => Err(e),
+    }
+}
+
 /// `fs_sharpen` at `sharpness` (its override), drawing onto `format`.
 fn sharpen_pipeline(
     device: &wgpu::Device,
@@ -983,7 +1041,7 @@ mod tests {
             eprintln!("Upscaling pack GPU skipped: no test device");
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm, true);
         post.upscale = 2.0;
         let _ = post.prepare(&device, [1280, 720], true, true);
         assert_eq!(post.size(), Some([640, 360]));
@@ -1009,7 +1067,7 @@ mod tests {
         let Some((device, _)) = test_device() else {
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm, true);
         assert!(!post.taa_on);
         assert!(post.size().is_none());
         for (window, scale, upscale, expected) in [
@@ -1046,7 +1104,7 @@ mod tests {
             eprintln!("TAA upscale hold GPU skipped: no test device");
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float);
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float, true);
         post.taa = post.supports_taa();
         let (window, scaled) = ([1281, 721], [641, 361]);
         post.scale = 0.5;
@@ -1077,7 +1135,7 @@ mod tests {
             eprintln!("TAA upscaling under a pack GPU skipped: no test device");
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm, true);
         if !post.supports_taa() {
             eprintln!("TAA upscaling under a pack GPU skipped: TAA unsupported");
             return;
@@ -1115,7 +1173,7 @@ mod tests {
             eprintln!("TAA baked-light GPU skipped: no test device");
             return;
         };
-        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float);
+        let mut post = Post::new(&device, wgpu::TextureFormat::Rgba16Float, true);
         post.taa = true;
         if !post.supports_taa() {
             eprintln!("TAA baked-light GPU skipped: TAA unsupported");
@@ -1190,7 +1248,7 @@ mod tests {
         let Some((device, _)) = test_device() else {
             return;
         };
-        let post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let post = Post::new(&device, wgpu::TextureFormat::Rgba8Unorm, true);
         // Copy and FXAA pipelines always compile; TAA compiles if supported by backend.
         let _ = post.supports_taa();
     }

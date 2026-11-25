@@ -1,6 +1,8 @@
 // Horizon's world post pass: the world, rendered at the resolution scale,
 // copied (bilinear) or anti-aliased with FXAA onto the screen before the
 // hand and HUD. Only used when a non-vanilla setting asks for it.
+// Colour maths runs in `hf`/`hv3`, half precision where the device has it (gfx/half.rs, which
+// puts the aliases in front of this file); coordinates and depth stay f32.
 @group(0) @binding(0) var world: texture_2d<f32>;
 @group(0) @binding(1) var world_sampler: sampler;
 
@@ -21,38 +23,47 @@ struct PostOut {
     return textureSampleLevel(world, world_sampler, in.uv, 0.0);
 }
 
-fn luma(c: vec3<f32>) -> f32 {
-    return dot(c, vec3(0.299, 0.587, 0.114));
+// Half float's largest value: light reaches it on the HDR frame (docs/hdr-passes.md).
+const HALF_MAX = 65504.0;
+
+// The world's colour at `uv`, in the passes' precision.
+fn tap(uv: vec2<f32>) -> hv3 {
+    return hv3(textureSampleLevel(world, world_sampler, uv, 0.0).rgb);
+}
+
+// Luma for finding edges. Held at 4096, far above any light that has an edge to find, so that
+// sums of four stay inside half float.
+fn luma(c: hv3) -> hf {
+    return min(dot(c, hv3(0.299, 0.587, 0.114)), hf(4096.0));
 }
 
 // FXAA 3.11 (console quality): blend along the local edge direction.
 @fragment fn fs_fxaa(in: PostOut) -> @location(0) vec4<f32> {
     let texel = 1.0 / vec2<f32>(textureDimensions(world));
     let centre = textureSampleLevel(world, world_sampler, in.uv, 0.0);
-    let rgb_m = centre.rgb;
-    let nw = luma(textureSampleLevel(world, world_sampler, in.uv + vec2(-0.5, -0.5) * texel, 0.0).rgb);
-    let ne = luma(textureSampleLevel(world, world_sampler, in.uv + vec2(0.5, -0.5) * texel, 0.0).rgb);
-    let sw = luma(textureSampleLevel(world, world_sampler, in.uv + vec2(-0.5, 0.5) * texel, 0.0).rgb);
-    let se = luma(textureSampleLevel(world, world_sampler, in.uv + vec2(0.5, 0.5) * texel, 0.0).rgb);
+    let rgb_m = hv3(centre.rgb);
+    let nw = luma(tap(in.uv + vec2(-0.5, -0.5) * texel));
+    let ne = luma(tap(in.uv + vec2(0.5, -0.5) * texel));
+    let sw = luma(tap(in.uv + vec2(-0.5, 0.5) * texel));
+    let se = luma(tap(in.uv + vec2(0.5, 0.5) * texel));
     let m = luma(rgb_m);
     let lo = min(m, min(min(nw, ne), min(sw, se)));
     let hi = max(m, max(max(nw, ne), max(sw, se)));
-    if hi - lo < max(0.0312, hi * 0.125) {
+    if hi - lo < max(hf(0.0312), hi * 0.125) {
         return centre;
     }
-    var dir = vec2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
-    let reduce = max((nw + ne + sw + se) * 0.25 * 0.125, 1.0 / 128.0);
+    let dir = hv2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+    let reduce = max((nw + ne + sw + se) * 0.25 * 0.125, hf(1.0 / 128.0));
     let scale = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
-    dir = clamp(dir * scale, vec2(-8.0), vec2(8.0)) * texel;
-    let a = 0.5 * (textureSampleLevel(world, world_sampler, in.uv + dir * (1.0 / 3.0 - 0.5), 0.0).rgb
-        + textureSampleLevel(world, world_sampler, in.uv + dir * (2.0 / 3.0 - 0.5), 0.0).rgb);
-    let b = a * 0.5 + 0.25 * (textureSampleLevel(world, world_sampler, in.uv - dir * 0.5, 0.0).rgb
-        + textureSampleLevel(world, world_sampler, in.uv + dir * 0.5, 0.0).rgb);
+    // The step is a texture coordinate: f32 from here.
+    let step = vec2<f32>(clamp(dir * scale, hv2(-8.0), hv2(8.0))) * texel;
+    let a = 0.5 * tap(in.uv + step * (1.0 / 3.0 - 0.5)) + 0.5 * tap(in.uv + step * (2.0 / 3.0 - 0.5));
+    let b = 0.5 * a + 0.25 * tap(in.uv - step * 0.5) + 0.25 * tap(in.uv + step * 0.5);
     let lb = luma(b);
     if lb < lo || lb > hi {
-        return vec4(a, centre.a);
+        return vec4(vec3<f32>(a), centre.a);
     }
-    return vec4(b, centre.a);
+    return vec4(vec3<f32>(b), centre.a);
 }
 
 // Contrast-adaptive sharpening (after AMD's CAS) of TAA's upscaled picture: each
@@ -65,19 +76,21 @@ override sharpness: f32 = 0.85;
     let size = vec2<i32>(textureDimensions(world));
     let p = clamp(vec2<i32>(in.uv * vec2<f32>(size)), vec2(0), size - 1);
     let centre = textureLoad(world, p, 0);
-    let c = centre.rgb;
-    let n = textureLoad(world, clamp(p + vec2(0, -1), vec2(0), size - 1), 0).rgb;
-    let s = textureLoad(world, clamp(p + vec2(0, 1), vec2(0), size - 1), 0).rgb;
-    let w = textureLoad(world, clamp(p + vec2(-1, 0), vec2(0), size - 1), 0).rgb;
-    let e = textureLoad(world, clamp(p + vec2(1, 0), vec2(0), size - 1), 0).rgb;
+    let c = hv3(centre.rgb);
+    let n = hv3(textureLoad(world, clamp(p + vec2(0, -1), vec2(0), size - 1), 0).rgb);
+    let s = hv3(textureLoad(world, clamp(p + vec2(0, 1), vec2(0), size - 1), 0).rgb);
+    let w = hv3(textureLoad(world, clamp(p + vec2(-1, 0), vec2(0), size - 1), 0).rgb);
+    let e = hv3(textureLoad(world, clamp(p + vec2(1, 0), vec2(0), size - 1), 0).rgb);
     let lo = min(c, min(min(n, s), min(w, e)));
     let hi = max(c, max(max(n, s), max(w, e)));
     // How much room there is before clipping, per channel: little at strong edges.
-    let room = clamp(min(lo, 2.0 - hi) / max(hi, vec3(0.0001)), vec3(0.0), vec3(1.0));
+    let room = clamp(min(lo, 2.0 - hi) / max(hi, hv3(0.0001)), hv3(0.0), hv3(1.0));
     // Up to -1/5, the most CAS allows (the Upscaling Sharpness setting's 100%).
-    let lobe = -sqrt(room) * 0.2 * sharpness;
-    let sharp = (c + lobe * (n + s + w + e)) / (1.0 + 4.0 * lobe);
-    return vec4(clamp(sharp, lo, hi), centre.a);
+    let lobe = -sqrt(room) * 0.2 * hf(sharpness);
+    // The four neighbours' mean, not their sum: four bright ones would sum past half float.
+    let ring = 0.25 * n + 0.25 * s + 0.25 * w + 0.25 * e;
+    let sharp = (c + 4.0 * lobe * ring) / (1.0 + 4.0 * lobe);
+    return vec4(vec3<f32>(clamp(sharp, lo, hi)), centre.a);
 }
 
 // TAA (`world_post.rs`): blend this frame into the history, reprojected from the
@@ -119,20 +132,22 @@ fn sample_history(uv: vec2<f32>) -> vec3<f32> {
     return max(c / weight, vec3(0.0));
 }
 
-fn to_ycocg(c: vec3<f32>) -> vec3<f32> {
-    return vec3(0.25 * (c.r + 2.0 * c.g + c.b), 0.5 * (c.r - c.b), 0.25 * (2.0 * c.g - c.r - c.b));
+// Each channel scaled before it is summed, so that bright light stays inside half float.
+fn to_ycocg(c: hv3) -> hv3 {
+    return hv3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, 0.5 * c.g - 0.25 * c.r - 0.25 * c.b);
 }
 
-fn from_ycocg(c: vec3<f32>) -> vec3<f32> {
-    return max(vec3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z), vec3(0.0));
+fn from_ycocg(c: hv3) -> hv3 {
+    return clamp(hv3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z), hv3(0.0), hv3(HALF_MAX));
 }
 
 // Moves `c` toward the box's centre until it lies inside (clipping keeps the
 // colour's hue where a per-channel clamp would shift it).
-fn clip_box(c: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
-    let mid = 0.5 * (hi + lo);
-    let half_size = max(0.5 * (hi - lo), vec3(0.0001));
-    let d = c - mid;
+fn clip_box(c: hv3, lo: hv3, hi: hv3) -> hv3 {
+    let mid = 0.5 * hi + 0.5 * lo;
+    let half_size = max(0.5 * hi - 0.5 * lo, hv3(0.0001));
+    // Held finite: an infinite distance over an infinite `far` would be NaN.
+    let d = clamp(c - mid, hv3(-HALF_MAX), hv3(HALF_MAX));
     let unit = abs(d / half_size);
     let far = max(unit.x, max(unit.y, unit.z));
     if far > 1.0 {
@@ -152,11 +167,12 @@ fn clip_box(c: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
     let last = vec2<i32>(size) - 1;
     let p = clamp(vec2<i32>(floor(drawn)), vec2(0), last);
     let centre = textureLoad(world, p, 0);
-    var lo = to_ycocg(centre.rgb);
+    var lo = to_ycocg(hv3(centre.rgb));
     var hi = lo;
     // Mean and spread of the 3x3 (YCoCg): the history is clipped to a box around
     // the mean a few deviations wide, tighter than min..max, so that what changed
-    // does not linger as a smear.
+    // does not linger as a smear. Summed in f32: nine squares of bright light pass half
+    // float's largest value.
     var m1 = vec3(0.0);
     var m2 = vec3(0.0);
     // Reversed depth: the nearest of the 3x3 is the largest, and its motion keeps
@@ -165,11 +181,12 @@ fn clip_box(c: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let q = clamp(p + vec2(x, y), vec2(0), last);
-            let c = to_ycocg(textureLoad(world, q, 0).rgb);
+            let c = to_ycocg(hv3(textureLoad(world, q, 0).rgb));
             lo = min(lo, c);
             hi = max(hi, c);
-            m1 += c;
-            m2 += c * c;
+            let c32 = vec3<f32>(c);
+            m1 += c32;
+            m2 += c32 * c32;
             near = max(near, textureLoad(depth, q, 0).r);
         }
     }
@@ -185,12 +202,14 @@ fn clip_box(c: vec3<f32>, lo: vec3<f32>, hi: vec3<f32>) -> vec3<f32> {
     let mean = m1 / 9.0;
     let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
     let wide = mix(1.25, 0.75, moving) * sigma;
-    let past = from_ycocg(clip_box(to_ycocg(sample_history(uv)), max(lo, mean - wide), min(hi, mean + wide)));
+    let box_lo = hv3(clamp(mean - wide, vec3(-HALF_MAX), vec3(HALF_MAX)));
+    let box_hi = hv3(clamp(mean + wide, vec3(-HALF_MAX), vec3(HALF_MAX)));
+    let past = from_ycocg(clip_box(to_ycocg(hv3(min(sample_history(uv), vec3(HALF_MAX)))), max(lo, box_lo), min(hi, box_hi)));
     // How far the sample landed from this pixel's centre, in output pixels: a
     // Gaussian of it scales the new frame's share, so that frames whose sample
     // fell far away (most of them when upscaling) barely move the pixel. Under
     // motion the history is resampled every frame and blurs, so new frames weigh more.
     let off = (drawn - (vec2<f32>(p) + 0.5)) * vec2<f32>(textureDimensions(history)) / size;
     let share = mix(0.1, 0.3, moving) * exp(-2.0 * dot(off, off));
-    return vec4(mix(past, centre.rgb, share), centre.a);
+    return vec4(vec3<f32>(mix(past, hv3(centre.rgb), hf(share))), centre.a);
 }

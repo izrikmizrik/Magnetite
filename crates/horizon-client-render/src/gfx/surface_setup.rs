@@ -160,6 +160,7 @@ pub(super) async fn open_adapter(
     // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
+    // Half floats in shaders: the post passes' colour maths (`half`).
     let features = timing::GpuTimer::features(adapter)
         | pack_timing::PassTiming::features(adapter)
         | cull::Cull::features(adapter)
@@ -177,7 +178,8 @@ pub(super) async fn open_adapter(
                 | wgpu::Features::VERTEX_WRITABLE_STORAGE
                 | wgpu::Features::CLEAR_TEXTURE
                 | wgpu::Features::TEXTURE_ATOMIC
-                | wgpu::Features::FLOAT32_FILTERABLE));
+                | wgpu::Features::FLOAT32_FILTERABLE
+                | wgpu::Features::SHADER_F16));
     let driver = format!("{} {}", info.driver, info.driver_info);
     startup_step(format_args!(
         "requesting the device (driver {}) with features [{features}] and the adapter's \
