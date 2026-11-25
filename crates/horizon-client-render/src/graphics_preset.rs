@@ -165,6 +165,7 @@ pub fn apply_preset(preset: Preset, s: &mut Settings) {
     g.dynamic_resolution = false;
     g.fxaa = t.fxaa;
     g.taa = false;
+    (g.smaa, g.sgsr1) = (false, false);
     g.msaa4x = false;
     g.upscaling = Upscaling::Native;
 }
