@@ -499,7 +499,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ## Snapdragon Game Super Resolution
 
 `crates/horizon-client-render/src/gfx/sgsr1.wgsl` is a port to WGSL of
-`sgsr/v1/include/glsl/sgsr1_shader_mobile_edge_direction.frag` (its RGBA mode, without edge direction) from
+`sgsr/v1/include/glsl/sgsr1_shader_mobile_edge_direction.frag` (its RGBA mode, without edge direction), and
+`gfx/sgsr2.wgsl` of `sgsr/v2/include/glsl_2_pass_fs/sgsr2_convert.fs` and `sgsr2_upscale.fs`, from
 <https://github.com/SnapdragonStudios/snapdragon-gsr> (at commit
 d926f074bcb9d714e179f1ce0fcb9ee2eeb5074e). Snapdragon is a trademark of Qualcomm Incorporated; Horizon is not
 affiliated with Qualcomm. Licensed under the BSD 3-Clause License:

@@ -72,6 +72,7 @@ pub(super) fn world_scale(g: &Graphics, dynamic: &DynamicResolution) -> u32 {
 
 /// The world's post-processing settings, at the resolution scale `scale` (percent).
 pub(super) fn apply_world_post(r: &mut Renderer, g: &Graphics, scale: u32) {
+    r.set_temporal_antialiasing(g.temporal);
     r.set_world_post(
         scale as f32 / 100.0,
         g.fxaa,

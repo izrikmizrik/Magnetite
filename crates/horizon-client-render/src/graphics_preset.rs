@@ -166,6 +166,7 @@ pub fn apply_preset(preset: Preset, s: &mut Settings) {
     g.fxaa = t.fxaa;
     g.taa = false;
     (g.smaa, g.sgsr1) = (false, false);
+    g.temporal = crate::graphics::Temporal::Taa;
     g.msaa4x = false;
     g.upscaling = Upscaling::Native;
 }
