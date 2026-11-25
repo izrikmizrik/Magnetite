@@ -2618,12 +2618,7 @@ impl Boot {
                     }
                 }
             }
-            Action::Boot(boot_action) => {
-                if matches!(boot_action, BootAction::FocusField(_)) {
-                    self.keyboard_for = None;
-                }
-                self.act(event_loop, boot_action);
-            }
+            Action::Boot(boot_action) => self.boot_action(event_loop, boot_action),
             Action::FlowBack => {
                 self.signing_in = false;
                 if let Some(current) = self.keyring.current {
@@ -2744,6 +2739,13 @@ impl Boot {
         else {
             return;
         };
+        self.boot_action(event_loop, action);
+    }
+
+    /// A tap on a sign-in page's button, on its own screen or over the launcher's pages. Opening
+    /// the code's page and copying the code are the platform's, not the controller's: through
+    /// [`Self::act`] alone they did nothing, and the launcher's sign-in page sent them there.
+    fn boot_action(&mut self, event_loop: &ActiveEventLoop, action: BootAction) {
         match action {
             BootAction::OpenLink => {
                 if let Phase::Code { code } = &self.ctrl.phase {
