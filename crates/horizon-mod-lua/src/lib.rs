@@ -13,7 +13,7 @@ mod runtime;
 
 pub use runtime::{JitMode, LuaSettings, ScriptReader, Scripts};
 
-use mlua::{Function, Lua, Table, Value};
+use mlua::{Function, Lua, LuaSerdeExt, Table, Value};
 use mod_api::ServerHost;
 use runtime::Script;
 use std::sync::Arc;
@@ -313,6 +313,193 @@ struct LuaBlockEntityPart {
 #[mod_api::horizon_part]
 impl mod_api::BlockPart for LuaBlockEntityPart {}
 
+const NBT_MAX_DEPTH: usize = 512;
+
+fn narrow_int_tag(v: i64) -> horizon_core::nbt::Tag {
+    use horizon_core::nbt::Tag;
+    if let Ok(v) = i8::try_from(v) {
+        Tag::Byte(v)
+    } else if let Ok(v) = i16::try_from(v) {
+        Tag::Short(v)
+    } else if let Ok(v) = i32::try_from(v) {
+        Tag::Int(v)
+    } else {
+        Tag::Long(v)
+    }
+}
+
+fn tag_to_lua(lua: &Lua, tag: &horizon_core::nbt::Tag, depth: usize) -> mlua::Result<Value> {
+    use horizon_core::nbt::Tag;
+    match tag {
+        Tag::End => Ok(Value::Nil),
+        Tag::Byte(v) => Ok(Value::Integer((*v).into())),
+        Tag::Short(v) => Ok(Value::Integer((*v).into())),
+        Tag::Int(v) => Ok(Value::Integer((*v).into())),
+        Tag::Long(v) => Ok(mlua::Integer::try_from(*v)
+            .map(Value::Integer)
+            .unwrap_or(Value::Number(*v as f64))),
+        Tag::Float(bits) => {
+            let f = f32::from_bits(*bits);
+            if !f.is_finite() {
+                return Err(mlua::Error::external("non-finite float NBT"));
+            }
+            let rounded = horizon_core::java_number::float_to_string(f)
+                .parse::<f64>()
+                .map_err(mlua::Error::external)?;
+            Ok(Value::Number(rounded))
+        }
+        Tag::Double(bits) => {
+            let d = f64::from_bits(*bits);
+            if !d.is_finite() {
+                return Err(mlua::Error::external("non-finite double NBT"));
+            }
+            Ok(Value::Number(d))
+        }
+        Tag::String(s) => {
+            let text = s.to_string().map_err(mlua::Error::external)?;
+            lua.create_string(&text).map(Value::String)
+        }
+        Tag::ByteArray(vals) => {
+            let t = lua.create_table_with_capacity(vals.len(), 0)?;
+            for (i, &v) in vals.iter().enumerate() {
+                t.raw_set(i + 1, i64::from(v as i8))?;
+            }
+            if vals.is_empty() {
+                let _ = t.set_metatable(Some(lua.array_metatable()));
+            }
+            Ok(Value::Table(t))
+        }
+        Tag::IntArray(vals) => {
+            let t = lua.create_table_with_capacity(vals.len(), 0)?;
+            for (i, &v) in vals.iter().enumerate() {
+                t.raw_set(i + 1, i64::from(v))?;
+            }
+            if vals.is_empty() {
+                let _ = t.set_metatable(Some(lua.array_metatable()));
+            }
+            Ok(Value::Table(t))
+        }
+        Tag::LongArray(vals) => {
+            let t = lua.create_table_with_capacity(vals.len(), 0)?;
+            for (i, &v) in vals.iter().enumerate() {
+                let val = mlua::Integer::try_from(v)
+                    .map(Value::Integer)
+                    .unwrap_or(Value::Number(v as f64));
+                t.raw_set(i + 1, val)?;
+            }
+            if vals.is_empty() {
+                let _ = t.set_metatable(Some(lua.array_metatable()));
+            }
+            Ok(Value::Table(t))
+        }
+        Tag::List(vals) => {
+            if depth >= NBT_MAX_DEPTH {
+                return Err(mlua::Error::external("NBT nesting exceeds 512 containers"));
+            }
+            let t = lua.create_table_with_capacity(vals.len(), 0)?;
+            for (i, item) in vals.iter().enumerate() {
+                t.raw_set(i + 1, tag_to_lua(lua, item, depth + 1)?)?;
+            }
+            if vals.is_empty() {
+                let _ = t.set_metatable(Some(lua.array_metatable()));
+            }
+            Ok(Value::Table(t))
+        }
+        Tag::Compound(map) => compound_to_lua(lua, map, depth + 1).map(Value::Table),
+    }
+}
+
+fn compound_to_lua(
+    lua: &Lua,
+    map: &horizon_core::nbt::Compound,
+    depth: usize,
+) -> mlua::Result<Table> {
+    if depth > NBT_MAX_DEPTH {
+        return Err(mlua::Error::external("NBT nesting exceeds 512 containers"));
+    }
+    let t = lua.create_table_with_capacity(0, map.len())?;
+    for (k, v) in map {
+        let key = k.to_string().map_err(mlua::Error::external)?;
+        t.raw_set(key, tag_to_lua(lua, v, depth)?)?;
+    }
+    Ok(t)
+}
+
+fn lua_to_tag(lua: &Lua, value: Value, depth: usize) -> mlua::Result<horizon_core::nbt::Tag> {
+    use horizon_core::nbt::{Compound, Tag};
+    match value {
+        Value::Nil => {
+            if depth == 0 {
+                Ok(Tag::End)
+            } else {
+                Err(mlua::Error::external("nested nil in NBT"))
+            }
+        }
+        Value::Boolean(b) => Ok(Tag::Byte(i8::from(b))),
+        Value::Integer(i) => Ok(narrow_int_tag(i64::from(i))),
+        Value::Number(f) => {
+            if !f.is_finite() {
+                return Err(mlua::Error::external("non-finite float in NBT"));
+            }
+            if f.fract() == 0.0
+                && (-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&f)
+            {
+                Ok(narrow_int_tag(f as i64))
+            } else {
+                let f32v = f as f32;
+                if f64::from(f32v) == f {
+                    Ok(Tag::Float(if f32v == 0.0 { 0 } else { f32v.to_bits() }))
+                } else {
+                    Ok(Tag::Double(if f == 0.0 { 0 } else { f.to_bits() }))
+                }
+            }
+        }
+        Value::String(s) => Ok(Tag::String(s.to_str()?.as_ref().into())),
+        Value::Table(t) => {
+            if depth >= NBT_MAX_DEPTH {
+                return Err(mlua::Error::external("NBT nesting exceeds 512 containers"));
+            }
+            let raw_len = t.raw_len();
+            let array_mt = t.metatable().is_some_and(|m| m == lua.array_metatable());
+            let mut count = 0usize;
+            let mut all_seq = true;
+            for pair in t.pairs::<Value, Value>() {
+                let (k, _) = pair?;
+                count += 1;
+                match k {
+                    Value::Integer(idx) if idx >= 1 && (idx as usize) <= raw_len => {}
+                    _ => {
+                        all_seq = false;
+                        break;
+                    }
+                }
+            }
+            if (array_mt && count == 0) || (raw_len > 0 && all_seq && count == raw_len) {
+                let mut list = Vec::with_capacity(raw_len);
+                for i in 1..=raw_len {
+                    let v: Value = t.raw_get(i)?;
+                    list.push(lua_to_tag(lua, v, depth + 1)?);
+                }
+                Ok(Tag::List(list))
+            } else {
+                let mut map = Compound::new();
+                for pair in t.pairs::<Value, Value>() {
+                    let (k, v) = pair?;
+                    let key = match k {
+                        Value::String(s) => s.to_str()?.as_ref().into(),
+                        Value::Integer(i) => i.to_string().as_str().into(),
+                        Value::Number(n) => n.to_string().as_str().into(),
+                        _ => continue,
+                    };
+                    map.insert(key, lua_to_tag(lua, v, depth + 1)?);
+                }
+                Ok(Tag::Compound(map))
+            }
+        }
+        _ => Err(mlua::Error::external("unsupported Lua value in NBT")),
+    }
+}
+
 #[mod_api::horizon_part]
 impl mod_api::BlockEntityPart for LuaBlockEntityPart {
     /// `ctx`: `type`, `pos`, `dimension` (the level it ticks in), `data` (its data slots) and
@@ -324,11 +511,8 @@ impl mod_api::BlockEntityPart for LuaBlockEntityPart {
     ) {
         let host: &dyn ServerHost = host;
         let level = event.level;
-        let data = event.entity.data.clone();
-        let nbt = horizon_core::json_nbt::tag_to_json(&horizon_core::nbt::Tag::Compound(
-            event.entity.nbt.clone(),
-        ))
-        .unwrap_or(serde_json::Value::Null);
+        let data = &event.entity.data;
+        let nbt_ref = &event.entity.nbt;
         let edits = self.script.call("block_entity_tick", |lua| {
             let Some(handler) =
                 Script::part_handler(lua, "_block_entities", &self.id, "block_entity_tick")?
@@ -341,14 +525,21 @@ impl mod_api::BlockEntityPart for LuaBlockEntityPart {
                 ctx.set("pos", event.pos)?;
                 ctx.set("dimension", level.dimension_id())?;
                 ctx.set("data", lua.create_sequence_from(data.iter().copied())?)?;
-                ctx.set("nbt", Script::to_lua(lua, &nbt)?)?;
+                let lua_nbt = match compound_to_lua(lua, nbt_ref, 0) {
+                    Ok(t) => Value::Table(t),
+                    Err(_) => Value::Nil,
+                };
+                ctx.set("nbt", lua_nbt)?;
                 add_world_reads(scope, &ctx, host, Some(level))?;
                 handler.call::<()>(ctx.clone())?;
                 let new_data: Vec<i32> = ctx
                     .get::<Table>("data")?
                     .sequence_values()
                     .collect::<mlua::Result<_>>()?;
-                let new_nbt = Script::from_lua(lua, ctx.get("nbt")?)?;
+                let new_nbt = match lua_to_tag(lua, ctx.get("nbt")?, 0) {
+                    Ok(horizon_core::nbt::Tag::Compound(compound)) => Some(compound),
+                    _ => None,
+                };
                 Ok(Some((new_data, new_nbt)))
             })
         });
@@ -357,13 +548,12 @@ impl mod_api::BlockEntityPart for LuaBlockEntityPart {
             return;
         };
         let mut changed = false;
-        if new_data != data && new_data.len() == data.len() {
+        if new_data.len() == event.entity.data.len() && new_data != event.entity.data {
             event.entity.data = new_data;
             changed = true;
         }
-        if new_nbt != nbt
-            && let Ok(horizon_core::nbt::Tag::Compound(compound)) =
-                horizon_core::json_nbt::json_to_tag(&new_nbt)
+        if let Some(compound) = new_nbt
+            && compound != event.entity.nbt
         {
             event.entity.nbt = compound;
             changed = true;

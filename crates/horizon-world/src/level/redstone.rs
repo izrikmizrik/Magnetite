@@ -525,7 +525,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     fn torch_toggled_too_frequently(&mut self, pos: BlockPos, add: bool) -> bool {
         if add {
             let time = self.level.game_time();
-            self.ticks.torch_toggles.push((pos, time));
+            self.ticks.torch_toggles.push_back((pos, time));
         }
         self.ticks
             .torch_toggles
@@ -542,10 +542,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         while self
             .ticks
             .torch_toggles
-            .first()
+            .front()
             .is_some_and(|(_, when)| time - when > 60)
         {
-            self.ticks.torch_toggles.remove(0);
+            self.ticks.torch_toggles.pop_front();
         }
         if b.table.bool(state, b.props.lit) {
             if signal {

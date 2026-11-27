@@ -70,6 +70,7 @@ struct Pipelines {
 struct Frame {
     /// This frame's luma at the display size, where `prepare_luma` writes.
     luma0: wgpu::TextureView,
+    prepare_luma: Option<(wgpu::TextureView, wgpu::BindGroup)>,
     luma_pyramid: [wgpu::BindGroup; LEVELS - 1],
     scd_histogram: wgpu::BindGroup,
     search: [wgpu::BindGroup; LEVELS],
@@ -244,6 +245,7 @@ impl OpticalFlow {
             let (cur, prev) = (&luma[current], &luma[1 - current]);
             Frame {
                 luma0: cur[0].clone(),
+                prepare_luma: None,
                 luma_pyramid: std::array::from_fn(|k| {
                     bind(
                         device,
@@ -378,16 +380,27 @@ impl OpticalFlow {
             };
             queue.write_buffer(buffer, 0, bytemuck::bytes_of(&params));
         }
+        let prepare_pipeline = &self.pipelines.prepare_luma;
+        let params0 = &self.params[0];
+        let frame = &mut self.frames[(self.resource_frame & 1) as usize];
+        if frame
+            .prepare_luma
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != color)
+        {
+            let group = bind(
+                device,
+                prepare_pipeline,
+                &[
+                    (0, whole(params0)),
+                    (1, view(color)),
+                    (2, view(&frame.luma0)),
+                ],
+            );
+            frame.prepare_luma = Some((color.clone(), group));
+        }
         let frame = &self.frames[(self.resource_frame & 1) as usize];
-        let prepare = bind(
-            device,
-            &self.pipelines.prepare_luma,
-            &[
-                (0, whole(&self.params[0])),
-                (1, view(color)),
-                (2, view(&frame.luma0)),
-            ],
-        );
+        let prepare = &frame.prepare_luma.as_ref().unwrap().1;
         let p = &self.pipelines;
         let [w, h] = self.display;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -401,7 +414,7 @@ impl OpticalFlow {
         };
         run(
             &p.prepare_luma,
-            &prepare,
+            prepare,
             (w.div_ceil(2)).div_ceil(16),
             (h.div_ceil(2)).div_ceil(16),
             1,

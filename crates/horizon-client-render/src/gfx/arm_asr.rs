@@ -511,24 +511,23 @@ fn draw(
     (pipeline, group): (&wgpu::RenderPipeline, &wgpu::BindGroup),
     timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
-    let attachments: Vec<_> = views
-        .iter()
-        .map(|view| {
-            Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })
-        })
-        .collect();
+    debug_assert!(views.len() <= 3);
+    let mut attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 3] = [None, None, None];
+    for (slot, &view) in attachments.iter_mut().zip(views.iter()) {
+        *slot = Some(wgpu::RenderPassColorAttachment {
+            view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        });
+    }
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
         timestamp_writes,
-        color_attachments: &attachments,
+        color_attachments: &attachments[..views.len()],
         ..Default::default()
     });
     pass.set_pipeline(pipeline);

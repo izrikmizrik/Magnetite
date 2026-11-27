@@ -96,6 +96,11 @@ impl Game<'_> {
         if !self.options.execution_role.is_client() {
             return;
         }
+        let active = mod_api::__private::listened(mod_api::HookId::MicrophonePermissionChanged)
+            || RECORDING.with_borrow(|recording| !recording.mods.is_empty());
+        if !active {
+            return;
+        }
         let due = RECORDING.with_borrow_mut(|recording| {
             recording.since_read = (recording.since_read + 1) % PERMISSION_EVERY;
             recording.since_read == 0

@@ -114,6 +114,33 @@ impl PackedStorage {
         Self::from_words(bits, len, vec![0; len.div_ceil(per_word)])
     }
 
+    /// Packs `values` directly word-by-word without per-element slot division.
+    pub fn from_values(bits: u8, values: &[u32]) -> Result<Self, StorageError> {
+        let per_word = Self::per_word(bits)?;
+        let mask = (1_u64 << bits) - 1;
+        let words = values
+            .chunks(per_word)
+            .map(|chunk| {
+                let mut word = 0u64;
+                let mut shift = 0u32;
+                for &v in chunk {
+                    debug_assert!(u64::from(v) <= mask);
+                    word |= (u64::from(v) & mask) << shift;
+                    shift += u32::from(bits);
+                }
+                word
+            })
+            .collect();
+        Ok(Self {
+            bits,
+            len: values.len(),
+            per_word,
+            mask,
+            wide: values.len() > MAGIC_LEN,
+            words,
+        })
+    }
+
     /// Retains padding and unused tail bits from input, as the Java long[] does.
     pub fn from_words(bits: u8, len: usize, words: Vec<u64>) -> Result<Self, StorageError> {
         let per_word = Self::per_word(bits)?;

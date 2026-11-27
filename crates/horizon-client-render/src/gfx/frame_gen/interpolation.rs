@@ -129,6 +129,20 @@ struct RenderTargets {
     of_y: wgpu::Buffer,
     disocclusion: wgpu::TextureView,
     game_pyramid: Pyramid,
+    reconstruct_group: wgpu::BindGroup,
+    game_pyramid_groups: Vec<wgpu::BindGroup>,
+    disocclusion_group: wgpu::BindGroup,
+}
+
+#[derive(Default)]
+struct CachedExternalGroups {
+    render_gen: u64,
+    previous_gen: u64,
+    prepare: Option<(wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup)>,
+    setup: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    game_field: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    flow_field: Option<(wgpu::TextureView, wgpu::TextureView, wgpu::BindGroup)>,
+    interpolate: Option<(wgpu::TextureView, wgpu::BindGroup)>,
 }
 
 pub struct Interpolation {
@@ -143,9 +157,14 @@ pub struct Interpolation {
     interpolated: wgpu::TextureView,
     output: wgpu::TextureView,
     inpainting_pyramid: Pyramid,
+    inpainting_pyramid_groups: Vec<wgpu::BindGroup>,
+    inpainting_group: wgpu::BindGroup,
     /// The last dispatch's colour (`PREVIOUS_INTERPOLATION_SOURCE`), made on the first.
-    previous: Option<wgpu::Texture>,
+    previous: Option<(wgpu::Texture, wgpu::TextureView)>,
+    previous_gen: u64,
     render: Option<RenderTargets>,
+    render_gen: u64,
+    external: CachedExternalGroups,
 }
 
 fn texture(
@@ -221,44 +240,102 @@ fn pyramid(device: &wgpu::Device, label: &str, base: [u32; 2], max: u32) -> Pyra
 }
 
 impl RenderTargets {
-    fn new(device: &wgpu::Device, size: [u32; 2]) -> Self {
-        let view = |t: wgpu::Texture| t.create_view(&Default::default());
+    fn new(
+        device: &wgpu::Device,
+        size: [u32; 2],
+        pipelines: &Pipelines,
+        params: &wgpu::Buffer,
+        game_level_params: &[wgpu::Buffer],
+    ) -> Self {
+        let view_of = |t: wgpu::Texture| t.create_view(&Default::default());
         let field = |label| storage(device, label, u64::from(size[0] * size[1]) * 4);
+        let dilated_depth = view_of(texture(
+            device,
+            "Frame interpolation dilated depth",
+            size,
+            wgpu::TextureFormat::R32Float,
+            1,
+        ));
+        let dilated_mv = view_of(texture(
+            device,
+            "Frame interpolation dilated motion vectors",
+            size,
+            wgpu::TextureFormat::Rg32Float,
+            1,
+        ));
+        let rec_prev_depth = field("Frame interpolation previous depth");
+        let rec_interp_depth = field("Frame interpolation interpolated depth");
+        let game_x = field("Frame interpolation game vectors x");
+        let game_y = field("Frame interpolation game vectors y");
+        let of_x = field("Frame interpolation flow vectors x");
+        let of_y = field("Frame interpolation flow vectors y");
+        let disocclusion = view_of(texture(
+            device,
+            "Frame interpolation disocclusion",
+            size,
+            wgpu::TextureFormat::Rgba8Unorm,
+            1,
+        ));
+        let game_pyramid = pyramid(
+            device,
+            "Frame interpolation game vector pyramid",
+            size,
+            GAME_LEVELS,
+        );
+        let reconstruct_group = bind(
+            device,
+            &pipelines.reconstruct_previous_depth,
+            &[
+                (0, whole(params)),
+                (7, view(&dilated_depth)),
+                (8, view(&dilated_mv)),
+                (10, whole(&rec_interp_depth)),
+            ],
+        );
+        let game_pyramid_groups = (0..game_pyramid.sizes.len())
+            .map(|i| {
+                let mut entries = vec![
+                    (0, whole(&game_level_params[i])),
+                    (26, view(&game_pyramid.levels[i])),
+                ];
+                if i == 0 {
+                    entries.extend([(15, whole(&game_x)), (16, whole(&game_y))]);
+                    bind(device, &pipelines.game_field_pyramid_first, &entries)
+                } else {
+                    entries.push((25, view(&game_pyramid.levels[i - 1])));
+                    bind(device, &pipelines.game_field_pyramid, &entries)
+                }
+            })
+            .collect();
+        let disocclusion_group = bind(
+            device,
+            &pipelines.disocclusion_mask,
+            &[
+                (0, whole(params)),
+                (7, view(&dilated_depth)),
+                (11, whole(&rec_prev_depth)),
+                (12, whole(&rec_interp_depth)),
+                (29, view(&disocclusion)),
+                (15, whole(&game_x)),
+                (16, whole(&game_y)),
+                (27, view(&game_pyramid.all)),
+            ],
+        );
         Self {
             size,
-            dilated_depth: view(texture(
-                device,
-                "Frame interpolation dilated depth",
-                size,
-                wgpu::TextureFormat::R32Float,
-                1,
-            )),
-            dilated_mv: view(texture(
-                device,
-                "Frame interpolation dilated motion vectors",
-                size,
-                wgpu::TextureFormat::Rg32Float,
-                1,
-            )),
-            rec_prev_depth: field("Frame interpolation previous depth"),
-            rec_interp_depth: field("Frame interpolation interpolated depth"),
-            game_x: field("Frame interpolation game vectors x"),
-            game_y: field("Frame interpolation game vectors y"),
-            of_x: field("Frame interpolation flow vectors x"),
-            of_y: field("Frame interpolation flow vectors y"),
-            disocclusion: view(texture(
-                device,
-                "Frame interpolation disocclusion",
-                size,
-                wgpu::TextureFormat::Rgba8Unorm,
-                1,
-            )),
-            game_pyramid: pyramid(
-                device,
-                "Frame interpolation game vector pyramid",
-                size,
-                GAME_LEVELS,
-            ),
+            dilated_depth,
+            dilated_mv,
+            rec_prev_depth,
+            rec_interp_depth,
+            game_x,
+            game_y,
+            of_x,
+            of_y,
+            disocclusion,
+            game_pyramid,
+            reconstruct_group,
+            game_pyramid_groups,
+            disocclusion_group,
         }
     }
 }
@@ -316,55 +393,95 @@ impl Interpolation {
                 cache: None,
             })
         };
-        let view = |t: wgpu::Texture| t.create_view(&Default::default());
+        let view_of = |t: wgpu::Texture| t.create_view(&Default::default());
+        let pipelines = Pipelines {
+            prepare: pipeline("prepare_pass"),
+            setup: pipeline("setup_pass"),
+            reconstruct_previous_depth: pipeline("reconstruct_previous_depth_pass"),
+            game_motion_vector_field: pipeline("game_motion_vector_field_pass"),
+            game_field_pyramid_first: pipeline("game_field_pyramid_first_pass"),
+            game_field_pyramid: pipeline("game_field_pyramid_pass"),
+            optical_flow_vector_field: pipeline("optical_flow_vector_field_pass"),
+            disocclusion_mask: pipeline("disocclusion_mask_pass"),
+            interpolate: pipeline("interpolate_pass"),
+            inpainting_pyramid_first: pipeline("inpainting_pyramid_first_pass"),
+            inpainting_pyramid: pipeline("inpainting_pyramid_pass"),
+            inpainting: pipeline("inpainting_pass"),
+        };
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Frame interpolation"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let params = uniform(device);
+        let game_level_params: Vec<_> = (0..GAME_LEVELS).map(|_| uniform(device)).collect();
+        let inpainting_level_params: Vec<_> =
+            (0..INPAINTING_LEVELS).map(|_| uniform(device)).collect();
+        let counters = storage(device, "Frame interpolation counters", 8);
+        let interpolated = view_of(texture(
+            device,
+            "Frame interpolation",
+            display,
+            wgpu::TextureFormat::Rgba16Float,
+            1,
+        ));
+        let output = view_of(texture(
+            device,
+            "Interpolated frame",
+            display,
+            wgpu::TextureFormat::Rgba16Float,
+            1,
+        ));
+        let inpainting_pyramid = pyramid(
+            device,
+            "Frame interpolation inpainting pyramid",
+            display,
+            INPAINTING_LEVELS,
+        );
+        let inpainting_pyramid_groups = (0..inpainting_pyramid.sizes.len())
+            .map(|i| {
+                let mut entries = vec![
+                    (0, whole(&inpainting_level_params[i])),
+                    (26, view(&inpainting_pyramid.levels[i])),
+                ];
+                if i == 0 {
+                    entries.push((32, view(&interpolated)));
+                    bind(device, &pipelines.inpainting_pyramid_first, &entries)
+                } else {
+                    entries.push((25, view(&inpainting_pyramid.levels[i - 1])));
+                    bind(device, &pipelines.inpainting_pyramid, &entries)
+                }
+            })
+            .collect();
+        let inpainting_group = bind(
+            device,
+            &pipelines.inpainting,
+            &[
+                (0, whole(&params)),
+                (28, view(&inpainting_pyramid.all)),
+                (32, view(&interpolated)),
+                (33, view(&output)),
+            ],
+        );
         Self {
             display,
-            pipelines: Pipelines {
-                prepare: pipeline("prepare_pass"),
-                setup: pipeline("setup_pass"),
-                reconstruct_previous_depth: pipeline("reconstruct_previous_depth_pass"),
-                game_motion_vector_field: pipeline("game_motion_vector_field_pass"),
-                game_field_pyramid_first: pipeline("game_field_pyramid_first_pass"),
-                game_field_pyramid: pipeline("game_field_pyramid_pass"),
-                optical_flow_vector_field: pipeline("optical_flow_vector_field_pass"),
-                disocclusion_mask: pipeline("disocclusion_mask_pass"),
-                interpolate: pipeline("interpolate_pass"),
-                inpainting_pyramid_first: pipeline("inpainting_pyramid_first_pass"),
-                inpainting_pyramid: pipeline("inpainting_pyramid_pass"),
-                inpainting: pipeline("inpainting_pass"),
-            },
-            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("Frame interpolation"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            }),
-            params: uniform(device),
-            game_level_params: (0..GAME_LEVELS).map(|_| uniform(device)).collect(),
-            inpainting_level_params: (0..INPAINTING_LEVELS).map(|_| uniform(device)).collect(),
-            counters: storage(device, "Frame interpolation counters", 8),
-            interpolated: view(texture(
-                device,
-                "Frame interpolation",
-                display,
-                wgpu::TextureFormat::Rgba16Float,
-                1,
-            )),
-            output: view(texture(
-                device,
-                "Interpolated frame",
-                display,
-                wgpu::TextureFormat::Rgba16Float,
-                1,
-            )),
-            inpainting_pyramid: pyramid(
-                device,
-                "Frame interpolation inpainting pyramid",
-                display,
-                INPAINTING_LEVELS,
-            ),
+            pipelines,
+            sampler,
+            params,
+            game_level_params,
+            inpainting_level_params,
+            counters,
+            interpolated,
+            output,
+            inpainting_pyramid,
+            inpainting_pyramid_groups,
+            inpainting_group,
             previous: None,
+            previous_gen: 0,
             render: None,
+            render_gen: 0,
+            external: CachedExternalGroups::default(),
         }
     }
 
@@ -382,9 +499,9 @@ impl Interpolation {
         if self
             .previous
             .as_ref()
-            .is_none_or(|p| p.size() != color.size() || p.format() != color.format())
+            .is_none_or(|(p, _)| p.size() != color.size() || p.format() != color.format())
         {
-            self.previous = Some(device.create_texture(&wgpu::TextureDescriptor {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("Frame interpolation previous frame"),
                 size: color.size(),
                 mip_level_count: 1,
@@ -393,7 +510,10 @@ impl Interpolation {
                 format: color.format(),
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
-            }));
+            });
+            let tex_view = tex.create_view(&Default::default());
+            self.previous = Some((tex, tex_view));
+            self.previous_gen += 1;
             reset = true;
         }
         if self
@@ -401,12 +521,18 @@ impl Interpolation {
             .as_ref()
             .is_none_or(|r| r.size != inputs.render_size)
         {
-            self.render = Some(RenderTargets::new(device, inputs.render_size));
+            self.render = Some(RenderTargets::new(
+                device,
+                inputs.render_size,
+                &self.pipelines,
+                &self.params,
+                &self.game_level_params,
+            ));
+            self.render_gen += 1;
             reset = true;
         }
         let r = self.render.as_ref().expect("made above");
-        let previous_texture = self.previous.as_ref().expect("made above");
-        let previous = previous_texture.create_view(&Default::default());
+        let (previous_texture, previous) = self.previous.as_ref().expect("made above");
         let display = self.display.map(|v| v as i32);
         let render = inputs.render_size.map(|v| v as i32);
         let flow_size = self
@@ -459,77 +585,98 @@ impl Interpolation {
             encoder.clear_buffer(&self.counters, 0, None);
         }
         let p = &self.pipelines;
+        if self.external.render_gen != self.render_gen {
+            self.external.render_gen = self.render_gen;
+            self.external.prepare = None;
+            self.external.game_field = None;
+            self.external.flow_field = None;
+            self.external.interpolate = None;
+        }
+        if self.external.previous_gen != self.previous_gen {
+            self.external.previous_gen = self.previous_gen;
+            self.external.game_field = None;
+            self.external.flow_field = None;
+            self.external.interpolate = None;
+        }
         let params = || whole(&self.params);
         let sampler = || wgpu::BindingResource::Sampler(&self.sampler);
-        let groups =
-            |pipeline, entries: &[(u32, wgpu::BindingResource)]| bind(device, pipeline, entries);
-        let prepare = groups(
-            &p.prepare,
-            &[
-                (0, params()),
-                (2, view(inputs.depth)),
-                (34, view(inputs.object_motion)),
-                (5, view(&r.dilated_depth)),
-                (6, view(&r.dilated_mv)),
-                (9, whole(&r.rec_prev_depth)),
-            ],
-        );
-        let setup = groups(
-            &p.setup,
-            &[
-                (0, params()),
-                (22, whole(inputs.scene_change)),
-                (23, whole(&self.counters)),
-            ],
-        );
         let colors = || {
             [
                 (3, view(inputs.color)),
-                (4, view(&previous)),
+                (4, view(previous)),
                 (1, sampler()),
             ]
         };
-        let reconstruct = groups(
-            &p.reconstruct_previous_depth,
-            &[
+        if self
+            .external
+            .prepare
+            .as_ref()
+            .is_none_or(|(d, om, _)| d != inputs.depth || om != inputs.object_motion)
+        {
+            let group = bind(
+                device,
+                &p.prepare,
+                &[
+                    (0, params()),
+                    (2, view(inputs.depth)),
+                    (34, view(inputs.object_motion)),
+                    (5, view(&r.dilated_depth)),
+                    (6, view(&r.dilated_mv)),
+                    (9, whole(&r.rec_prev_depth)),
+                ],
+            );
+            self.external.prepare = Some((inputs.depth.clone(), inputs.object_motion.clone(), group));
+        }
+        if self
+            .external
+            .setup
+            .as_ref()
+            .is_none_or(|(sc, _)| sc != inputs.scene_change)
+        {
+            let group = bind(
+                device,
+                &p.setup,
+                &[
+                    (0, params()),
+                    (22, whole(inputs.scene_change)),
+                    (23, whole(&self.counters)),
+                ],
+            );
+            self.external.setup = Some((inputs.scene_change.clone(), group));
+        }
+        if self
+            .external
+            .game_field
+            .as_ref()
+            .is_none_or(|(c, _)| c != inputs.color)
+        {
+            let mut entries = vec![
                 (0, params()),
                 (7, view(&r.dilated_depth)),
                 (8, view(&r.dilated_mv)),
-                (10, whole(&r.rec_interp_depth)),
-            ],
-        );
-        let mut entries = vec![
-            (0, params()),
-            (7, view(&r.dilated_depth)),
-            (8, view(&r.dilated_mv)),
-            (13, whole(&r.game_x)),
-            (14, whole(&r.game_y)),
-        ];
-        entries.extend(colors());
-        let game_field = groups(&p.game_motion_vector_field, &entries);
-        let game_pyramid: Vec<_> = (0..r.game_pyramid.sizes.len())
-            .map(|i| {
-                let mut entries = vec![
-                    (0, whole(&self.game_level_params[i])),
-                    (26, view(&r.game_pyramid.levels[i])),
-                ];
-                if i == 0 {
-                    entries.extend([(15, whole(&r.game_x)), (16, whole(&r.game_y))]);
-                    groups(&p.game_field_pyramid_first, &entries)
-                } else {
-                    entries.push((25, view(&r.game_pyramid.levels[i - 1])));
-                    groups(&p.game_field_pyramid, &entries)
-                }
-            })
-            .collect();
-        let mut entries = vec![
-            (0, params()),
-            (21, view(inputs.flow_vectors)),
-            (17, whole(&r.of_x)),
-            (18, whole(&r.of_y)),
-        ];
-        entries.extend(colors());
-        let flow_field = groups(&p.optical_flow_vector_field, &entries);
+                (13, whole(&r.game_x)),
+                (14, whole(&r.game_y)),
+            ];
+            entries.extend(colors());
+            let group = bind(device, &p.game_motion_vector_field, &entries);
+            self.external.game_field = Some((inputs.color.clone(), group));
+        }
+        if self
+            .external
+            .flow_field
+            .as_ref()
+            .is_none_or(|(c, fv, _)| c != inputs.color || fv != inputs.flow_vectors)
+        {
+            let mut entries = vec![
+                (0, params()),
+                (21, view(inputs.flow_vectors)),
+                (17, whole(&r.of_x)),
+                (18, whole(&r.of_y)),
+            ];
+            entries.extend(colors());
+            let group = bind(device, &p.optical_flow_vector_field, &entries);
+            self.external.flow_field = Some((inputs.color.clone(), inputs.flow_vectors.clone(), group));
+        }
         let game_mv = || {
             [
                 (15, whole(&r.game_x)),
@@ -537,50 +684,30 @@ impl Interpolation {
                 (27, view(&r.game_pyramid.all)),
             ]
         };
-        let mut entries = vec![
-            (0, params()),
-            (7, view(&r.dilated_depth)),
-            (11, whole(&r.rec_prev_depth)),
-            (12, whole(&r.rec_interp_depth)),
-            (29, view(&r.disocclusion)),
-        ];
-        entries.extend(game_mv());
-        let disocclusion = groups(&p.disocclusion_mask, &entries);
-        let mut entries = vec![
-            (0, params()),
-            (19, whole(&r.of_x)),
-            (20, whole(&r.of_y)),
-            (24, whole(&self.counters)),
-            (30, view(&r.disocclusion)),
-            (31, view(&self.interpolated)),
-        ];
-        entries.extend(game_mv());
-        entries.extend(colors());
-        let interpolate = groups(&p.interpolate, &entries);
-        let inpainting_pyramid: Vec<_> = (0..self.inpainting_pyramid.sizes.len())
-            .map(|i| {
-                let mut entries = vec![
-                    (0, whole(&self.inpainting_level_params[i])),
-                    (26, view(&self.inpainting_pyramid.levels[i])),
-                ];
-                if i == 0 {
-                    entries.push((32, view(&self.interpolated)));
-                    groups(&p.inpainting_pyramid_first, &entries)
-                } else {
-                    entries.push((25, view(&self.inpainting_pyramid.levels[i - 1])));
-                    groups(&p.inpainting_pyramid, &entries)
-                }
-            })
-            .collect();
-        let inpainting = groups(
-            &p.inpainting,
-            &[
+        if self
+            .external
+            .interpolate
+            .as_ref()
+            .is_none_or(|(c, _)| c != inputs.color)
+        {
+            let mut entries = vec![
                 (0, params()),
-                (28, view(&self.inpainting_pyramid.all)),
-                (32, view(&self.interpolated)),
-                (33, view(&self.output)),
-            ],
-        );
+                (19, whole(&r.of_x)),
+                (20, whole(&r.of_y)),
+                (24, whole(&self.counters)),
+                (30, view(&r.disocclusion)),
+                (31, view(&self.interpolated)),
+            ];
+            entries.extend(game_mv());
+            entries.extend(colors());
+            let group = bind(device, &p.interpolate, &entries);
+            self.external.interpolate = Some((inputs.color.clone(), group));
+        }
+        let prepare = &self.external.prepare.as_ref().unwrap().2;
+        let setup = &self.external.setup.as_ref().unwrap().1;
+        let game_field = &self.external.game_field.as_ref().unwrap().1;
+        let flow_field = &self.external.flow_field.as_ref().unwrap().2;
+        let interpolate = &self.external.interpolate.as_ref().unwrap().1;
         let groups_for = |size: [u32; 2]| (size[0].div_ceil(8), size[1].div_ceil(8));
         let (rx, ry) = groups_for(inputs.render_size);
         let (dx, dy) = groups_for(self.display);
@@ -593,12 +720,17 @@ impl Interpolation {
             pass.set_bind_group(0, group, &[]);
             pass.dispatch_workgroups(x, y, 1);
         };
-        run(&p.prepare, &prepare, (rx, ry));
-        run(&p.setup, &setup, (1, 1));
+        run(&p.prepare, prepare, (rx, ry));
+        run(&p.setup, setup, (1, 1));
         if !reset {
-            run(&p.reconstruct_previous_depth, &reconstruct, (rx, ry));
-            run(&p.game_motion_vector_field, &game_field, (rx, ry));
-            for (i, (group, size)) in game_pyramid.iter().zip(&r.game_pyramid.sizes).enumerate() {
+            run(&p.reconstruct_previous_depth, &r.reconstruct_group, (rx, ry));
+            run(&p.game_motion_vector_field, game_field, (rx, ry));
+            for (i, (group, size)) in r
+                .game_pyramid_groups
+                .iter()
+                .zip(&r.game_pyramid.sizes)
+                .enumerate()
+            {
                 let pipeline = if i == 0 {
                     &p.game_field_pyramid_first
                 } else {
@@ -608,13 +740,14 @@ impl Interpolation {
             }
             run(
                 &p.optical_flow_vector_field,
-                &flow_field,
+                flow_field,
                 groups_for(flow_size.map(|v| v as u32)),
             );
-            run(&p.disocclusion_mask, &disocclusion, (rx, ry));
+            run(&p.disocclusion_mask, &r.disocclusion_group, (rx, ry));
         }
-        run(&p.interpolate, &interpolate, (dx, dy));
-        for (i, (group, size)) in inpainting_pyramid
+        run(&p.interpolate, interpolate, (dx, dy));
+        for (i, (group, size)) in self
+            .inpainting_pyramid_groups
             .iter()
             .zip(&self.inpainting_pyramid.sizes)
             .enumerate()
@@ -626,7 +759,7 @@ impl Interpolation {
             };
             run(pipeline, group, groups_for(*size));
         }
-        run(&p.inpainting, &inpainting, (dx, dy));
+        run(&p.inpainting, &self.inpainting_group, (dx, dy));
         drop(pass);
         encoder.copy_texture_to_texture(
             color.as_image_copy(),

@@ -4,26 +4,44 @@ use super::*;
 use crate::level::orientation::{Orientation, SideBias};
 use std::collections::{HashMap, VecDeque};
 
+const IN_ON: u8 = 1;
+const IN_OFF: u8 = 2;
+
+struct Wire {
+    pos: BlockPos,
+    power: i32,
+    orientation: Orientation,
+    queued: u8,
+}
+
 #[derive(Default)]
 struct Evaluator {
     off: VecDeque<BlockPos>,
     on: VecDeque<BlockPos>,
     indices: HashMap<BlockPos, usize>,
-    wires: Vec<(BlockPos, i32, Orientation)>,
+    wires: Vec<Wire>,
 }
 impl Evaluator {
-    fn set_power(&mut self, pos: BlockPos, power: i32, orientation: Orientation) {
+    fn set_power(&mut self, pos: BlockPos, power: i32, orientation: Orientation) -> usize {
         if let Some(&index) = self.indices.get(&pos) {
-            self.wires[index].1 = power;
+            self.wires[index].power = power;
+            index
         } else {
-            self.indices.insert(pos, self.wires.len());
-            self.wires.push((pos, power, orientation));
+            let index = self.wires.len();
+            self.indices.insert(pos, index);
+            self.wires.push(Wire {
+                pos,
+                power,
+                orientation,
+                queued: 0,
+            });
+            index
         }
     }
     fn power<L: LevelAccess + ?Sized>(&self, sim: &Sim<'_, L>, pos: BlockPos) -> i32 {
         self.indices
             .get(&pos)
-            .map_or_else(|| sim.wire_power_of(sim.state(pos)), |&i| self.wires[i].1)
+            .map_or_else(|| sim.wire_power_of(sim.state(pos)), |&i| self.wires[i].power)
     }
     fn incoming<L: LevelAccess + ?Sized>(&self, sim: &Sim<'_, L>, pos: BlockPos) -> i32 {
         let mut signal = 0;
@@ -53,14 +71,20 @@ impl Evaluator {
         if !sim.b.is_block(sim.state(pos), sim.b.named.redstone_wire) {
             return;
         }
-        let power = self.power(sim, pos);
-        if power < from_power - 1 && !self.on.contains(&pos) {
+        let mut index = self.indices.get(&pos).copied();
+        let (power, queued) = match index {
+            Some(i) => (self.wires[i].power, self.wires[i].queued),
+            None => (sim.wire_power_of(sim.state(pos)), 0),
+        };
+        if power < from_power - 1 && (queued & IN_ON) == 0 {
+            let i = *index.get_or_insert_with(|| self.set_power(pos, power, orientation));
+            self.wires[i].queued |= IN_ON;
             self.on.push_back(pos);
-            self.set_power(pos, power, orientation);
         }
-        if turn_off && power > from_power && !self.off.contains(&pos) {
+        if turn_off && power > from_power && (queued & IN_OFF) == 0 {
+            let i = *index.get_or_insert_with(|| self.set_power(pos, power, orientation));
+            self.wires[i].queued |= IN_OFF;
             self.off.push_back(pos);
-            self.set_power(pos, power, orientation);
         }
     }
     fn propagate<L: LevelAccess + ?Sized>(
@@ -108,17 +132,26 @@ impl Evaluator {
     ) {
         let state = sim.state(initial);
         if sim.b.is_block(state, sim.b.named.redstone_wire) {
-            self.set_power(initial, sim.wire_power_of(state), orientation);
+            let index = self.set_power(initial, sim.wire_power_of(state), orientation);
+            self.wires[index].queued |= IN_OFF;
             self.off.push_back(initial);
         } else {
             self.propagate(sim, initial, 0, orientation, true);
         }
         while let Some(pos) = self.off.pop_front() {
-            let (_, old, orientation) = self.wires[self.indices[&pos]];
+            let index = self.indices[&pos];
+            self.wires[index].queued &= !IN_OFF;
+            let Wire {
+                power: old,
+                orientation,
+                queued,
+                ..
+            } = self.wires[index];
             let block = sim.wire_block_signal(pos);
             let new = block.max(self.incoming(sim, pos));
             let power = if new < old {
-                if block > 0 && !self.on.contains(&pos) {
+                if block > 0 && (queued & IN_ON) == 0 {
+                    self.wires[index].queued |= IN_ON;
                     self.on.push_back(pos);
                 }
                 0
@@ -131,7 +164,13 @@ impl Evaluator {
             self.propagate(sim, pos, power, orientation, old > new);
         }
         while let Some(pos) = self.on.pop_front() {
-            let (_, old, orientation) = self.wires[self.indices[&pos]];
+            let index = self.indices[&pos];
+            self.wires[index].queued &= !IN_ON;
+            let Wire {
+                power: old,
+                orientation,
+                ..
+            } = self.wires[index];
             let new = sim.wire_block_signal(pos).max(self.incoming(sim, pos));
             if new > old {
                 self.set_power(pos, new, orientation);
@@ -157,7 +196,16 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let mut evaluator = Evaluator::default();
         evaluator.calculate(self, pos, orientation);
         let mut changed = Vec::new();
-        for (index, (pos, power, orientation)) in evaluator.wires.into_iter().enumerate() {
+        for (
+            index,
+            Wire {
+                pos,
+                power,
+                orientation,
+                ..
+            },
+        ) in evaluator.wires.into_iter().enumerate()
+        {
             let state = self.state(pos);
             if self.b.is_block(state, self.b.named.redstone_wire)
                 && self.wire_power_of(state) != power

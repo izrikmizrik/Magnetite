@@ -150,6 +150,10 @@ impl Msaa {
         self.passes.as_ref().filter(|_| self.active)
     }
 
+    pub(super) fn passes_mut(&mut self) -> Option<&mut Passes> {
+        self.passes.as_mut().filter(|_| self.active)
+    }
+
     fn set(&mut self, on: bool) {
         if self.requested == on {
             return;
@@ -250,6 +254,7 @@ pub(super) struct Passes {
     seed: wgpu::RenderPipeline,
     resolve: [wgpu::RenderPipeline; 2],
     empty: wgpu::BindGroup,
+    seed_group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
     targets: Option<Targets>,
     /// The size and surface whose targets ran out of memory: not tried again until they change.
     failed: Option<([u32; 2], bool)>,
@@ -366,6 +371,7 @@ impl Passes {
             seed_layout,
             resolve_layout,
             empty,
+            seed_group: None,
             targets: None,
             failed: None,
         }
@@ -463,20 +469,28 @@ impl Passes {
 
     /// Every sample starts as the sky already drawn in `color`, at the far depth.
     pub(super) fn seed(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
     ) {
+        if !self
+            .seed_group
+            .as_ref()
+            .is_some_and(|(view, _)| view == color)
+        {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("MSAA sky input"),
+                layout: &self.seed_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(color),
+                }],
+            });
+            self.seed_group = Some((color.clone(), group));
+        }
         let t = self.targets.as_ref().expect("MSAA targets fitted");
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("MSAA sky input"),
-            layout: &self.seed_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(color),
-            }],
-        });
+        let group = &self.seed_group.as_ref().expect("MSAA seed group").1;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Seed terrain MSAA"),
             color_attachments: &[Some(attachment(
@@ -487,7 +501,7 @@ impl Passes {
             ..Default::default()
         });
         pass.set_pipeline(&self.seed);
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
 
@@ -519,8 +533,8 @@ impl Passes {
     ) {
         let t = self.targets.as_ref().expect("MSAA targets fitted");
         let colors = [
-            Some(attachment(color, wgpu::LoadOp::Load)),
-            surface.map(|v| attachment(v, wgpu::LoadOp::Load)),
+            Some(attachment(color, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT))),
+            surface.map(|v| attachment(v, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT))),
         ];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Resolve terrain MSAA"),

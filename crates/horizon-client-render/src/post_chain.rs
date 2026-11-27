@@ -1284,7 +1284,7 @@ impl PostEffects {
             queue.write_buffer(
                 &pass.fs_block,
                 0,
-                &[1.0f32; 32].map(f32::to_le_bytes).concat(),
+                bytemuck::cast_slice(&[1.0f32; 32]),
             );
             self.blit = Some(pass);
         }
@@ -1736,7 +1736,7 @@ impl PostEffects {
             menu_radius,
             0.0,
         ];
-        queue.write_buffer(&pass.info, 0, &info.map(f32::to_le_bytes).concat());
+        queue.write_buffer(&pass.info, 0, bytemuck::cast_slice(&info));
         self.pipeline(device, (pass.vs, pass.fs), format);
         let Some(pipeline) = self.pipelines.get(&(pass.vs, pass.fs, format)) else {
             return;

@@ -291,6 +291,7 @@ pub(super) fn run_loading(
         shown: false,
         ui_at: None,
         title_drawn: false,
+        frame_drawn: false,
         menu,
         error: None,
         touch: Default::default(),

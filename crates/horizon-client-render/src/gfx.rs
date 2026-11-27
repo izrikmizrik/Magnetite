@@ -6341,6 +6341,7 @@ impl Renderer {
     }
     /// Frame generation on or off (FSR 3.1's frame interpolation).
     pub fn set_frame_generation(&mut self, on: bool) {
+        let on = on && crate::graphics::FrameGeneration::supported_on_platform();
         if !on {
             self.frame_gen.stop();
         }
@@ -9722,11 +9723,11 @@ impl Renderer {
             scaled.as_ref().map(|(_, depth)| depth).filter(|_| msaa_on),
             material.is_some_and(|m| m.surface.is_some()),
         );
-        let msaa = self.msaa.passes();
+        let msaa_active = self.msaa.passes().is_some();
         // Without HDR output, the solid shaders without its lighting (`SolidPipeline`).
         let hdr = self.hdr.is_some();
-        let solid_pipeline = material.map_or(self.solid.antialiased(hdr, msaa.is_some()), |m| {
-            let multisampled = m.msaa.filter(|_| msaa.is_some());
+        let solid_pipeline = material.map_or(self.solid.antialiased(hdr, msaa_active), |m| {
+            let multisampled = m.msaa.filter(|_| msaa_active);
             multisampled.map_or(m.solid, |(solid, _)| solid)
         });
         // Two solid passes only where a discard costs the GPU its hidden surface
@@ -9736,7 +9737,7 @@ impl Renderer {
         let translucent_pipeline = material.map_or(&self.translucent, |m| m.translucent);
         let pack_flat = material.and_then(|m| m.flat);
         let pack_flat_msaa = material
-            .filter(|_| msaa.is_some())
+            .filter(|_| msaa_active)
             .and_then(|m| m.msaa?.1.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
         // left: it is stored across the pass that ends before the copy.
@@ -9935,7 +9936,7 @@ impl Renderer {
                 pack_frame(&mut pass);
                 pack_timing::CountedPass::plain(pass)
             };
-            if let Some(msaa) = msaa {
+            if let Some(msaa) = self.msaa.passes_mut() {
                 drop(pass);
                 msaa.seed(&self.device, &mut encoder, world_view);
                 let mut multisampled = msaa.begin(&mut encoder).forget_lifetime();
@@ -10024,7 +10025,7 @@ impl Renderer {
                             ),
                         ],
                         None => &[(
-                            flat.solid.antialiased(hdr, msaa.is_some()),
+                            flat.solid.antialiased(hdr, msaa_active),
                             0..flat.phase1_calls,
                             0..phase2_calls,
                         )],
@@ -10261,7 +10262,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.group, &[]);
                 n.draw_displaced(&mut pass, m);
             }
-            if let Some(msaa) = msaa {
+            if let Some(msaa) = self.msaa.passes_mut() {
                 drop(pass);
                 msaa.resolve(&mut encoder, world_view, world_depth, surface);
                 pass = plain_pass(&mut encoder);

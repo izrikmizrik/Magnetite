@@ -254,6 +254,17 @@ fn compute_depth_clip(uv: vec2<f32>, current_depth: f32) -> f32 {
     let size = params.render_size;
     let current_view = view_depth(current_depth);
     let b = bilinear(uv, size);
+    let half_viewport_width = length(size);
+    let ndc_center = vec2<f32>(vec2<i32>(size * 0.5)) / size * vec2(2.0, -2.0) + vec2(-1.0, 1.0);
+    let kfov = length(vec3(-params.device_to_view_depth.z, params.device_to_view_depth.w, 1.0))
+        / length(vec3(
+            params.device_to_view_depth.z * ndc_center.x,
+            params.device_to_view_depth.w * ndc_center.y,
+            1.0,
+        ));
+    let required_scale = 1.37e-05 * kfov * half_viewport_width;
+    let resolution_factor = saturate(half_viewport_width / length(vec2(1920.0, 1080.0)));
+    let power = mix(1.0, 3.0, resolution_factor);
     var depth = 0.0;
     var weight_sum = 0.0;
     for (var i = 0; i < 4; i++) {
@@ -265,15 +276,8 @@ fn compute_depth_clip(uv: vec2<f32>, current_depth: f32) -> f32 {
                 let previous_view = view_depth(previous);
                 let diff = current_view - previous_view;
                 if diff > 0.0 {
-                    let plane = min(previous, current_depth);
-                    let center = view_position(vec2<i32>(size * 0.5), size, plane);
-                    let corner = view_position(vec2(0, 0), size, plane);
-                    let half_viewport_width = length(size);
                     let threshold = max(current_view, previous_view);
-                    let kfov = length(corner) / length(center);
-                    let required = 1.37e-05 * kfov * half_viewport_width * threshold;
-                    let resolution_factor = saturate(length(size) / length(vec2(1920.0, 1080.0)));
-                    let power = mix(1.0, 3.0, resolution_factor);
+                    let required = required_scale * threshold;
                     depth += pow(saturate(required / diff), power) * weight;
                     weight_sum += weight;
                 }
@@ -290,6 +294,9 @@ fn motion_divergence(p: vec2<i32>) -> f32 {
     if length(nucleus * params.render_size) > 1e-02 {
         for (var y = -1; y <= 1; y++) {
             for (var x = -1; x <= 1; x++) {
+                if x == 0 && y == 0 {
+                    continue;
+                }
                 let motion = input_motion(p + vec2(x, y));
                 var velocity = length(motion);
                 max_velocity_uv = max(velocity, max_velocity_uv);

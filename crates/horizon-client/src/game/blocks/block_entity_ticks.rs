@@ -369,11 +369,11 @@ impl Game<'_> {
             {
                 continue;
             }
-            let Some((kind, mod_type)) = this
+            let Some((kind, mod_type, mut entity_name)) = this
                 .world
                 .block_entities
                 .get(&pos)
-                .and_then(TickedKind::with_type)
+                .and_then(|e| TickedKind::with_type(e).map(|(k, m)| (k, m, ticker_name(e))))
             else {
                 continue;
             };
@@ -389,21 +389,25 @@ impl Game<'_> {
             }
             // `before` had the game: the entity it was asked about may be gone, another kind or a
             // mod's of another type.
-            if S::RECHECK
-                && (!this.world.block_entities.is_live(ticker)
-                    || this
-                        .world
-                        .block_entities
-                        .get(&pos)
-                        .and_then(TickedKind::with_type)
-                        != Some((kind, mod_type)))
-            {
-                continue;
+            if S::RECHECK {
+                if !this.world.block_entities.is_live(ticker) {
+                    continue;
+                }
+                let Some((new_kind, new_mod_type, new_name)) = this
+                    .world
+                    .block_entities
+                    .get(&pos)
+                    .and_then(|e| TickedKind::with_type(e).map(|(k, m)| (k, m, ticker_name(e))))
+                else {
+                    continue;
+                };
+                if (new_kind, new_mod_type) != (kind, mod_type) {
+                    continue;
+                }
+                entity_name = new_name;
             }
             horizon_threads::work::set_chunk(chunk.0, chunk.1);
-            horizon_threads::work::set_entity(horizon_threads::work::entity_id(
-                this.world.block_entities.get(&pos).map_or("", ticker_name),
-            ));
+            horizon_threads::work::set_entity(horizon_threads::work::entity_id(entity_name));
             let suppressed = !matches!(kind, TickedKind::Mod)
                 && this.native_authoritative()
                 && crate::game::code_block_owners::suppressed(

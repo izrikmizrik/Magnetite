@@ -700,15 +700,7 @@ fn warden_links(m: &Mob, links: &mut Vec<u32>) {
     let Some(state) = &m.extra.warden else {
         return;
     };
-    let text = format!("{state:?}");
-    let mut rest = text.as_str();
-    while let Some(at) = rest.find("Mob(") {
-        rest = &rest[at + 4..];
-        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-        if let Ok(id) = rest[..digits].parse() {
-            links.push(id);
-        }
-    }
+    state.for_each_linked_mob(|id| links.push(id));
 }
 
 /// Each mob's reach; None when a value is not finite or the lists don't match. Changes to movement,

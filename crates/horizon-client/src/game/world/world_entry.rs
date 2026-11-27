@@ -640,7 +640,7 @@ impl Game<'_> {
     pub(super) fn load_server_loot(&mut self) {
         self.server_items = None;
         let overlay = pack_files(&self.world_tables);
-        let loot = if mod_api::__private::mods().is_empty() {
+        let loot = if !mod_api::__private::listened(mod_api::HookId::LootTableLoad) {
             horizon_client::structure_blocks::world_loot_data(
                 &self.options.resources,
                 &overlay,

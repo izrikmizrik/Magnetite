@@ -711,38 +711,46 @@ impl Oit {
         let terrain_depth = water_mask.map_or(depth, |(_, d)| &d.view);
         let [c0, c1] = &t.views.coefficients;
         let culled = &t.views.culled;
-        for (stage, label, group, first, then) in [
-            (
-                Stage::DepthBounds,
-                "OIT depth bounds",
-                &t.alone,
-                vec![attachment(
-                    &t.views.bounds,
-                    wgpu::LoadOp::Clear(BOUNDS_CLEAR),
-                )],
-                // The clouds' bounds join the culled ones.
-                vec![attachment(culled, load)],
-            ),
-            (
-                Stage::Transmittance,
-                "OIT transmittance",
-                &t.sampled,
-                vec![attachment(c0, clear), attachment(c1, clear)],
-                vec![attachment(c0, load), attachment(c1, load)],
-            ),
-            (
-                Stage::Accumulate,
-                "OIT accumulate",
-                &t.accumulate,
-                vec![attachment(&t.views.accumulated, clear)],
-                vec![attachment(&t.views.accumulated, load)],
-            ),
+        for stage in [
+            Stage::DepthBounds,
+            Stage::Transmittance,
+            Stage::Accumulate,
         ] {
+            let (label, group, first_len, first, then_len, then) = match stage {
+                Stage::DepthBounds => (
+                    "OIT depth bounds",
+                    &t.alone,
+                    1,
+                    [
+                        attachment(&t.views.bounds, wgpu::LoadOp::Clear(BOUNDS_CLEAR)),
+                        None,
+                    ],
+                    // The clouds' bounds join the culled ones.
+                    1,
+                    [attachment(culled, load), None],
+                ),
+                Stage::Transmittance => (
+                    "OIT transmittance",
+                    &t.sampled,
+                    2,
+                    [attachment(c0, clear), attachment(c1, clear)],
+                    2,
+                    [attachment(c0, load), attachment(c1, load)],
+                ),
+                Stage::Accumulate => (
+                    "OIT accumulate",
+                    &t.accumulate,
+                    1,
+                    [attachment(&t.views.accumulated, clear), None],
+                    1,
+                    [attachment(&t.views.accumulated, load), None],
+                ),
+            };
             {
                 let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(label),
                     timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes(label)),
-                    color_attachments: &first,
+                    color_attachments: &first[..first_len],
                     depth_stencil_attachment: read_only(terrain_depth),
                     ..Default::default()
                 });
@@ -755,20 +763,24 @@ impl Oit {
             if let Some(features) = extras.features {
                 // Over the world's own depth, even where a water mask patched
                 // the terrain's: the masks only hide water.
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some(label),
-                    timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("OIT features")),
-                    color_attachments: &[attachment(
+                let feature_attachments = [
+                    attachment(
                         match stage {
                             Stage::DepthBounds => &t.views.bounds,
                             Stage::Transmittance => c0,
                             Stage::Accumulate => &t.views.accumulated,
                         },
                         load,
-                    )]
-                    .into_iter()
-                    .chain((stage == Stage::Transmittance).then(|| attachment(c1, load)))
-                    .collect::<Vec<_>>(),
+                    ),
+                    (stage == Stage::Transmittance)
+                        .then(|| attachment(c1, load))
+                        .flatten(),
+                ];
+                let feature_len = if stage == Stage::Transmittance { 2 } else { 1 };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(label),
+                    timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("OIT features")),
+                    color_attachments: &feature_attachments[..feature_len],
                     depth_stencil_attachment: read_only(depth),
                     ..Default::default()
                 });
@@ -784,7 +796,7 @@ impl Oit {
                     t,
                     stage,
                     depth,
-                    (label, group, &then),
+                    (label, group, &then[..then_len]),
                     (clouds, cloud_depth),
                     timing.as_deref_mut(),
                 );

@@ -84,6 +84,11 @@ pub fn enabled_listened(hook: HookId) -> bool {
     crate::runtime::enabled_listened(hook)
 }
 
+/// Whether any global listener or part subscribed to `hook` applies to mod block entity `id`.
+pub fn block_entity_kind_listens(hook: HookId, id: &str) -> bool {
+    crate::parts::block_entity_kind_listens(hook, id)
+}
+
 /// Whether any part subscribed to the scoped entity hook `hook` is attached to
 /// entity type `kind`, so a family's walk can resolve its rows' slots once per
 /// pass instead of naming each row's type.

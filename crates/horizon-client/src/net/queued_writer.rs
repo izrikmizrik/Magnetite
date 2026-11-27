@@ -170,30 +170,58 @@ impl QueuedWriter {
         let worker = std::thread::Builder::new()
             .name("horizon-net-write".into())
             .spawn(move || {
-                while let Ok(job) = receiver.recv() {
-                    let disconnect = matches!(&job, WriteJob::Disconnect(_));
-                    #[cfg(any(test, feature = "test-payload-probe"))]
-                    {
-                        let bytes = match &job {
-                            WriteJob::Packet(b)
-                            | WriteJob::Contents(b)
-                            | WriteJob::Disconnect(b) => b.len(),
-                        };
-                        writing[0].fetch_add(1, Ordering::Relaxed);
-                        writing[2].store(bytes, Ordering::Relaxed);
-                        writing[3].store(1, Ordering::Relaxed);
-                    }
-                    let result = match job {
-                        WriteJob::Packet(body) | WriteJob::Disconnect(body) => writer.send(&body),
-                        WriteJob::Contents(contents) => writer.send_contents(&contents),
-                    };
-                    #[cfg(any(test, feature = "test-payload-probe"))]
-                    {
-                        if result.is_ok() {
-                            writing[1].fetch_add(1, Ordering::Relaxed);
+                let mut scratch = Vec::new();
+                while let Ok(first) = receiver.recv() {
+                    scratch.clear();
+                    let mut disconnect = false;
+                    let mut result = Ok(());
+                    let mut next = Some(first);
+                    while let Some(job) = next {
+                        let is_disconnect = matches!(&job, WriteJob::Disconnect(_));
+                        #[cfg(any(test, feature = "test-payload-probe"))]
+                        {
+                            let bytes = match &job {
+                                WriteJob::Packet(b)
+                                | WriteJob::Contents(b)
+                                | WriteJob::Disconnect(b) => b.len(),
+                            };
+                            writing[0].fetch_add(1, Ordering::Relaxed);
+                            writing[2].store(bytes, Ordering::Relaxed);
+                            writing[3].store(1, Ordering::Relaxed);
                         }
-                        writing[2].store(0, Ordering::Relaxed);
-                        writing[3].store(0, Ordering::Relaxed);
+                        let framed = match job {
+                            WriteJob::Packet(body) | WriteJob::Disconnect(body) => {
+                                writer.frame_owned(body, &mut scratch)
+                            }
+                            WriteJob::Contents(contents) => {
+                                writer.frame_into(&contents, &mut scratch);
+                                Ok(())
+                            }
+                        };
+                        #[cfg(any(test, feature = "test-payload-probe"))]
+                        {
+                            if framed.is_ok() {
+                                writing[1].fetch_add(1, Ordering::Relaxed);
+                            }
+                            writing[2].store(0, Ordering::Relaxed);
+                            writing[3].store(0, Ordering::Relaxed);
+                        }
+                        if let Err(err) = framed {
+                            result = Err(err);
+                            break;
+                        }
+                        if is_disconnect {
+                            disconnect = true;
+                            break;
+                        }
+                        next = if scratch.len() < 256 * 1024 {
+                            receiver.try_recv().ok()
+                        } else {
+                            None
+                        };
+                    }
+                    if result.is_ok() && !scratch.is_empty() {
+                        result = writer.write_framed(&scratch);
                     }
                     if result.is_err() || disconnect {
                         running.store(false, Ordering::Release);
@@ -263,16 +291,18 @@ impl QueuedWriter {
         self.sender.lock().unwrap().take();
     }
     pub(crate) fn send(&self, body: &[u8]) -> Result<()> {
+        self.send_owned(body.to_vec())
+    }
+    pub(crate) fn send_owned(&self, body: Vec<u8>) -> Result<()> {
         if !self.alive.load(Ordering::Acquire) {
             return Err(Error::new("client writer disconnected"));
         }
-        let owned = body.to_vec();
-        let capacity = owned.capacity();
+        let capacity = body.capacity();
         let sender = self.sender.lock().unwrap();
         let Some(sender) = sender.as_ref() else {
             return Err(Error::new("writer retired"));
         };
-        match sender.try_send(WriteJob::Packet(owned), capacity) {
+        match sender.try_send(WriteJob::Packet(body), capacity) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
                 self.alive.store(false, Ordering::Release);

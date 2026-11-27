@@ -324,6 +324,8 @@ fn read(manager: usize, sensor: usize, rotation: i32, stop: Arc<AtomicBool>) {
                 if got <= 0 {
                     break;
                 }
+                let mut dx = 0.0;
+                let mut dy = 0.0;
                 for event in &events[..got as usize] {
                     if event.type_ != GYRO_TYPE {
                         continue;
@@ -339,14 +341,18 @@ fn read(manager: usize, sensor: usize, rotation: i32, stop: Arc<AtomicBool>) {
                                 f64::from(event.data[2]),
                             ];
                             let [yaw, pitch] = turn(rotation, rate);
-                            let mut turned = TURNED
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            turned[0] += yaw * step;
-                            turned[1] += pitch * step;
+                            dx += yaw * step;
+                            dy += pitch * step;
                         }
                     }
                     last = Some(event.timestamp);
+                }
+                if dx != 0.0 || dy != 0.0 {
+                    let mut turned = TURNED
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    turned[0] += dx;
+                    turned[1] += dy;
                 }
             }
         }

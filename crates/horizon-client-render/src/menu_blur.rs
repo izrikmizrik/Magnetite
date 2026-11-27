@@ -34,6 +34,9 @@ pub struct MenuBlur {
     sampler: wgpu::Sampler,
     /// One per pass, then the half-size copy's.
     uniforms: Vec<wgpu::Buffer>,
+    /// Prebuilt bind groups matching `PASSES` (and the half-size copy pass at `PASSES.len()`).
+    groups: Vec<wgpu::BindGroup>,
+    last_params: Option<([u32; 2], u32)>,
     /// The copied frame (`minecraft:main`) and `swap`; at half size, then the
     /// frame copied at full size.
     targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
@@ -136,6 +139,8 @@ impl MenuBlur {
             pipeline,
             sampler,
             uniforms,
+            groups: Vec::new(),
+            last_params: None,
             targets: Vec::new(),
             size: [0, 0],
             format,
@@ -184,11 +189,46 @@ impl MenuBlur {
                 (texture, view)
             })
             .collect();
+        self.groups = (0..PASSES.len())
+            .map(|i| self.bind_group(device, &self.targets[i % 2].1, i))
+            .collect();
+        if self.half {
+            self.groups
+                .push(self.bind_group(device, &self.targets[2].1, PASSES.len()));
+        }
+        self.last_params = None;
+    }
+    fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        source: &wgpu::TextureView,
+        slot: usize,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Menu blur pass"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniforms[slot].as_entire_binding(),
+                },
+            ],
+        })
     }
     /// Give the targets' video memory back: no frame blurs until the next
     /// screen that does, which makes them again.
     pub fn release(&mut self) {
         self.targets.clear();
+        self.groups.clear();
+        self.last_params = None;
     }
     /// Blur `frame` (the swapchain texture) in place through `target`, its
     /// non-sRGB view, by `radius` pixels (`menuBackgroundBlurriness`).
@@ -242,6 +282,8 @@ impl MenuBlur {
         self.ensure(device, size);
         let work = self.work_size(size);
         let radius = if self.half { radius / 2.0 } else { radius };
+        let params_key = (size, radius.to_bits());
+        let write_uniforms = self.last_params != Some(params_key);
         if self.half {
             // A radius of 0 samples each half-size pixel's 2x2 block at its shared
             // corner: their mean.
@@ -249,14 +291,13 @@ impl MenuBlur {
                 size_dir: [size[0] as f32, size[1] as f32, 0.0, 0.0],
                 radius: [0.0; 4],
             };
-            let (source, output) = (&self.targets[2].1, &self.targets[0].1);
+            let output = &self.targets[0].1;
             self.pass(
-                device,
                 queue,
                 encoder,
                 PASSES.len(),
                 data,
-                source,
+                write_uniforms,
                 output,
                 None,
             );
@@ -266,7 +307,6 @@ impl MenuBlur {
                 size_dir: [work[0] as f32, work[1] as f32, dir[0], dir[1]],
                 radius: [radius, 0.0, 0.0, 0.0],
             };
-            let source = &self.targets[i % 2].1;
             // The last pass writes the frame; from half size it samples up as it blurs.
             let output = if i + 1 == PASSES.len() {
                 target
@@ -274,49 +314,33 @@ impl MenuBlur {
                 &self.targets[(i + 1) % 2].1
             };
             self.pass(
-                device,
                 queue,
                 encoder,
                 i,
                 data,
-                source,
+                write_uniforms,
                 output,
                 timing.as_deref_mut(),
             );
         }
+        self.last_params = Some(params_key);
     }
     /// One `box_blur` pass from `source` into `output` with uniform buffer `slot`.
     #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
-        device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         slot: usize,
         data: Uniform,
-        source: &wgpu::TextureView,
+        write_uniform: bool,
         output: &wgpu::TextureView,
         timing: Option<&mut crate::gfx::pack_timing::PassTiming>,
     ) {
-        queue.write_buffer(&self.uniforms[slot], 0, bytemuck::bytes_of(&data));
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Menu blur pass"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniforms[slot].as_entire_binding(),
-                },
-            ],
-        });
+        if write_uniform {
+            queue.write_buffer(&self.uniforms[slot], 0, bytemuck::bytes_of(&data));
+        }
+        let group = &self.groups[slot];
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: output,
             resolve_target: None,
@@ -333,7 +357,7 @@ impl MenuBlur {
             ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);
     }
 }

@@ -110,6 +110,28 @@ impl EntitySections {
         self.table(scope).insert(id, (scope.level, section_of(at)));
     }
 
+    /// Check whether moving `id` from `from` to `to` in `scope` crosses a section boundary.
+    /// If not, file `id` at its current section (when not yet filed in `scope.level`) and
+    /// return `false` so callers can avoid yielding/rebuilding tick indices.
+    pub(in crate::game) fn would_cross_or_file(
+        &mut self,
+        scope: Scope,
+        id: u32,
+        from: [f64; 3],
+        to: [f64; 3],
+    ) -> bool {
+        let new = section_of(to);
+        let table = self.table(scope);
+        match table.get(&id) {
+            Some(&(level, section)) if level == scope.level => section != new,
+            _ if section_of(from) == new => {
+                table.insert(id, (scope.level, new));
+                false
+            }
+            _ => true,
+        }
+    }
+
     /// `setPosRaw`: entity `id` is at `to` now. Filed under another section of the same level,
     /// that is a crossing. One not filed in this level yet (it changed level, or its join is
     /// still to be told) is filed where it was, `from` when the boundary knows it, so a move

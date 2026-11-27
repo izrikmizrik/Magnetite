@@ -17,7 +17,7 @@ use std::{
     fs,
     io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 const FORMAT: &str = "horizon-lod-bake 3";
@@ -162,11 +162,17 @@ impl Bucket {
     }
 }
 
+enum BucketSlot {
+    Unopened,
+    Failed,
+    Open(Bucket),
+}
+
 /// A dimension's baked far terrain, shared by the far sampling threads.
 pub struct LodBake {
     dir: PathBuf,
-    /// Open buckets by file name; `None` for one that failed to open.
-    buckets: Mutex<FxHashMap<String, Option<Bucket>>>,
+    /// Open buckets by file name, locked per bucket so threads on different regions never block.
+    buckets: Mutex<FxHashMap<String, Arc<Mutex<BucketSlot>>>>,
 }
 impl LodBake {
     /// Opens `dimension/horizon_lod`, emptying it when its fingerprint is not
@@ -207,17 +213,26 @@ impl LodBake {
     }
     fn with_bucket<T>(&self, key: Key, f: impl FnOnce(&mut Bucket) -> Option<T>) -> Option<T> {
         let name = key.file();
-        let mut buckets = self.buckets.lock().unwrap();
-        let bucket = buckets
-            .entry(name)
-            .or_insert_with_key(|name| match Bucket::open(&self.dir.join(name)) {
-                Ok(bucket) => Some(bucket),
+        let slot = {
+            let mut buckets = self.buckets.lock().unwrap();
+            buckets
+                .entry(name.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(BucketSlot::Unopened)))
+                .clone()
+        };
+        let mut guard = slot.lock().unwrap();
+        if matches!(*guard, BucketSlot::Unopened) {
+            *guard = match Bucket::open(&self.dir.join(&name)) {
+                Ok(bucket) => BucketSlot::Open(bucket),
                 Err(e) => {
                     log::warn!("Horizon: baked far terrain {name}: {e}");
-                    None
+                    BucketSlot::Failed
                 }
-            })
-            .as_mut()?;
+            };
+        }
+        let BucketSlot::Open(bucket) = &mut *guard else {
+            return None;
+        };
         f(bucket)
     }
     fn get(&self, key: Key, count: usize) -> Option<Vec<Column>> {

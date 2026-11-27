@@ -79,6 +79,8 @@ pub(super) struct SpawnScratch {
     stale: Vec<bool>,
     /// The spawn state's allocations, reused across passes.
     spawn_buffers: SpawnBuffers,
+    /// The simplified player list passed into [`SpawnState::new_in`], reused across passes.
+    spawn_players: Vec<SpawnPlayer>,
 }
 impl SpawnScratch {
     fn chunk(p: &LevelPlayer) -> (i32, i32) {
@@ -1072,10 +1074,11 @@ impl horizon_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
 }
 /// Every entity type with a spawn cost in some biome, each once.
 fn spawn_cost_types(biomes: &horizon_client::biome::Biomes) -> Vec<&str> {
-    let mut types: Vec<&str> = Vec::new();
+    let mut seen = horizon_core::fast_hash::FxHashSet::default();
+    let mut types = Vec::new();
     for t in biomes.list.iter().flat_map(|b| b.spawn_costs.keys()) {
-        if !types.contains(&t.as_str()) {
-            types.push(t);
+        if seen.insert(t.as_str()) {
+            types.push(t.as_str());
         }
     }
     types
@@ -1317,14 +1320,18 @@ impl<'a> Game<'a> {
     }
     /// `NaturalSpawner.createState` for a pass over the level in place, under
     /// its spawn limits (`SpawnPolicy`).
-    pub(super) fn natural_spawn_state(
+    pub(super) fn natural_spawn_state<'l, I>(
         &self,
         level: &GameLevel<'_, '_>,
         spawnable: i32,
         players: Vec<SpawnPlayer>,
         buffers: SpawnBuffers,
-        counted: &[Counted],
-    ) -> SpawnState {
+        counted: I,
+    ) -> SpawnState
+    where
+        I: IntoIterator,
+        I::Item: std::borrow::Borrow<Counted<'l>>,
+    {
         SpawnState::new_in(level, spawnable, players, buffers, counted, |cx, cz| {
             self.world.chunks.contains_key(&(cx, cz))
         })
@@ -1411,32 +1418,28 @@ impl<'a> Game<'a> {
         let extras = {
             let level = self.natural_level();
             laps.lap("sn_level");
-            let counted: Vec<Counted> = self
-                .mobs
-                .iter()
-                .map(|m| Counted {
-                    entity: &m.kind.id,
-                    category: Category::from_name(&m.kind.category),
-                    block: [
-                        m.position.x.floor() as i32,
-                        m.position.y.floor() as i32,
-                        m.position.z.floor() as i32,
-                    ],
-                    is_mob: true,
-                    persistent: m.persistent
-                        || horizon_client::mobs::ai::requires_custom_persistence(m),
-                })
-                .collect();
-            let players = players
-                .iter()
-                .map(|p| SpawnPlayer {
-                    position: [p.position.x, p.position.y, p.position.z],
-                    spectator: p.spectator,
-                })
-                .collect();
+            let counted = self.mobs.iter().map(|m| Counted {
+                entity: &m.kind.id,
+                category: Category::from_name(&m.kind.category),
+                block: [
+                    m.position.x.floor() as i32,
+                    m.position.y.floor() as i32,
+                    m.position.z.floor() as i32,
+                ],
+                is_mob: true,
+                persistent: m.persistent
+                    || horizon_client::mobs::ai::requires_custom_persistence(m),
+            });
+            let mut spawn_players = std::mem::take(&mut scratch.spawn_players);
+            spawn_players.clear();
+            spawn_players.extend(players.iter().map(|p| SpawnPlayer {
+                position: [p.position.x, p.position.y, p.position.z],
+                spectator: p.spectator,
+            }));
             laps.lap("sn_materialize");
             let buffers = std::mem::take(&mut scratch.spawn_buffers);
-            let mut state = self.natural_spawn_state(&level, spawnable, players, buffers, &counted);
+            let mut state =
+                self.natural_spawn_state(&level, spawnable, spawn_players, buffers, counted);
             laps.lap("sn_state");
             last_state = state.counts();
             let categories = self.natural_categories(&state);
@@ -1490,7 +1493,10 @@ impl<'a> Game<'a> {
                     );
                 }
             }
-            scratch.spawn_buffers = state.into_parts().1;
+            let (mut spawn_players, spawn_buffers) = state.into_parts();
+            spawn_players.clear();
+            scratch.spawn_players = spawn_players;
+            scratch.spawn_buffers = spawn_buffers;
             let created = std::mem::take(&mut *level.spawned.borrow_mut());
             let rides = std::mem::take(&mut *level.rides.borrow_mut());
             (created, rides)

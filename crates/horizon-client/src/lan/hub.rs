@@ -1404,6 +1404,10 @@ impl Hub {
         {
             return;
         }
+        let mut any_tab_hidden = horizon_core::fast_hash::FxHashSet::default();
+        for g in &self.guests {
+            any_tab_hidden.extend(g.tab_hidden.iter().copied());
+        }
         let candidates: Vec<usize> = (0..self.guests.len())
             .filter(|&j| {
                 let u = self.guests[j].uuid;
@@ -1411,7 +1415,7 @@ impl Hub {
                     && self.guests[j].participates_online()
                     && (self.hidden.contains_key(&u)
                         || self.refreshing.iter().any(|r| r.0 == u)
-                        || self.guests.iter().any(|g| g.tab_hidden.contains(&u)))
+                        || any_tab_hidden.contains(&u))
             })
             .collect();
         for i in 0..self.guests.len() {
@@ -2926,9 +2930,15 @@ impl Hub {
             })
             .collect();
         self.encoder.warm(&columns.chunks);
-        let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
-            ctx.streaming.and_then(|s| s.proto_sections(x, z))
-        });
+        let mut encoded: Vec<Option<Vec<u8>>> = self
+            .encoder
+            .bodies_with(&columns.chunks, world, &|x, z| {
+                ctx.streaming.and_then(|s| s.proto_sections(x, z))
+            })
+            .into_iter()
+            .map(Some)
+            .collect();
+        let mut shared: Vec<Option<Arc<[u8]>>> = vec![None; encoded.len()];
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
         for (i, taken, far, batch) in batches {
@@ -2952,10 +2962,14 @@ impl Hub {
                                 super::handoff::offer(chunks[j]);
                             }
                             uses[j] -= 1;
-                            if uses[j] == 0 {
-                                super::Body::Owned(std::mem::take(&mut encoded[j]))
+                            if let Some(buf) = &shared[j] {
+                                super::Body::Shared(buf.clone())
+                            } else if uses[j] == 0 {
+                                super::Body::Owned(encoded[j].take().unwrap())
                             } else {
-                                super::Body::Owned(encoded[j].clone())
+                                let buf: Arc<[u8]> = Arc::from(encoded[j].take().unwrap());
+                                shared[j] = Some(buf.clone());
+                                super::Body::Shared(buf)
                             }
                         }
                         Body::Saved(body) => super::Body::Shared(body),

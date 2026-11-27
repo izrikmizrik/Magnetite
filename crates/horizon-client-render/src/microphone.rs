@@ -6,7 +6,10 @@
 //! granted. The capture itself is `cpal` on every platform, as the game's sound output; without the
 //! `audio` feature there is no microphone.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 /// Whether the system lets the game record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,13 +67,14 @@ pub fn request() {
 
 /// At most this many seconds of samples wait for [`Capture::take`]: older ones are dropped, so a
 /// mod that stops reading costs no more memory.
+#[cfg(feature = "audio")]
 const KEPT_SECONDS: usize = 2;
 
 /// A recording from the default input device. Dropping it stops the recording.
 pub struct Capture {
     #[cfg(feature = "audio")]
     _stream: cpal::Stream,
-    samples: Arc<Mutex<Vec<f32>>>,
+    samples: Arc<Mutex<VecDeque<f32>>>,
     rate: u32,
 }
 
@@ -96,7 +100,9 @@ impl Capture {
             .ok_or("no input device")?;
         let config = device.default_input_config().map_err(|e| e.to_string())?;
         let rate = config.sample_rate().0;
-        let samples = Arc::new(Mutex::new(Vec::new()));
+        let samples = Arc::new(Mutex::new(VecDeque::with_capacity(
+            rate as usize * KEPT_SECONDS,
+        )));
         let stream_config: cpal::StreamConfig = config.clone().into();
         let channels = usize::from(config.channels()).max(1);
         let stream = match config.sample_format() {
@@ -136,7 +142,7 @@ impl Capture {
     pub fn take(&self, out: &mut Vec<f32>) {
         out.clear();
         if let Ok(mut samples) = self.samples.lock() {
-            std::mem::swap(out, &mut *samples);
+            out.extend(samples.drain(..));
         }
     }
 }
@@ -148,7 +154,7 @@ fn build<T: cpal::SizedSample>(
     config: &cpal::StreamConfig,
     channels: usize,
     rate: u32,
-    samples: &Arc<Mutex<Vec<f32>>>,
+    samples: &Arc<Mutex<VecDeque<f32>>>,
 ) -> Result<cpal::Stream, String>
 where
     f32: cpal::FromSample<T>,
@@ -160,7 +166,7 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _| {
-                let Ok(mut samples) = samples.lock() else {
+                let Ok(mut samples) = samples.try_lock() else {
                     return;
                 };
                 samples.extend(data.chunks(channels).map(|frame| {

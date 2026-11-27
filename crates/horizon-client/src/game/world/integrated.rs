@@ -101,6 +101,7 @@ struct Flags {
     /// Splitscreen players joined through memory (offline uuids): let in although the world is
     /// not open to the LAN, and the game no longer pauses while they play.
     split_players: Mutex<Vec<u128>>,
+    has_split_players: AtomicBool,
     /// The generators of the levels the server has run, by dimension: what
     /// F3's chunk generation entry asks `ServerChunkCache.getGenerator`.
     terrain: Mutex<
@@ -216,23 +217,25 @@ impl Integrated {
     }
     /// `IntegratedServer.tickServer` skips the world while the game is paused.
     pub fn set_paused(&self, paused: bool) {
-        let split = !self.flags.split_players.lock().unwrap().is_empty();
+        let split = self.flags.has_split_players.load(Ordering::Acquire);
         self.flags.paused.store(paused && !split, Ordering::Relaxed);
     }
     /// Whether splitscreen players are joined: while any is, the game runs even behind a
     /// pause menu, so no window may stop ticking for one (`set_paused`, `pauses_game`).
     pub fn has_split_players(&self) -> bool {
-        !self.flags.split_players.lock().unwrap().is_empty()
+        self.flags.has_split_players.load(Ordering::Acquire)
     }
     /// Splitscreen: `name` left; the game pauses again once every such player has. The owner's
     /// permissions it was given go with it (a LAN player could otherwise join under that name).
     pub fn leave_split(&self, name: &str) {
         let uuid = horizon_protocol::crypto::offline_uuid(name);
-        self.flags
-            .split_players
-            .lock()
-            .unwrap()
-            .retain(|&u| u != uuid);
+        {
+            let mut split = self.flags.split_players.lock().unwrap();
+            split.retain(|&u| u != uuid);
+            self.flags
+                .has_split_players
+                .store(!split.is_empty(), Ordering::Release);
+        }
         self.call(move |g| {
             if let Some(host) = g.lan.as_mut() {
                 host.hub.ops.remove(&uuid);
@@ -244,6 +247,7 @@ impl Integrated {
     pub fn join_split(&self, name: &str) -> Option<horizon_protocol::connection::Pipe> {
         let uuid = horizon_protocol::crypto::offline_uuid(name);
         self.flags.split_players.lock().unwrap().push(uuid);
+        self.flags.has_split_players.store(true, Ordering::Release);
         let pipe = self
             .call(move |g| {
                 let host = g.lan.as_mut()?;

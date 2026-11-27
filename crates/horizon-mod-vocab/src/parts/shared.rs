@@ -204,6 +204,22 @@ pub fn has_scoped_hook(hook: HookId) -> bool {
     !crate::mods().is_empty() && has_part_hook(hook)
 }
 
+/// Fast check whether any installed mod or part subscribes to `hook` for block entity `id`.
+pub fn block_entity_kind_listens(hook: HookId, id: &str) -> bool {
+    if crate::listened(hook) {
+        return true;
+    }
+    if !has_part_hook(hook) {
+        return false;
+    }
+    let Ok(parts) = try_parts(hook, "block_entity_tick") else {
+        return true;
+    };
+    parts
+        .for_hook(hook)
+        .is_some_and(|table| !table.block_entity_kind(|| Some(id)).is_empty())
+}
+
 // no wire: process-local registration and dispatch storage contains trait objects and owning-mod identities.
 /// The parts table a dispatch reads: the process-wide one, this game thread's, or the one the
 /// server published for its world generation.

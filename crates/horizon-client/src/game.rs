@@ -944,6 +944,32 @@ struct TickScratch {
     later: Vec<BlockPos>,
 }
 
+#[derive(Default)]
+struct WithLevelVecs {
+    cart_boxes: Vec<([f64; 3], [f64; 3])>,
+    arrow_boxes: Vec<([f64; 3], [f64; 3])>,
+    guest_boxes: Vec<([f64; 3], [f64; 3])>,
+    fire_players: Vec<[f64; 3]>,
+    trigger_hooks: Vec<(Aabb, bool)>,
+    trigger_extras: Vec<Aabb>,
+    open_containers: Vec<(i32, i32, i32)>,
+    golem_chests: Vec<(i32, i32, i32)>,
+}
+
+struct WithLevelScratch {
+    vecs: WithLevelVecs,
+    air_item: Arc<str>,
+}
+
+impl Default for WithLevelScratch {
+    fn default() -> Self {
+        Self {
+            vecs: WithLevelVecs::default(),
+            air_item: Arc::from("minecraft:air"),
+        }
+    }
+}
+
 struct Game<'a> {
     /// Shared with an integrated server; `collision` and `motion` borrow from it.
     res: Arc<Resources>,
@@ -1505,6 +1531,7 @@ struct Game<'a> {
     end: end::EndState,
     block_ticks: Ticks,
     tick_scratch: TickScratch,
+    with_level_scratch: WithLevelScratch,
     tick_chunks: horizon_client::tick_chunk_membership::TickChunkMembership,
     tickets: horizon_client::ticket_levels::ChunkTickets,
     random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
@@ -2681,6 +2708,8 @@ impl Game<'_> {
         f: impl FnOnce(&Behaviours, &mut GameLevel<'_>, &mut Ticks) -> R,
     ) -> R {
         self.ensure_stateful_entity_table();
+        let mut scratch = std::mem::take(&mut self.with_level_scratch.vecs);
+        let air_item = &self.with_level_scratch.air_item;
         let darken = self.sky_darken();
         let (rain, thunder) = self.weather_levels(1.0);
         // Spectators ignore block triggers (Entity.isIgnoringBlockTriggers).
@@ -2703,76 +2732,74 @@ impl Game<'_> {
                 descending: p.velocity.y < 0.0,
                 fall_distance: p.fall_distance,
                 main_hand_item: main_hand.map_or_else(
-                    || Arc::from("minecraft:air"),
+                    || Arc::clone(air_item),
                     |stack| Arc::clone(&stack.item),
                 ),
                 main_hand_count: main_hand.map_or(0, |stack| stack.count as i32),
                 leather_boots: worn_boots::leather_boots(&self.armor),
             }
         });
-        let cart_boxes = self
-            .carts
-            .iter()
-            .map(|c| {
-                let p = c.position;
-                (
-                    [p.x - 0.49, p.y, p.z - 0.49],
-                    [p.x + 0.49, p.y + 0.7, p.z + 0.49],
-                )
-            })
-            .collect();
-        let arrow_boxes = self
-            .creatures
-            .projectiles
-            .iter()
-            .filter(|p| p.arrow.is_some())
-            .map(|p| p.position)
-            .chain(self.tridents.iter().map(|t| t.position))
-            .map(|at| {
-                let b = horizon_client::arrows::arrow_bounds(at);
-                (b.min_position().components(), b.max_position().components())
-            })
-            .collect();
-        let guest_boxes = self.lan_block_trigger_boxes();
+        scratch.cart_boxes.clear();
+        scratch.cart_boxes.extend(self.carts.iter().map(|c| {
+            let p = c.position;
+            (
+                [p.x - 0.49, p.y, p.z - 0.49],
+                [p.x + 0.49, p.y + 0.7, p.z + 0.49],
+            )
+        }));
+        scratch.arrow_boxes.clear();
+        scratch.arrow_boxes.extend(
+            self.creatures
+                .projectiles
+                .iter()
+                .filter(|p| p.arrow.is_some())
+                .map(|p| p.position)
+                .chain(self.tridents.iter().map(|t| t.position))
+                .map(|at| {
+                    let b = horizon_client::arrows::arrow_bounds(at);
+                    (b.min_position().components(), b.max_position().components())
+                }),
+        );
+        scratch.guest_boxes.clear();
+        self.lan_block_trigger_boxes_into(&mut scratch.guest_boxes);
         let building_player_boxes = self
             .lan_acting
             .is_some()
             .then(|| self.lan_building_boxes.boxes(self.dim));
         let dimension = self.dim.level();
         let rules = self.level_rules();
-        let fire_players: Vec<[f64; 3]> = self
-            .player
-            .iter()
-            .filter(|_| !spectator)
-            .map(|p| [p.position.x, p.position.y, p.position.z])
-            .chain(self.lan.iter().flat_map(|h| {
-                h.hub
-                    .guests
-                    .simulation_iter()
-                    .filter(|g| h.hub.here(g) && !g.spectator())
-                    .map(|g| g.position)
-            }))
-            .collect();
-        let mut trigger_hooks: Vec<(Aabb, bool)> = self
-            .hook
-            .iter()
-            .map(|h| (h.bounds(), h.applies_block_effects()))
-            .collect();
-        self.lan_hook_triggers(&mut trigger_hooks);
+        scratch.fire_players.clear();
+        scratch.fire_players.extend(
+            self.player
+                .iter()
+                .filter(|_| !spectator)
+                .map(|p| [p.position.x, p.position.y, p.position.z])
+                .chain(self.lan.iter().flat_map(|h| {
+                    h.hub
+                        .guests
+                        .simulation_iter()
+                        .filter(|g| h.hub.here(g) && !g.spectator())
+                        .map(|g| g.position)
+                })),
+        );
+        scratch.trigger_hooks.clear();
+        scratch.trigger_hooks.extend(
+            self.hook
+                .iter()
+                .map(|h| (h.bounds(), h.applies_block_effects())),
+        );
+        self.lan_hook_triggers(&mut scratch.trigger_hooks);
         // EntityType.LIGHTNING_BOLT: 0 x 0.
-        let trigger_extras: Vec<Aabb> = self
-            .bolts
-            .iter()
-            .map(|b| {
-                let at = Vec3::new(b.at[0], b.at[1], b.at[2]);
-                Aabb::new(at, at)
-            })
-            .collect();
+        scratch.trigger_extras.clear();
+        scratch.trigger_extras.extend(self.bolts.iter().map(|b| {
+            let at = Vec3::new(b.at[0], b.at[1], b.at[2]);
+            Aabb::new(at, at)
+        }));
         // `ContainerOpenersCounter.getEntitiesWithContainerOpen`: the players
         // whose menu still holds a container of the block at a position. A
         // double chest answers for both halves (`ChestBlockEntity$1` takes a
         // `CompoundContainer`), and a spectator's menu counts for nothing.
-        let mut open_containers: Vec<(i32, i32, i32)> = Vec::new();
+        scratch.open_containers.clear();
         for key in self.container.into_iter().filter(|_| !spectator).chain(
             self.lan
                 .iter()
@@ -2784,16 +2811,16 @@ impl Game<'_> {
                 })
                 .filter_map(|g| g.menu.as_ref().and_then(|m| m.pos)),
         ) {
-            open_containers.push(key);
+            scratch.open_containers.push(key);
             if let Some(other) = self.chest_other_half(key) {
-                open_containers.push(other);
+                scratch.open_containers.push(other);
             }
         }
         // CopperGolem.hasContainerOpen: the chest a golem opened, and its other half.
-        let mut golem_chests: Vec<(i32, i32, i32)> = Vec::new();
+        scratch.golem_chests.clear();
         for &key in self.world.chest_openers.keys() {
-            golem_chests.push(key);
-            golem_chests.extend(self.chest_other_half(key));
+            scratch.golem_chests.push(key);
+            scratch.golem_chests.extend(self.chest_other_half(key));
         }
         let native_authoritative = self.native_authoritative();
         let environment = self.res.environment_of(&self.dimension_type().id);
@@ -2814,14 +2841,14 @@ impl Game<'_> {
                 .enabled_features
                 .iter()
                 .any(|feature| feature == "minecraft:redstone_experiments"),
-            cart_boxes,
+            cart_boxes: scratch.cart_boxes,
             item_frames: &self.item_frames,
             carts: &mut self.carts,
-            arrow_boxes,
+            arrow_boxes: scratch.arrow_boxes,
             other_entities,
             crystals: &self.crystals,
-            trigger_hooks,
-            trigger_extras,
+            trigger_hooks: scratch.trigger_hooks,
+            trigger_extras: scratch.trigger_extras,
             world: &mut self.world,
             facts: self.res.facts(),
             collision: self.collision,
@@ -2836,7 +2863,7 @@ impl Game<'_> {
                 .as_ref()
                 .map_or(&self.level.enabled_features, |remote| &remote.features),
             player_box,
-            guest_boxes,
+            guest_boxes: scratch.guest_boxes,
             building_player_boxes,
             player_collision,
             biomes: world_biomes!(self),
@@ -2855,15 +2882,15 @@ impl Game<'_> {
             block_registries: &self.pack.block_registries,
             rules,
             difficulty: i32::from(self.ui.difficulty),
-            fire_players,
+            fire_players: scratch.fire_players,
             rand_sequences: &mut self.rand_sequences,
             pending: &mut self.pending,
             spill: &mut self.spill,
             tickets: self.tickets.levels(),
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &mut self.lid_openers,
-            open_containers: &open_containers,
-            golem_chests: &golem_chests,
+            open_containers: &scratch.open_containers,
+            golem_chests: &scratch.golem_chests,
             client_side: self.remote.is_some(),
             native_authoritative,
             native_player: self.lan_acting_uuid,
@@ -2879,6 +2906,36 @@ impl Game<'_> {
             drop_into: None,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
+        scratch.cart_boxes = level.cart_boxes;
+        scratch.arrow_boxes = level.arrow_boxes;
+        scratch.guest_boxes = level.guest_boxes;
+        scratch.fire_players = level.fire_players;
+        scratch.trigger_hooks = level.trigger_hooks;
+        scratch.trigger_extras = level.trigger_extras;
+        if self.with_level_scratch.vecs.cart_boxes.capacity() < scratch.cart_boxes.capacity() {
+            self.with_level_scratch.vecs.cart_boxes = scratch.cart_boxes;
+        }
+        if self.with_level_scratch.vecs.arrow_boxes.capacity() < scratch.arrow_boxes.capacity() {
+            self.with_level_scratch.vecs.arrow_boxes = scratch.arrow_boxes;
+        }
+        if self.with_level_scratch.vecs.guest_boxes.capacity() < scratch.guest_boxes.capacity() {
+            self.with_level_scratch.vecs.guest_boxes = scratch.guest_boxes;
+        }
+        if self.with_level_scratch.vecs.fire_players.capacity() < scratch.fire_players.capacity() {
+            self.with_level_scratch.vecs.fire_players = scratch.fire_players;
+        }
+        if self.with_level_scratch.vecs.trigger_hooks.capacity() < scratch.trigger_hooks.capacity() {
+            self.with_level_scratch.vecs.trigger_hooks = scratch.trigger_hooks;
+        }
+        if self.with_level_scratch.vecs.trigger_extras.capacity() < scratch.trigger_extras.capacity() {
+            self.with_level_scratch.vecs.trigger_extras = scratch.trigger_extras;
+        }
+        if self.with_level_scratch.vecs.open_containers.capacity() < scratch.open_containers.capacity() {
+            self.with_level_scratch.vecs.open_containers = scratch.open_containers;
+        }
+        if self.with_level_scratch.vecs.golem_chests.capacity() < scratch.golem_chests.capacity() {
+            self.with_level_scratch.vecs.golem_chests = scratch.golem_chests;
+        }
         self.flush_spill();
         if self.lan.is_some() {
             self.flush_lan_particles();
@@ -7871,6 +7928,12 @@ impl Game<'_> {
     /// Render the frame, then its two moments after that: `render_frame_post` whatever
     /// became of it, `flip_frame` once it was presented.
     fn render_and_flip(&mut self, elapsed: Duration) -> Result<bool> {
+        if !self.options.offscreen
+            && !self.options.headless
+            && self.renderer.as_ref().is_some_and(|r| r.suspended)
+        {
+            return Ok(false);
+        }
         let rendered = match self.render() {
             // The callback can fire during this frame; rebuild on
             // the next redraw rather than exiting on its error.
@@ -10756,6 +10819,7 @@ impl<'a> Game<'a> {
             end: Default::default(),
             block_ticks: Ticks::new(0),
             tick_scratch: TickScratch::default(),
+            with_level_scratch: WithLevelScratch::default(),
             tick_chunks: Default::default(),
             tickets: Default::default(),
             random_tick_sections: Default::default(),

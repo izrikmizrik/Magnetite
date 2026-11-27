@@ -557,8 +557,20 @@ impl Game<'_> {
                             &mut section_moves,
                         );
                         if kept && !m.removed {
-                            let changed = captured != 0 || m.previous != m.position;
-                            if changed && captured == 0 {
+                            let crossed = captured != 0
+                                || (m.previous != m.position
+                                    && match (section_scope, section_table.as_ref()) {
+                                        (Some(scope), Some(sections)) => sections
+                                            .borrow_mut()
+                                            .would_cross_or_file(
+                                                scope,
+                                                m.id,
+                                                [m.previous.x, m.previous.y, m.previous.z],
+                                                [m.position.x, m.position.y, m.position.z],
+                                            ),
+                                        _ => true,
+                                    });
+                            if crossed && captured == 0 {
                                 // A position changed before the lifted tick (or a raw test fixture)
                                 // still has the old filed section as its first write.
                                 section_moves.push(
@@ -566,8 +578,6 @@ impl Game<'_> {
                                         m.id, m.join, m.previous,
                                     ),
                                 );
-                            }
-                            if changed && captured == 0 {
                                 section_moves.push(
                                     crate::mobs::living::section_writes::PositionWrite::captured(
                                         m.id, m.join, m.previous, m.position,

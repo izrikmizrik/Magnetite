@@ -278,19 +278,25 @@ impl Game<'_> {
     /// `Level.getEntities` see every player in the level, but not spectators
     /// (`Entity.isIgnoringBlockTriggers`).
     pub(super) fn lan_block_trigger_boxes(&self) -> Vec<([f64; 3], [f64; 3])> {
+        let mut out = Vec::new();
+        self.lan_block_trigger_boxes_into(&mut out);
+        out
+    }
+    pub(super) fn lan_block_trigger_boxes_into(&self, out: &mut Vec<([f64; 3], [f64; 3])>) {
         let Some(host) = self.lan.as_ref() else {
-            return Vec::new();
+            return;
         };
-        host.hub
-            .guests
-            .simulation_iter()
-            .filter(|g| host.hub.here(g) && g.loaded && !g.dead && !g.spectator())
-            .map(|g| {
-                let b = g.bounds();
-                let (lo, hi) = (b.min_position(), b.max_position());
-                ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
-            })
-            .collect()
+        out.extend(
+            host.hub
+                .guests
+                .simulation_iter()
+                .filter(|g| host.hub.here(g) && g.loaded && !g.dead && !g.spectator())
+                .map(|g| {
+                    let b = g.bounds();
+                    let (lo, hi) = (b.min_position(), b.max_position());
+                    ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z])
+                }),
+        );
     }
     /// The same guests' cast fishing hooks, for `GameLevel::trigger_projectiles`.
     pub(super) fn lan_hook_triggers(&self, out: &mut Vec<(Aabb, bool)>) {

@@ -664,12 +664,15 @@ impl RegionWriter {
         self.file
             .set_len(u64::from(self.next_sector) * SECTOR as u64)?;
         self.file.seek(SeekFrom::Start(0))?;
-        for value in self.offsets {
-            self.file.write_all(&value.to_be_bytes())?;
+        let mut header = [0u8; SECTOR * 2];
+        for (i, &value) in self.offsets.iter().enumerate() {
+            header[i * 4..(i + 1) * 4].copy_from_slice(&value.to_be_bytes());
         }
-        for value in self.timestamps {
-            self.file.write_all(&value.to_be_bytes())?;
+        for (i, &value) in self.timestamps.iter().enumerate() {
+            let offset = SECTOR + i * 4;
+            header[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
+        self.file.write_all(&header)?;
         self.file.sync_all()?;
         // Hard-link publication fails atomically if another writer won the name.
         fs::hard_link(&self.temporary, &self.destination)?;

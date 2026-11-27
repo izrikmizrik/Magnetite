@@ -682,9 +682,43 @@ impl ConnWriter {
         }
         self.send_contents(&self.contents(body)?)
     }
+    /// Frame one owned packet body (VarInt id + payload) into `out` without extra copies
+    /// when no compression or adapter translation applies.
+    pub fn frame_owned(&mut self, body: Vec<u8>, out: &mut Vec<u8>) -> Result<()> {
+        if self.older_client.is_some() {
+            return match self.for_client(&body)? {
+                Some(body) => {
+                    let contents = self.contents(&body)?;
+                    self.frame_into(&contents, out);
+                    Ok(())
+                }
+                None => Ok(()),
+            };
+        }
+        if let Some(a) = self.adapter.clone() {
+            if let Some(body) = a.serverbound(&body)? {
+                let contents = self.contents(&body)?;
+                self.frame_into(&contents, out);
+            }
+            for body in a.take_outgoing() {
+                let contents = self.contents(&body)?;
+                self.frame_into(&contents, out);
+            }
+            return Ok(());
+        }
+        let contents = self.framing().contents_owned(body)?;
+        self.frame_into(&contents, out);
+        Ok(())
+    }
+    /// Write pre-framed bytes directly to the underlying transport stream.
+    pub fn write_framed(&mut self, framed: &[u8]) -> Result<()> {
+        self.stream.write_all(framed)?;
+        Ok(())
+    }
     /// Send a frame whose contents [`Self::contents`] made for this transport.
     pub fn send_contents(&mut self, contents: &[u8]) -> Result<()> {
-        let mut framed = Vec::with_capacity(contents.len() + 3);
+        let prefix = if self.memory { 8 } else { 3 };
+        let mut framed = Vec::with_capacity(contents.len() + prefix);
         self.frame_into(contents, &mut framed);
         self.stream.write_all(&framed)?;
         Ok(())

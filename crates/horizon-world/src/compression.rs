@@ -1,5 +1,5 @@
 //! Region codecs, including lz4-java's block framing (not the LZ4 frame format).
-use flate2::{Compression as Level, Decompress, FlushDecompress, Status};
+use flate2::{Compress, Compression as Level, Decompress, FlushCompress, FlushDecompress, Status};
 use std::{
     io::{self, Read, Write},
     sync::atomic::{AtomicU8, Ordering},
@@ -112,11 +112,7 @@ impl Compression {
                 encoder.write_all(bytes)?;
                 encoder.finish()
             }
-            Self::Zlib => {
-                let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), Level::default());
-                encoder.write_all(bytes)?;
-                encoder.finish()
-            }
+            Self::Zlib => zlib_encode(bytes),
             Self::Lz4 => Ok(encode_lz4(bytes)),
         }
     }
@@ -126,8 +122,34 @@ thread_local! {
     /// This thread's zlib inflater, reset for each chunk instead of a new
     /// one (and its window) allocated every time.
     static INFLATER: std::cell::RefCell<Option<Decompress>> = const { std::cell::RefCell::new(None) };
+    /// This thread's zlib deflater, reset for each chunk instead of allocating
+    /// a new zlib stream per write.
+    static DEFLATER: std::cell::RefCell<Option<Compress>> = const { std::cell::RefCell::new(None) };
     /// This thread's LZ4 compressed-block scratch, retained between chunk reads.
     static LZ4_BUFFER: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn zlib_encode(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    DEFLATER.with_borrow_mut(|deflater| {
+        let encoder = deflater.get_or_insert_with(|| Compress::new(Level::default(), true));
+        encoder.reset();
+        let mut output = Vec::with_capacity((bytes.len() / 2).max(256));
+        loop {
+            let before_in = encoder.total_in() as usize;
+            if output.len() == output.capacity() {
+                output.reserve((output.len() / 2).max(4096));
+            }
+            let status = encoder
+                .compress_vec(&bytes[before_in..], &mut output, FlushCompress::Finish)
+                .map_err(io::Error::other)?;
+            if status == Status::StreamEnd {
+                return Ok(output);
+            }
+            if encoder.total_in() as usize == before_in && output.len() < output.capacity() {
+                return Err(io::Error::other("zlib compression made no progress"));
+            }
+        }
+    })
 }
 
 /// The zlib stream in `bytes` decoded onto `output`, at most `max_output`
@@ -359,7 +381,7 @@ fn decompress_lz4_java(src: &[u8], dest: &mut [u8]) -> Option<usize> {
 }
 
 fn encode_lz4(bytes: &[u8]) -> Vec<u8> {
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity((bytes.len() / 2).max(64).min(bytes.len() + 64));
     for block in bytes.chunks(65536) {
         let compressed = lz4_flex::block::compress(block);
         let (token, payload) = if compressed.len() < block.len() {

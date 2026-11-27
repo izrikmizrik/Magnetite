@@ -350,6 +350,17 @@ impl Game<'_> {
             event_loop.exit();
             return;
         }
+        if !self.options.offscreen
+            && !self.options.headless
+            && self.renderer.as_ref().is_some_and(|r| r.suspended)
+        {
+            event_loop.set_control_flow(if self.remote.is_some() {
+                ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
+            } else {
+                ControlFlow::Wait
+            });
+            return;
+        }
         if let Some(w) = &self.window {
             if self.options.offscreen {
                 // Offscreen frames don't wait for the window to be drawn: an

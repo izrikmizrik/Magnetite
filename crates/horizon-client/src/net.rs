@@ -603,7 +603,7 @@ impl Session {
             return;
         }
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && w.send_owned(body).is_err()
         {
             w.shutdown();
         }
@@ -648,7 +648,7 @@ impl Session {
             play::Serverbound::ResourcePack(status).encode()
         };
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && w.send_owned(body).is_err()
         {
             w.shutdown();
         }
@@ -667,7 +667,7 @@ impl Session {
             play::Serverbound::CustomClickAction(click).encode()
         };
         if let Some(w) = writer.as_mut()
-            && w.send(&body).is_err()
+            && w.send_owned(body).is_err()
         {
             w.shutdown();
         }

@@ -215,6 +215,96 @@ impl Default for Brain {
     }
 }
 impl Brain {
+    /// Visits every mob id kept anywhere in this brain's memories.
+    /// Exhaustively matches [`Brain`] and [`Memories`] so new fields trigger a compile check.
+    pub fn for_each_linked_mob(&self, mut f: impl FnMut(u32)) {
+        let Brain {
+            mem,
+            sensors: _,
+            activity: _,
+            list: _,
+            shuffle_seed: _,
+        } = self;
+        let Memories {
+            nearest_players,
+            nearest_visible_player,
+            nearest_visible_targetable_player,
+            nearest_visible_targetable_players,
+            mobs,
+            visible_mobs,
+            nearest_attackable,
+            look_target,
+            walk_target,
+            path: _,
+            cant_reach_walk_target_since: _,
+            attack_target,
+            attack_cooling_down: _,
+            roar_target,
+            disturbance_location: _,
+            recent_projectile: _,
+            is_sniffing: _,
+            is_emerging: _,
+            roar_sound_delay: _,
+            dig_cooldown: _,
+            roar_sound_cooldown: _,
+            sniff_cooldown: _,
+            touch_cooldown: _,
+            vibration_cooldown: _,
+            sonic_boom_cooldown: _,
+            sonic_boom_sound_cooldown: _,
+            sonic_boom_sound_delay: _,
+        } = mem;
+        let visit_who = |who: Who, f: &mut dyn FnMut(u32)| {
+            if let Who::Mob(id) = who {
+                f(id);
+            }
+        };
+        let visit_slot_who = |slot: &Slot<Who>, f: &mut dyn FnMut(u32)| {
+            if let Some(&who) = slot.get() {
+                visit_who(who, f);
+            }
+        };
+        let visit_slot_list = |slot: &Slot<Vec<Who>>, f: &mut dyn FnMut(u32)| {
+            if let Some(list) = slot.get() {
+                for &who in list {
+                    visit_who(who, f);
+                }
+            }
+        };
+        let visit_tracker = |tracker: Tracker, f: &mut dyn FnMut(u32)| {
+            if let Tracker::Entity(who, _) = tracker {
+                visit_who(who, f);
+            }
+        };
+        visit_slot_list(nearest_players, &mut f);
+        visit_slot_who(nearest_visible_player, &mut f);
+        visit_slot_who(nearest_visible_targetable_player, &mut f);
+        visit_slot_list(nearest_visible_targetable_players, &mut f);
+        visit_slot_list(mobs, &mut f);
+        if let Some(Visible { list, cache }) = visible_mobs.get() {
+            for &who in list {
+                visit_who(who, &mut f);
+            }
+            for &(who, _) in cache {
+                visit_who(who, &mut f);
+            }
+        }
+        visit_slot_who(nearest_attackable, &mut f);
+        if let Some(&tracker) = look_target.get() {
+            visit_tracker(tracker, &mut f);
+        }
+        if let Some(&WalkTarget {
+            target,
+            speed: _,
+            close: _,
+        }) = walk_target.get()
+        {
+            visit_tracker(target, &mut f);
+        }
+        visit_slot_who(attack_target, &mut f);
+        visit_slot_who(roar_target, &mut f);
+    }
+
     pub fn new(mob_id: &str, shuffle_seed: i64) -> Self {
         let mut list = activities(shuffle_seed);
         // The parts' behaviors join before the sort, so each lands after

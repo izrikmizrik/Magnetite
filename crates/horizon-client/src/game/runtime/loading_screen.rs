@@ -85,6 +85,7 @@ pub(super) struct Loading {
     /// (`ready_for_handoff`).
     pub(super) ui_at: Option<Instant>,
     pub(super) title_drawn: bool,
+    pub(super) frame_drawn: bool,
     pub(super) menu: startup_menu::StartupMenu,
     pub(super) error: Option<Box<dyn std::error::Error>>,
     /// Fingers on the glass over the loading screen and the title (interface/touch.rs).
@@ -336,14 +337,25 @@ impl Loading {
             return;
         }
         self.poll_menu_realms(event_loop);
+        let offscreen = self.options.as_ref().is_some_and(|o| o.offscreen);
+        if !offscreen && self.renderer.as_ref().is_some_and(|r| r.suspended) {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(50),
+            ));
+            return;
+        }
         if let Some(w) = &self.window {
-            if self.options.as_ref().is_some_and(|o| o.offscreen) {
+            if offscreen {
                 self.draw();
             } else {
                 w.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        event_loop.set_control_flow(super::event_loop::redraw_flow(
+            &mut self.frame_drawn,
+            offscreen,
+            Instant::now(),
+        ));
     }
     pub(super) fn draw(&mut self) {
         let Some(size) = self
@@ -353,6 +365,10 @@ impl Loading {
         else {
             return;
         };
+        if self.renderer.as_ref().is_some_and(|r| r.suspended) {
+            self.frame_drawn = false;
+            return;
+        }
         let mut batch = HudBatch::new(size, self.settings.gui_scale_inputs());
         self.draw_menu(&mut batch);
         self.menu.frame_drawn((batch.width, batch.height));
@@ -361,12 +377,16 @@ impl Loading {
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
+        self.frame_drawn = false;
         if let Some(renderer) = &mut self.renderer {
             match renderer.render(&frame) {
-                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                    self.title_drawn = true;
+                Ok(true) => {
+                    self.frame_drawn = true;
+                    if self.gui.is_some() && self.menu.pending.is_none() {
+                        self.title_drawn = true;
+                    }
                 }
-                Ok(_) => {}
+                Ok(false) => {}
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
         }

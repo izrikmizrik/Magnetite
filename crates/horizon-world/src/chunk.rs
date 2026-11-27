@@ -494,17 +494,23 @@ impl<'r> BlockSection<'r> {
             .iter()
             .map(|tag| registry.resolve(&BlockState::from_nbt(tag)?))
             .collect::<io::Result<Vec<_>>>()?;
-        let first_index = container.storage.as_ref().map_or(0, |s| s.get(0).unwrap()) as usize;
-        let mut section = Self::uniform(resolved[first_index], registry)?;
-        for index in 0..4096 {
-            let id = container
-                .storage
-                .as_ref()
-                .map_or(0, |s| s.get(index).unwrap()) as usize;
-            section.set(index, resolved[id])?;
-        }
-        section.extra = container.extra;
-        Ok(section)
+        let Some(src) = container.storage.as_ref() else {
+            let mut section = Self::uniform(resolved[0], registry)?;
+            section.extra = container.extra;
+            return Ok(section);
+        };
+        let mut cells = [0u32; 4096];
+        src.unpack_into(&mut cells);
+        let (palette, counts, last, storage) = pack_section(&cells, &resolved)?;
+        Ok(Self {
+            palette,
+            last,
+            counts,
+            free: Vec::new(),
+            storage,
+            registry,
+            extra: container.extra,
+        })
     }
     /// Test current distinct states without unpacking all 4,096 cells. The
     /// predicate should be pure; unused palette slots are intentionally skipped.
@@ -745,32 +751,19 @@ impl<'r> BlockSection<'r> {
         Ok(added)
     }
     pub fn compact(&mut self) -> io::Result<()> {
-        let values: Vec<_> = (0..4096).map(|i| self.get(i).unwrap()).collect();
-        self.palette.clear();
-        self.last = None;
-        self.counts.clear();
-        self.free.clear();
-        for state in &values {
-            if let Some(id) = id_in(&self.palette, &self.counts, &mut self.last, *state) {
-                self.counts[id as usize] += 1;
-            } else {
-                self.palette.push(*state);
-                self.counts.push(1);
-                self.last = Some((*state, self.palette.len() as u32 - 1));
-            }
+        if self.storage.is_none() && self.palette.len() == 1 && self.free.is_empty() {
+            return Ok(());
         }
-        let bits = bits_for_palette(self.palette.len(), 4);
-        self.storage = if bits == 0 {
-            None
-        } else {
-            let mut storage = PackedStorage::new(bits, 4096).map_err(|e| invalid(e.to_string()))?;
-            let mut last = None;
-            for (i, state) in values.iter().enumerate() {
-                let id = id_in(&self.palette, &self.counts, &mut last, *state).unwrap();
-                storage.set(i, id).unwrap();
-            }
-            Some(storage)
-        };
+        let mut cells = [0u32; 4096];
+        if let Some(storage) = &self.storage {
+            storage.unpack_into(&mut cells);
+        }
+        let (palette, counts, last, storage) = pack_section(&cells, &self.palette)?;
+        self.palette = palette;
+        self.counts = counts;
+        self.last = last;
+        self.free.clear();
+        self.storage = storage;
         Ok(())
     }
     pub fn to_nbt(&self) -> io::Result<Tag> {
@@ -794,6 +787,57 @@ impl<'r> BlockSection<'r> {
         }
         Ok(Tag::Compound(map))
     }
+}
+
+type PackedSection = (
+    Vec<BlockStateId>,
+    Vec<u16>,
+    Option<(BlockStateId, u32)>,
+    Option<PackedStorage>,
+);
+
+fn pack_section(cells: &[u32; 4096], state_map: &[BlockStateId]) -> io::Result<PackedSection> {
+    let mut remap = vec![u32::MAX; state_map.len()];
+    let mut palette: Vec<BlockStateId> = Vec::with_capacity(state_map.len().min(16));
+    let mut counts: Vec<u16> = Vec::with_capacity(state_map.len().min(16));
+    let mut indices = [0u32; 4096];
+    let mut last_raw = usize::MAX;
+    let mut last_new = 0u32;
+    for (out, &raw) in indices.iter_mut().zip(cells.iter()) {
+        let raw_id = raw as usize;
+        let new_id = if raw_id == last_raw {
+            last_new
+        } else {
+            let mapped = remap[raw_id];
+            let resolved_id = if mapped != u32::MAX {
+                mapped
+            } else {
+                let state = state_map[raw_id];
+                let id = if let Some(existing) = palette.iter().position(|&s| s == state) {
+                    existing as u32
+                } else {
+                    palette.push(state);
+                    counts.push(0);
+                    (palette.len() - 1) as u32
+                };
+                remap[raw_id] = id;
+                id
+            };
+            last_raw = raw_id;
+            last_new = resolved_id;
+            resolved_id
+        };
+        *out = new_id;
+        counts[new_id as usize] += 1;
+    }
+    let bits = bits_for_palette(palette.len(), 4);
+    let storage = if bits == 0 {
+        None
+    } else {
+        Some(PackedStorage::from_values(bits, &indices).map_err(|e| invalid(e.to_string()))?)
+    };
+    let last = palette.last().map(|&s| (s, palette.len() as u32 - 1));
+    Ok((palette, counts, last, storage))
 }
 
 #[cfg(test)]

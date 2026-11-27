@@ -53,6 +53,7 @@ pub(in crate::gfx) struct ObjectMotion {
     tracked: HashMap<u64, Vec<Vertex>>,
     camera: DVec3,
     target: Option<([u32; 2], wgpu::TextureView)>,
+    group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
 }
 
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -129,6 +130,7 @@ impl ObjectMotion {
             tracked: HashMap::new(),
             camera: DVec3::ZERO,
             target: None,
+            group: None,
         }
     }
 
@@ -254,29 +256,37 @@ impl ObjectMotion {
         encoder: &mut wgpu::CommandEncoder,
         depth: &wgpu::TextureView,
     ) -> wgpu::TextureView {
+        if self
+            .group
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != depth)
+        {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Frame generation motion"),
+                layout: &self.pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.params.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(depth),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&self.atlas),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            self.group = Some((depth.clone(), group));
+        }
         let target = self.target.as_ref().expect("prepare() ran").1.clone();
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Frame generation motion"),
-            layout: &self.pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(depth),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.atlas),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
+        let group = &self.group.as_ref().expect("cached above").1;
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: &target,
             resolve_target: None,
@@ -293,7 +303,7 @@ impl ObjectMotion {
         });
         if !self.staged.is_empty() {
             pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &group, &[]);
+            pass.set_bind_group(0, group, &[]);
             let bytes = std::mem::size_of_val(self.staged.as_slice()) as u64;
             pass.set_vertex_buffer(0, self.vertices.slice(..bytes));
             pass.draw(0..self.staged.len() as u32, 0..1);

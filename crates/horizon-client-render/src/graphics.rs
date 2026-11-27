@@ -441,6 +441,9 @@ pub enum FrameGeneration {
 }
 impl FrameGeneration {
     pub const ALL: [FrameGeneration; 2] = [FrameGeneration::Off, FrameGeneration::Fsr31];
+    pub const fn supported_on_platform() -> bool {
+        !cfg!(any(target_os = "android", target_os = "ios"))
+    }
     pub fn name(self) -> &'static str {
         match self {
             FrameGeneration::Off => "off",
@@ -454,6 +457,9 @@ impl FrameGeneration {
         }
     }
     fn parse(s: &str) -> Self {
+        if !Self::supported_on_platform() {
+            return Self::Off;
+        }
         Self::ALL
             .into_iter()
             .find(|f| f.name() == s)

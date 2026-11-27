@@ -19,6 +19,12 @@ impl Game<'_> {
         let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) else {
             return;
         };
+        if !mod_api::__private::block_entity_kind_listens(
+            mod_api::HookId::BlockEntityTick,
+            m.id(),
+        ) {
+            return;
+        }
         let mut taken = std::mem::take(&mut **m);
         let placeholder_identity = m.revision().identity();
         let state = self.world.block(pos.0, pos.1, pos.2).0;

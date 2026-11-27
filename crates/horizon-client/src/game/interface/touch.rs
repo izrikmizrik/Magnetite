@@ -695,6 +695,10 @@ pub(super) struct Controls {
     /// gyroscope is being read now.
     phone: Option<horizon_client::phone::PhoneSettings>,
     gyro_on: bool,
+    hud_revision: u64,
+    cached_layout: std::cell::RefCell<
+        Option<(([u32; 2], u32, [u32; 4], u64), std::sync::Arc<Layout>)>,
+    >,
 }
 
 impl Controls {
@@ -705,6 +709,7 @@ impl Controls {
             let defaults =
                 screen_layout(size, gui_scale, [0.0; 4], None).hud([size[0] as f32, size[1] as f32]);
             self.hud = load_layouts(&defaults);
+            self.hud_revision = self.hud_revision.wrapping_add(1);
         }
     }
 
@@ -1049,14 +1054,33 @@ impl Game<'_> {
         }
     }
 
-    fn touch_layout(&self) -> Option<Layout> {
+    fn touch_layout(&self) -> Option<std::sync::Arc<Layout>> {
         let size = self.touch_size()?;
-        Some(screen_layout(
+        let insets = safe_insets_of(self.window.as_deref(), size);
+        Some(self.touch_layout_with(size, insets))
+    }
+
+    fn touch_layout_with(&self, size: [u32; 2], insets: [f32; 4]) -> std::sync::Arc<Layout> {
+        let gui_scale = self.touch_gui_scale(size);
+        let key = (
             size,
-            self.touch_gui_scale(size),
-            self.safe_insets(),
+            gui_scale.to_bits(),
+            insets.map(f32::to_bits),
+            self.touch.hud_revision,
+        );
+        if let Some((cached_key, cached)) = self.touch.cached_layout.borrow().as_ref()
+            && *cached_key == key
+        {
+            return cached.clone();
+        }
+        let layout = std::sync::Arc::new(screen_layout(
+            size,
+            gui_scale,
+            insets,
             self.touch.hud.current(),
-        ))
+        ));
+        *self.touch.cached_layout.borrow_mut() = Some((key, layout.clone()));
+        layout
     }
 
     /// The default layout of this screen, clear of its safe area.
@@ -1086,6 +1110,7 @@ impl Game<'_> {
         let at = [at[0] as f32, at[1] as f32];
         if let Some((layouts, active)) = editor.touch(touch.id, touch.phase, at, fsize, &defaults) {
             self.touch.hud = keep_layouts(layouts, active, &defaults);
+            self.touch.hud_revision = self.touch.hud_revision.wrapping_add(1);
             self.touch.editor = None;
             return;
         }
@@ -1162,16 +1187,15 @@ impl Game<'_> {
             return;
         };
         self.touch.load(size, self.touch_gui_scale(size));
-        let Some(layout) = self.touch_layout() else {
-            return;
-        };
         let at = touch_pixels(self.window.as_deref(), size, &touch);
         if self.touch.editor.is_some() {
             self.last_input = Instant::now();
             return self.touch_editor_event(&touch, at, size);
         }
         let world = self.touch_world();
-        let [inset_left, inset_top, _, _] = self.safe_insets();
+        let insets = safe_insets_of(self.window.as_deref(), size);
+        let [inset_left, inset_top, _, _] = insets;
+        let layout = self.touch_layout_with(size, insets);
         // The chat screen's own buttons.
         if self.chat_open() && touch.phase == TouchPhase::Started {
             let p = [at[0] as f32, at[1] as f32];

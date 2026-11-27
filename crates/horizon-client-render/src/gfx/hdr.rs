@@ -237,11 +237,15 @@ fn named(name: Option<&str>) -> Option<Output> {
 struct Targets {
     size: [u32; 2],
     frame: wgpu::Texture,
+    frame_view: wgpu::TextureView,
     /// The layered frame's tone curve's input: the frame as the post effects left it.
     world: Option<wgpu::Texture>,
+    #[cfg_attr(not(test), allow(dead_code))]
     coverage: Option<wgpu::Texture>,
+    coverage_view: Option<wgpu::TextureView>,
     /// The layered frame's HUD target: what the HUD draws on.
     hud: Option<wgpu::Texture>,
+    hud_view: Option<wgpu::TextureView>,
     group: wgpu::BindGroup,
     /// The layered frame's bindings for `tonemap`, `hud_backdrop` and `composite`.
     passes: Option<[wgpu::BindGroup; 3]>,
@@ -608,22 +612,24 @@ impl Hdr {
                     wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 )
             });
+            let view = |t: &wgpu::Texture| t.create_view(&Default::default());
+            let frame_view = view(&frame);
+            let coverage_view = coverage.as_ref().map(view);
+            let hud_view = hud.as_ref().map(view);
             let group = self.group(
                 device,
-                &frame,
-                coverage.as_ref(),
-                hud.as_ref(),
+                &frame_view,
+                coverage_view.as_ref(),
+                hud_view.as_ref(),
                 &self.params,
             );
             let passes = self
                 .layered
                 .as_ref()
                 .zip(world.as_ref())
-                .zip(coverage.as_ref().zip(hud.as_ref()))
-                .map(|((l, world), (coverage, hud))| {
-                    let view = |t: &wgpu::Texture| t.create_view(&Default::default());
-                    let (frame, world, coverage, hud) =
-                        (view(&frame), view(world), view(coverage), view(hud));
+                .zip(coverage_view.as_ref().zip(hud_view.as_ref()))
+                .map(|((l, world), (coverage_view, hud_view))| {
+                    let world = view(world);
                     let entry = |binding, view| wgpu::BindGroupEntry {
                         binding,
                         resource: wgpu::BindingResource::TextureView(view),
@@ -641,14 +647,14 @@ impl Hdr {
                     };
                     [
                         group(&l.tonemap.0, &[entry(1, &world), params.clone()]),
-                        group(&l.keep.0, &[entry(0, &frame)]),
+                        group(&l.keep.0, &[entry(0, &frame_view)]),
                         group(
                             &l.composite.0,
                             &[
-                                entry(0, &frame),
+                                entry(0, &frame_view),
                                 params,
-                                entry(4, &coverage),
-                                entry(5, &hud),
+                                entry(4, coverage_view),
+                                entry(5, hud_view),
                             ],
                         ),
                     ]
@@ -656,9 +662,12 @@ impl Hdr {
             self.targets = Some(Targets {
                 size,
                 frame,
+                frame_view,
                 world,
                 coverage,
+                coverage_view,
                 hud,
+                hud_view,
                 group,
                 passes,
             });
@@ -734,20 +743,17 @@ impl Hdr {
         }
         let pipeline = &l.screenshot.as_ref()?.3;
         let views = [
-            (0, &t.frame),
-            (4, t.coverage.as_ref()?),
-            (5, t.hud.as_ref()?),
-        ]
-        .map(|(binding, texture)| (binding, texture.create_view(&Default::default())));
+            (0, &t.frame_view),
+            (4, t.coverage_view.as_ref()?),
+            (5, t.hud_view.as_ref()?),
+        ];
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("HDR SDR screenshot"),
             layout: &pipeline.get_bind_group_layout(0),
-            entries: &views
-                .each_ref()
-                .map(|(binding, view)| wgpu::BindGroupEntry {
-                    binding: *binding,
-                    resource: wgpu::BindingResource::TextureView(view),
-                }),
+            entries: &views.map(|(binding, view)| wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::TextureView(view),
+            }),
         });
         let copy = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Horizon screenshot copy"),
@@ -800,12 +806,11 @@ impl Hdr {
             world.as_image_copy(),
             t.frame.size(),
         );
-        let view = t.frame.create_view(&Default::default());
         Self::draw(
             encoder,
             &l.tonemap.1,
             group,
-            &view,
+            &t.frame_view,
             "HDR tone curve",
             timing,
         );
@@ -839,13 +844,7 @@ impl Hdr {
     }
 
     pub fn coverage_view(&self) -> Option<wgpu::TextureView> {
-        Some(
-            self.targets
-                .as_ref()?
-                .coverage
-                .as_ref()?
-                .create_view(&Default::default()),
-        )
+        self.targets.as_ref()?.coverage_view.clone()
     }
 
     /// The peak the HDR metadata gives: while calibration's peak step runs, PQ's own
@@ -876,14 +875,13 @@ impl Hdr {
         if let (
             Some(l),
             Some(Targets {
-                hud: Some(hud),
+                hud_view: Some(hud),
                 passes: Some([_, group, _]),
                 ..
             }),
         ) = (&self.layered, &self.targets)
         {
-            let view = hud.create_view(&Default::default());
-            Self::draw(encoder, &l.keep.1, group, &view, "HDR HUD backdrop", timing);
+            Self::draw(encoder, &l.keep.1, group, hud, "HDR HUD backdrop", timing);
         }
     }
 
@@ -935,9 +933,9 @@ impl Hdr {
         });
         let group = self.group(
             device,
-            &t.frame,
-            t.coverage.as_ref(),
-            t.hud.as_ref(),
+            &t.frame_view,
+            t.coverage_view.as_ref(),
+            t.hud_view.as_ref(),
             &self.capture_params,
         );
         queue.write_buffer(
@@ -960,27 +958,24 @@ impl Hdr {
     fn group(
         &self,
         device: &wgpu::Device,
-        frame: &wgpu::Texture,
-        coverage: Option<&wgpu::Texture>,
-        hud: Option<&wgpu::Texture>,
+        frame: &wgpu::TextureView,
+        coverage: Option<&wgpu::TextureView>,
+        hud: Option<&wgpu::TextureView>,
         params: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        let view = |t: &wgpu::Texture| t.create_view(&Default::default());
-        let frame = view(frame);
-        let layered = coverage.zip(hud).map(|(c, h)| (view(c), view(h)));
         let texture = |binding, view| wgpu::BindGroupEntry {
             binding,
             resource: wgpu::BindingResource::TextureView(view),
         };
         let mut entries = vec![
-            texture(0, &frame),
+            texture(0, frame),
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: params.as_entire_binding(),
             },
             texture(3, &self.logo),
         ];
-        if let Some((coverage, hud)) = &layered {
+        if let Some((coverage, hud)) = coverage.zip(hud) {
             entries.extend([texture(4, coverage), texture(5, hud)]);
         }
         device.create_bind_group(&wgpu::BindGroupDescriptor {

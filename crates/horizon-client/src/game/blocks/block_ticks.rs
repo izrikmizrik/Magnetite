@@ -395,19 +395,37 @@ impl Game<'_> {
         for &key in &added {
             self.register_chunk_ticks(key);
         }
-        for &key in self.tick_chunks.removed() {
-            self.random_tick_sections.remove(&key);
-            self.portals.sections.remove(&key);
-            self.block_ticks
-                .remove_chunk(horizon_core::position::ChunkPos::new(key.0, key.1));
-            self.block_ticks
-                .comparator_outputs
-                .retain(|p, _| (p.x >> 4, p.z >> 4) != key);
-            self.hoppers.retain(|p, _| (p.0 >> 4, p.2 >> 4) != key);
-            // Its moving pistons were saved with it and load back with it.
-            self.block_ticks
-                .moving_pistons
-                .retain(|(p, _)| (p.x >> 4, p.z >> 4) != key);
+        let removed = self.tick_chunks.removed();
+        if !removed.is_empty() {
+            for &key in removed {
+                self.random_tick_sections.remove(&key);
+                self.portals.sections.remove(&key);
+                self.block_ticks
+                    .remove_chunk(horizon_core::position::ChunkPos::new(key.0, key.1));
+            }
+            if removed.len() == 1 {
+                let key = removed[0];
+                self.block_ticks
+                    .comparator_outputs
+                    .retain(|p, _| (p.x >> 4, p.z >> 4) != key);
+                self.hoppers.retain(|p, _| (p.0 >> 4, p.2 >> 4) != key);
+                // Its moving pistons were saved with it and load back with it.
+                self.block_ticks
+                    .moving_pistons
+                    .retain(|(p, _)| (p.x >> 4, p.z >> 4) != key);
+            } else {
+                let dropped: horizon_core::fast_hash::FxHashSet<(i32, i32)> =
+                    removed.iter().copied().collect();
+                self.block_ticks
+                    .comparator_outputs
+                    .retain(|p, _| !dropped.contains(&(p.x >> 4, p.z >> 4)));
+                self.hoppers
+                    .retain(|p, _| !dropped.contains(&(p.0 >> 4, p.2 >> 4)));
+                // Its moving pistons were saved with it and load back with it.
+                self.block_ticks
+                    .moving_pistons
+                    .retain(|(p, _)| !dropped.contains(&(p.x >> 4, p.z >> 4)));
+            }
         }
         self.tick_chunks.recycle_added(added);
     }

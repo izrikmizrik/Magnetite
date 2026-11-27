@@ -418,6 +418,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             None,
                             "F2 screenshots at this many times the game's resolution. Higher takes longer.",
                         ),
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         h(
                             H::FrameGeneration,
                             Medium,
@@ -1173,7 +1174,11 @@ impl H {
                 )
             }
             H::FrameGeneration => {
-                g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
+                g.frame_generation = if FrameGeneration::supported_on_platform() {
+                    step(&FrameGeneration::ALL, g.frame_generation, back)
+                } else {
+                    FrameGeneration::Off
+                };
             }
             // Any choice tries HDR output again on a driver a start failed on.
             H::Hdr => {

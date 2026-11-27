@@ -57,11 +57,11 @@ jobs:
           export CXX_aarch64_linux_android="$ndk_bin/aarch64-linux-android28-clang++"
           export AR_aarch64_linux_android="$ndk_bin/llvm-ar"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
-          cargo build --locked -p magnetite-android --target aarch64-linux-android --profile fast
+          cargo build --locked -p magnetite-android --target aarch64-linux-android --release
           mkdir -p .local/android/jni/arm64-v8a .local/android/assets
           "$ndk_bin/llvm-strip" --strip-unneeded \
             -o .local/android/jni/arm64-v8a/libmagnetite_android.so \
-            target/aarch64-linux-android/fast/libmagnetite_android.so
+            target/aarch64-linux-android/release/libmagnetite_android.so
           cp LICENSE THIRD_PARTY_NOTICES.md .local/android/assets/
       - name: The wasm mods' standard library member
         # Every wasm mod links against it. The game looks beside its executable, which on Android

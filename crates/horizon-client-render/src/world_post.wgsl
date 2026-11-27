@@ -173,13 +173,17 @@ fn clip_box(c: hv3, lo: hv3, hi: hv3) -> hv3 {
     // the mean a few deviations wide, tighter than min..max, so that what changed
     // does not linger as a smear. Summed in f32: nine squares of bright light pass half
     // float's largest value.
-    var m1 = vec3(0.0);
-    var m2 = vec3(0.0);
+    let c0 = vec3<f32>(lo);
+    var m1 = c0;
+    var m2 = c0 * c0;
     // Reversed depth: the nearest of the 3x3 is the largest, and its motion keeps
     // the edges of what is in front from trailing.
-    var near = 0.0;
+    var near = textureLoad(depth, p, 0).r;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
+            if x == 0 && y == 0 {
+                continue;
+            }
             let q = clamp(p + vec2(x, y), vec2(0), last);
             let c = to_ycocg(hv3(textureLoad(world, q, 0).rgb));
             lo = min(lo, c);

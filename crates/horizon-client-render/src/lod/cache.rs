@@ -7,7 +7,7 @@ use crate::fast_hash::FxHashMap;
 use horizon_world::registry::BlockStateId;
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -29,12 +29,16 @@ struct Region {
     index: FxHashMap<(i32, i32), (u64, u32)>,
 }
 
+enum RegionSlot {
+    Unchecked,
+    Missing,
+    Open(Region),
+}
+
 pub struct DiskCache {
     dir: PathBuf,
     key: u64,
-    // ponytail: one lock for every region, with file reads under it; per-region
-    // locks if the sampling threads ever wait on it.
-    regions: Mutex<FxHashMap<(i32, i32), Option<Region>>>,
+    regions: Mutex<FxHashMap<(i32, i32), Arc<Mutex<RegionSlot>>>>,
 }
 
 impl DiskCache {
@@ -49,22 +53,19 @@ impl DiskCache {
     }
 
     pub fn get(&self, x: i32, z: i32) -> Option<Columns> {
-        let mut regions = self.regions.lock().ok()?;
-        let region = self.region(&mut regions, x, z, false)?;
-        let &(offset, len) = region.index.get(&(x, z))?;
-        let mut bytes = vec![0; len as usize];
-        region.file.seek(SeekFrom::Start(offset)).ok()?;
-        region.file.read_exact(&mut bytes).ok()?;
-        drop(regions);
+        let bytes = self.with_region(x, z, false, |region| {
+            let &(offset, len) = region.index.get(&(x, z))?;
+            let mut bytes = vec![0; len as usize];
+            region.file.seek(SeekFrom::Start(offset)).ok()?;
+            region.file.read_exact(&mut bytes).ok()?;
+            Some(bytes)
+        })?;
         decode(&bytes).map(Arc::new)
     }
 
     fn contains(&self, x: i32, z: i32) -> bool {
-        let Ok(mut regions) = self.regions.lock() else {
-            return false;
-        };
-        self.region(&mut regions, x, z, false)
-            .is_some_and(|region| region.index.contains_key(&(x, z)))
+        self.with_region(x, z, false, |region| Some(region.index.contains_key(&(x, z))))
+            .unwrap_or(false)
     }
 
     /// Writes a chunk not cached yet. One already cached stays as it is: the
@@ -76,48 +77,60 @@ impl DiskCache {
             return;
         }
         let bytes = encode(columns);
-        let Ok(mut regions) = self.regions.lock() else {
-            return;
-        };
-        let Some(region) = self.region(&mut regions, x, z, true) else {
-            return;
-        };
-        // Another sampler's thread may have written it while this one encoded.
-        if region.index.contains_key(&(x, z)) {
-            return;
-        }
-        let mut record = Vec::with_capacity(RECORD as usize + bytes.len());
-        record.extend_from_slice(&x.to_le_bytes());
-        record.extend_from_slice(&z.to_le_bytes());
-        record.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-        record.extend_from_slice(&bytes);
-        let Ok(end) = region.file.seek(SeekFrom::End(0)) else {
-            return;
-        };
-        // One write, so a crash leaves at most a torn last record, which
-        // the next open cuts off.
-        if region.file.write_all(&record).is_ok() {
-            region
-                .index
-                .insert((x, z), (end + RECORD, bytes.len() as u32));
-        }
+        self.with_region(x, z, true, |region| {
+            // Another sampler's thread may have written it while this one encoded.
+            if region.index.contains_key(&(x, z)) {
+                return Some(());
+            }
+            let mut record = Vec::with_capacity(RECORD as usize + bytes.len());
+            record.extend_from_slice(&x.to_le_bytes());
+            record.extend_from_slice(&z.to_le_bytes());
+            record.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            record.extend_from_slice(&bytes);
+            let end = region.file.seek(SeekFrom::End(0)).ok()?;
+            // One write, so a crash leaves at most a torn last record, which
+            // the next open cuts off.
+            if region.file.write_all(&record).is_ok() {
+                region
+                    .index
+                    .insert((x, z), (end + RECORD, bytes.len() as u32));
+            }
+            Some(())
+        });
     }
 
-    fn region<'a>(
+    fn slot(&self, at: (i32, i32)) -> Option<Arc<Mutex<RegionSlot>>> {
+        let mut regions = self.regions.lock().ok()?;
+        Some(
+            regions
+                .entry(at)
+                .or_insert_with(|| Arc::new(Mutex::new(RegionSlot::Unchecked)))
+                .clone(),
+        )
+    }
+
+    fn with_region<T>(
         &self,
-        regions: &'a mut FxHashMap<(i32, i32), Option<Region>>,
         x: i32,
         z: i32,
         create: bool,
-    ) -> Option<&'a mut Region> {
+        f: impl FnOnce(&mut Region) -> Option<T>,
+    ) -> Option<T> {
         let at = (x >> 5, z >> 5);
-        if create && matches!(regions.get(&at), Some(None)) {
-            regions.remove(&at);
+        let slot = self.slot(at)?;
+        let mut guard = slot.lock().ok()?;
+        let need_open = matches!(*guard, RegionSlot::Unchecked)
+            || (create && matches!(*guard, RegionSlot::Missing));
+        if need_open {
+            *guard = match self.open(at, create) {
+                Some(region) => RegionSlot::Open(region),
+                None => RegionSlot::Missing,
+            };
         }
-        regions
-            .entry(at)
-            .or_insert_with(|| self.open(at, create))
-            .as_mut()
+        let RegionSlot::Open(region) = &mut *guard else {
+            return None;
+        };
+        f(region)
     }
 
     fn open(&self, (rx, rz): (i32, i32), create: bool) -> Option<Region> {
@@ -145,16 +158,23 @@ impl DiskCache {
             let size = file.metadata().ok()?.len();
             let mut at = HEADER;
             let mut record = [0; RECORD as usize];
-            while at + RECORD <= size {
-                file.seek(SeekFrom::Start(at)).ok()?;
-                file.read_exact(&mut record).ok()?;
-                let field = |i: usize| u32::from_le_bytes(record[i..i + 4].try_into().unwrap());
-                let len = field(8);
-                if len > MAX_RECORD || at + RECORD + u64::from(len) > size {
-                    break;
+            {
+                let mut reader = BufReader::new(&mut file);
+                while at + RECORD <= size {
+                    if reader.read_exact(&mut record).is_err() {
+                        break;
+                    }
+                    let field = |i: usize| u32::from_le_bytes(record[i..i + 4].try_into().unwrap());
+                    let len = field(8);
+                    if len > MAX_RECORD
+                        || at + RECORD + u64::from(len) > size
+                        || reader.seek_relative(i64::from(len)).is_err()
+                    {
+                        break;
+                    }
+                    index.insert((field(0) as i32, field(4) as i32), (at + RECORD, len));
+                    at += RECORD + u64::from(len);
                 }
-                index.insert((field(0) as i32, field(4) as i32), (at + RECORD, len));
-                at += RECORD + u64::from(len);
             }
             if at < size {
                 file.set_len(at).ok()?;

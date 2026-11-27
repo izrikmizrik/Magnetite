@@ -734,8 +734,8 @@ impl TileKey {
 #[derive(Default)]
 struct Plan {
     roots: Vec<TileKey>,
-    nodes: FxHashSet<TileKey>,
-    split: FxHashSet<TileKey>,
+    nodes: Arc<FxHashSet<TileKey>>,
+    split: Arc<FxHashSet<TileKey>>,
     /// `nodes` by level: children (level - 1) come before their parents when
     /// selection is rebuilt, without sorting the whole set.
     by_level: [Vec<TileKey>; MAX_LEVEL as usize + 1],
@@ -809,7 +809,7 @@ impl Plan {
         if key.reach(camera) > i64::from(range) * i64::from(range) {
             return;
         }
-        if self.nodes.insert(key) {
+        if Arc::make_mut(&mut self.nodes).insert(key) {
             self.by_level[key.level as usize].push(key);
         }
         // Keep distant cells small on screen; finest tiles retain individual
@@ -854,7 +854,7 @@ impl Plan {
                 || distance.max(i64::from(self.elevation))
                     < if world { hold(threshold) } else { threshold })
         {
-            self.split.insert(key);
+            Arc::make_mut(&mut self.split).insert(key);
             for child in key.children() {
                 self.visit(child, camera, detail, range, previous, reduced);
             }
@@ -990,12 +990,12 @@ type Reduced = FxHashMap<(i32, i32), Arc<ReducedColumns>>;
 /// frame, tens of milliseconds for a large job on a 4-thread machine).
 struct Snapshot {
     samples: samples::Samples,
-    saved: Saved,
-    reduced: Reduced,
+    saved: Arc<Saved>,
+    reduced: Arc<Reduced>,
     /// The plan's tiles, to tell terrain not drawn yet from terrain out of
     /// range (`Snapshot::planned_leaf`).
-    nodes: FxHashSet<TileKey>,
-    split: FxHashSet<TileKey>,
+    nodes: Arc<FxHashSet<TileKey>>,
+    split: Arc<FxHashSet<TileKey>>,
 }
 /// One column of a mesh input, by reference into the snapshot. Mesh jobs used
 /// to clone all 256 columns of a tile (each with its own span allocation);
@@ -1329,7 +1329,7 @@ pub struct Lod {
     /// Released removals, returned to the renderer this update.
     removed: Vec<TileKey>,
     /// The columns left out: `full` and `retiring`.
-    covered: FxHashSet<(i32, i32)>,
+    covered: Arc<FxHashSet<(i32, i32)>>,
     covered_bounds: Option<[i32; 4]>,
     /// The full-detail columns `update` was last given.
     full: FxHashSet<(i32, i32)>,
@@ -1352,8 +1352,8 @@ pub struct Lod {
     wanted: std::collections::BinaryHeap<std::cmp::Reverse<Wanted>>,
     wanted_at: Option<[i32; 2]>,
     wanted_stale: bool,
-    saved: Saved,
-    reduced: Reduced,
+    saved: Arc<Saved>,
+    reduced: Arc<Reduced>,
     saved_order: VecDeque<(i32, i32)>,
     /// Tiles the plan let go, taken back on a return instead of sampled again.
     kept: kept::KeptTiles,
@@ -1729,7 +1729,7 @@ impl Lod {
             stale: FxHashSet::default(),
             restale: FxHashSet::default(),
             removed: Vec::new(),
-            covered: FxHashSet::default(),
+            covered: Arc::new(FxHashSet::default()),
             covered_bounds: None,
             full: FxHashSet::default(),
             retiring: FxHashSet::default(),
@@ -1739,8 +1739,8 @@ impl Lod {
             wanted: std::collections::BinaryHeap::new(),
             wanted_at: None,
             wanted_stale: true,
-            saved: FxHashMap::default(),
-            reduced: FxHashMap::default(),
+            saved: Arc::new(FxHashMap::default()),
+            reduced: Arc::new(FxHashMap::default()),
             saved_order: VecDeque::new(),
             kept: kept::KeptTiles::new(kept::KEPT_FOR, kept::KEPT_BYTES),
             returning: Vec::new(),
@@ -1777,7 +1777,7 @@ impl Lod {
     pub fn progress(&self) -> (usize, usize) {
         let mut desired = 0;
         let mut sampled = 0;
-        for key in &self.plan.nodes {
+        for key in self.plan.nodes.iter() {
             if !self.plan.split.contains(key) {
                 desired += 1;
                 sampled += usize::from(self.ready.contains_key(key));
@@ -2179,16 +2179,17 @@ impl Lod {
         {
             return;
         }
-        if !self.saved.contains_key(&key) {
-            while self.saved.len() >= MAX_SAVED {
+        let saved = Arc::make_mut(&mut self.saved);
+        if !saved.contains_key(&key) {
+            while saved.len() >= MAX_SAVED {
                 if let Some(old) = self.saved_order.pop_front() {
-                    self.saved.remove(&old);
-                    self.reduced.remove(&old);
+                    saved.remove(&old);
+                    Arc::make_mut(&mut self.reduced).remove(&old);
                 }
             }
             self.saved_order.push_back(key);
         }
-        self.saved.insert(key, columns.columns.clone());
+        saved.insert(key, columns.columns.clone());
         if self.keeps_observed {
             self.resample_over(key);
         }
@@ -2372,7 +2373,7 @@ impl Lod {
         }
         self.apply_detail(key, &columns);
         if self.saved.contains_key(&key) {
-            self.reduced.insert(key, Arc::new(columns));
+            Arc::make_mut(&mut self.reduced).insert(key, Arc::new(columns));
         }
         // `apply_detail` marks every tile whose columns it replaced, and their
         // neighbours. Coarser tiles do not read visited columns (stride > 16),
@@ -2915,7 +2916,7 @@ impl Lod {
     }
     fn leave_out(&mut self) {
         let covered: FxHashSet<_> = self.full.union(&self.retiring).copied().collect();
-        if self.covered == covered {
+        if *self.covered == covered {
             return;
         }
         let added: Vec<_> = covered.difference(&self.covered).copied().collect();
@@ -2924,7 +2925,7 @@ impl Lod {
             .symmetric_difference(&covered)
             .copied()
             .collect();
-        self.covered = covered;
+        self.covered = Arc::new(covered);
         self.covered_bounds = self.covered.iter().fold(None, |bounds, &(x, z)| {
             Some(match bounds {
                 None => [x * 16, z * 16, (x + 1) * 16, (z + 1) * 16],
@@ -2954,7 +2955,7 @@ impl Lod {
         for &(x, z) in &changes {
             self.refresh_path(TileKey { x, z, level: 0 });
         }
-        self.cutout_pending = Some(self.covered.clone());
+        self.cutout_pending = Some((*self.covered).clone());
         // Every active tile whose mesh clips an old/new covered column is
         // dirty now; the cutout waits for their replacement meshes, not for
         // every later job.
@@ -3070,7 +3071,7 @@ impl Lod {
             nodes: self.plan.nodes.clone(),
             split: self.plan.split.clone(),
         });
-        let covered = Arc::new(self.covered.clone());
+        let covered = self.covered.clone();
         let count = keys.len();
         for (key, version) in keys {
             let finer = self.finer_of(key);
@@ -3611,7 +3612,7 @@ mod tests {
             level: 0,
         };
         let mut plan = Plan::default();
-        plan.nodes.insert(fine);
+        Arc::make_mut(&mut plan.nodes).insert(fine);
         let ready: FxHashMap<TileKey, ()> = [(fine, ())].into_iter().collect();
         let retiring = [column].into_iter().collect();
         let saved = Saved::default();
@@ -3640,8 +3641,8 @@ mod tests {
     fn retiring_detail_requests_only_planned_columns_still_missing_detail() {
         let fine = |x| TileKey { x, z: 0, level: 0 };
         let mut plan = Plan::default();
-        plan.nodes.extend((0..4).map(fine));
-        plan.nodes.insert(fine(5));
+        Arc::make_mut(&mut plan.nodes).extend((0..4).map(fine));
+        Arc::make_mut(&mut plan.nodes).insert(fine(5));
         let retiring = (0..5).map(|x| (x, 0)).collect();
         let saved = [((1, 0), Arc::new(std::array::from_fn(|_| Column::default())))]
             .into_iter()
@@ -3700,7 +3701,7 @@ mod tests {
                 let plan = Plan::new(camera, 12, distance);
                 assert!(plan.nodes.len() < 12000, "{} nodes", plan.nodes.len());
                 assert!(plan.roots.iter().all(|key| key.level <= MAX_LEVEL));
-                for key in &plan.nodes {
+                for key in plan.nodes.iter() {
                     if !plan.split.contains(key) && key.distance(camera) < 12 * 16 {
                         assert_eq!(key.level, 0);
                     }
@@ -3804,9 +3805,9 @@ mod tests {
         };
         let mut plan = Plan::default();
         plan.roots.push(parent);
-        plan.nodes.insert(parent);
-        plan.split.insert(parent);
-        plan.nodes.extend(parent.children());
+        Arc::make_mut(&mut plan.nodes).insert(parent);
+        Arc::make_mut(&mut plan.split).insert(parent);
+        Arc::make_mut(&mut plan.nodes).extend(parent.children());
         let mut ready: FxHashMap<TileKey, Vec<Column>> = FxHashMap::default();
         ready.insert(parent, vec![]);
         ready.insert(parent.children()[0], vec![]);
@@ -3873,7 +3874,7 @@ mod tests {
         let after = Plan::with_previous([16, 0], 2, 256, &before, 0, false, None);
         let mut retained = 0;
         let range = i64::from(256 * 16);
-        for key in &before.split {
+        for key in before.split.iter() {
             if key.distance([16, 0]) < key.size() * 10 && key.reach([16, 0]) <= range * range {
                 assert!(after.split.contains(key));
                 retained += 1;
@@ -4629,7 +4630,7 @@ mod tests {
         // opaque terrain and water must leave precisely that 16² footprint.
         // Only active tiles enter the mesher snapshot, even when samples are ready.
         lod.active.insert(key);
-        lod.covered.insert((-1, -2));
+        Arc::make_mut(&mut lod.covered).insert((-1, -2));
         lod.covered_bounds = Some([-16, -32, 0, -16]);
         let mesh = lod.mesh(key);
         lod.active.remove(&key);
@@ -4801,7 +4802,7 @@ mod tests {
             "late seed generation cannot overwrite a visited build"
         );
         assert_eq!(lod.detail_masks[&fine], [u64::MAX; 4]);
-        lod.plan.nodes.insert(fine);
+        Arc::make_mut(&mut lod.plan.nodes).insert(fine);
         lod.pending.insert(fine);
         lod.finish_sample(fine, vec![Column::default(); 256]);
         assert_eq!(
@@ -4810,7 +4811,7 @@ mod tests {
             "a late coarse sampling job cannot erase completed detail"
         );
         assert_eq!(lod.detail_masks[&fine], [u64::MAX; 4]);
-        lod.plan.nodes.remove(&fine);
+        Arc::make_mut(&mut lod.plan.nodes).remove(&fine);
 
         // The worker's summary comes with the reusable pyramid; a newer
         // observation replaces both, and an unchanged one changes nothing.
@@ -4860,7 +4861,7 @@ mod tests {
         let camera = [-256.0, 100.0, -256.0];
         lod.area = Some(([-16, -16], 2, 64, 0, false, None));
         lod.plan.roots = vec![key];
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan.nodes).insert(key);
         // As a replan does (`update` only selects after a change).
         lod.reselect = true;
         let await_meshes = |lod: &mut Lod, count: usize| {
@@ -4883,9 +4884,9 @@ mod tests {
         assert_eq!(uploaded.len(), 1);
         assert_eq!(uploaded[0].0, key);
         assert!(lod.active.contains(&key));
-        lod.plan.split.insert(key);
+        Arc::make_mut(&mut lod.plan.split).insert(key);
         for child in key.children() {
-            lod.plan.nodes.insert(child);
+            Arc::make_mut(&mut lod.plan.nodes).insert(child);
             lod.ready.insert(child, lod.ready[&key].clone());
         }
         lod.reselect = true;
@@ -4905,10 +4906,10 @@ mod tests {
         };
         lod.plan = Plan::default();
         lod.plan.roots.push(covered_fine);
-        lod.plan.nodes.insert(covered_fine);
+        Arc::make_mut(&mut lod.plan.nodes).insert(covered_fine);
         lod.ready
             .insert(covered_fine, Arc::new(vec![Column::default(); 256]));
-        lod.covered.insert((-1, -2));
+        Arc::make_mut(&mut lod.covered).insert((-1, -2));
         lod.reselect = true;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -4987,9 +4988,9 @@ mod tests {
         lod.plan.roots = vec![near, far];
         lod.ready.clear();
         for parent in [near, far] {
-            lod.plan.nodes.insert(parent);
-            lod.plan.split.insert(parent);
-            lod.plan.nodes.extend(parent.children());
+            Arc::make_mut(&mut lod.plan.nodes).insert(parent);
+            Arc::make_mut(&mut lod.plan.split).insert(parent);
+            Arc::make_mut(&mut lod.plan.nodes).extend(parent.children());
             lod.ready
                 .insert(parent, Arc::new(vec![Column::default(); 256]));
         }
@@ -5017,10 +5018,10 @@ mod tests {
         lod.active = (0..DETAIL_REQUEST as i32 + 8)
             .map(|x| TileKey { x, z: 0, level: 0 })
             .collect();
-        lod.plan.split.clear();
+        Arc::make_mut(&mut lod.plan.split).clear();
         lod.detail_masks.clear();
-        lod.covered = [(0, 0)].into_iter().collect();
-        lod.full = lod.covered.clone();
+        lod.covered = Arc::new([(0, 0)].into_iter().collect());
+        lod.full = (*lod.covered).clone();
         lod.detail_request_pending = false;
         lod.detail_request_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
         lod.request_detail([0, 0]);
@@ -5170,7 +5171,7 @@ mod tests {
         };
         lod.plan = Plan::default();
         lod.plan.roots = vec![a, b];
-        lod.plan.nodes.extend([a, b]);
+        Arc::make_mut(&mut lod.plan.nodes).extend([a, b]);
         lod.finish_sample(a, vec![Column::default(); CELLS * CELLS]);
         assert!(lod.active.contains(&a));
         let sides = |lod: &Lod| {
@@ -5199,9 +5200,9 @@ mod tests {
             z: 4,
             level: 1,
         };
-        lod.plan.nodes.insert(parent);
-        lod.plan.split.insert(parent);
-        lod.plan.nodes.extend(parent.children().into_iter().take(3));
+        Arc::make_mut(&mut lod.plan.nodes).insert(parent);
+        Arc::make_mut(&mut lod.plan.split).insert(parent);
+        Arc::make_mut(&mut lod.plan.nodes).extend(parent.children().into_iter().take(3));
         let snapshot = lod.snapshot();
         let [x, _, z] = parent.origin();
         assert!(snapshot.planned_leaf(x + 1, z + 1), "a planned leaf");
@@ -5224,7 +5225,7 @@ mod tests {
         };
         lod.plan = Plan::default();
         lod.plan.roots = vec![a, b];
-        lod.plan.nodes.extend([a, b]);
+        Arc::make_mut(&mut lod.plan.nodes).extend([a, b]);
         lod.finish_sample(a, vec![Column::default(); CELLS * CELLS]);
         lod.dirty.clear();
         // A range of one chunk around (-10, 0) keeps `a` and drops `b`.
@@ -5241,7 +5242,7 @@ mod tests {
             z: 0,
             level: 0,
         };
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan.nodes).insert(key);
         lod.finish_sample(key, samples(70));
         let previous = lod.mesh_samples.clone();
 
@@ -5360,8 +5361,8 @@ mod tests {
         let tile = |x, level| TileKey { x, z: 0, level };
         let (fine, covered, coarse, split) = (tile(0, 0), tile(1, 0), tile(1, 3), tile(1, 2));
         lod.active = [fine, covered, coarse, split].into_iter().collect();
-        lod.covered.insert((1, 0));
-        lod.plan.split.insert(split);
+        Arc::make_mut(&mut lod.covered).insert((1, 0));
+        Arc::make_mut(&mut lod.plan.split).insert(split);
         lod.detail_masks.insert(fine, [u64::MAX, 1, 0, 0]);
         lod.detail_masks.insert(coarse, [u64::MAX; 4]);
         // Only the fine tile: the covered one is the near chunk's, the split
@@ -5412,7 +5413,7 @@ mod tests {
             z: 2,
             level: 0,
         };
-        lod.plan.nodes.extend([
+        Arc::make_mut(&mut lod.plan.nodes).extend([
             key,
             parent,
             grand,
@@ -5423,7 +5424,7 @@ mod tests {
             behind_child,
             far_child,
         ]);
-        lod.plan.split.extend([parent, grand, west, near, far]);
+        Arc::make_mut(&mut lod.plan.split).extend([parent, grand, west, near, far]);
         lod.active
             .extend([key, grand, near_child, behind_child, far_child]);
         lod.mark_selection_changed(key);
@@ -5557,9 +5558,9 @@ mod tests {
             level: 1,
         };
         let child = parent.children()[0];
-        lod.plan.nodes.insert(parent);
-        lod.plan.split.insert(parent);
-        lod.plan.nodes.insert(child);
+        Arc::make_mut(&mut lod.plan.nodes).insert(parent);
+        Arc::make_mut(&mut lod.plan.split).insert(parent);
+        Arc::make_mut(&mut lod.plan.nodes).insert(child);
         lod.active.insert(child);
         lod.unmeshed.insert(child);
         lod.cutout_pending = Some([(0, 0)].into_iter().collect());
@@ -5627,15 +5628,15 @@ mod tests {
             z: -2,
             level: 0,
         };
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan.nodes).insert(key);
         lod.ready
             .insert(key, Arc::new(vec![Column::default(); 256]));
-        lod.saved.insert(
+        Arc::make_mut(&mut lod.saved).insert(
             (3, -2),
             Arc::new(std::array::from_fn(|_| Column::default())),
         );
         lod.retiring.insert((3, -2));
-        lod.covered.insert((3, -2));
+        Arc::make_mut(&mut lod.covered).insert((3, -2));
         lod.prune_retiring();
         assert!(lod.retiring.contains(&(3, -2)), "released without detail");
         assert!(lod.covered.contains(&(3, -2)));
@@ -5656,11 +5657,11 @@ mod tests {
             level: 1,
         };
         let children = parent.children();
-        lod.plan.nodes.insert(parent);
-        lod.plan.split.insert(parent);
+        Arc::make_mut(&mut lod.plan.nodes).insert(parent);
+        Arc::make_mut(&mut lod.plan.split).insert(parent);
         lod.active.extend(children);
         for child in children {
-            lod.plan.nodes.insert(child);
+            Arc::make_mut(&mut lod.plan.nodes).insert(child);
             lod.ready
                 .insert(child, Arc::new(vec![Column::default(); 256]));
             lod.complete.insert(child, true);
@@ -6167,7 +6168,7 @@ mod tests {
             z: 0,
             level: 3,
         };
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan.nodes).insert(key);
         assert_eq!(queued(&mut lod), [key]);
         lod.finish_any_sample(key, vec![Column::default(); CELLS * CELLS], true);
         assert!(lod.retry.contains_key(&key) && !lod.ready.contains_key(&key));
@@ -6207,7 +6208,7 @@ mod tests {
             z: 0,
             level: 3,
         };
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan.nodes).insert(key);
         lod.active.insert(key);
         lod.ready.insert(key, Arc::new(samples(70)));
         assert!(queued(&mut lod).is_empty());
@@ -6239,7 +6240,7 @@ mod tests {
             z: 0,
             level: 5,
         };
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan.nodes).insert(key);
         lod.ready
             .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
         let column = samples(70).swap_remove(0);
@@ -6254,7 +6255,7 @@ mod tests {
         for level in [0, 1, 2, 3, 5] {
             let mut lod = Lod::scheduler_for_test();
             let key = TileKey { x: 0, z: 0, level };
-            lod.plan.nodes.insert(key);
+            Arc::make_mut(&mut lod.plan.nodes).insert(key);
             lod.active.insert(key);
             lod.ready.insert(key, Arc::new(samples(70)));
             assert!(

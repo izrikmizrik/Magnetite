@@ -385,6 +385,7 @@ struct Data {
 struct OpenMod {
     id: String,
     settings: Vec<ModSetting>,
+    values: Vec<mod_api::SettingValue>,
     confirm_remove: bool,
 }
 
@@ -1475,6 +1476,9 @@ impl Boot {
         let Some(renderer) = &mut self.renderer else {
             return;
         };
+        if renderer.suspended {
+            return;
+        }
         match renderer.render(&loading_frame(&batch)) {
             Ok(true) => {
                 self.frame_missed = false;
@@ -1752,17 +1756,15 @@ impl Boot {
             settings: open
                 .settings
                 .iter()
-                .map(|setting| {
-                    let value = launcher_mod_settings::value(&self.game_dir, &row.id, setting);
-                    ModSettingLine {
-                        label: setting.label.clone(),
-                        value: launcher_mod_settings::shown(setting, value),
-                        kind: match value {
-                            SettingValue::Toggle(on) => ModSettingKind::Toggle(on),
-                            SettingValue::Color(rgb) => ModSettingKind::Color(rgb),
-                            _ => ModSettingKind::Step,
-                        },
-                    }
+                .zip(&open.values)
+                .map(|(setting, &value)| ModSettingLine {
+                    label: setting.label.clone(),
+                    value: launcher_mod_settings::shown(setting, value),
+                    kind: match value {
+                        SettingValue::Toggle(on) => ModSettingKind::Toggle(on),
+                        SettingValue::Color(rgb) => ModSettingKind::Color(rgb),
+                        _ => ModSettingKind::Step,
+                    },
                 })
                 .collect(),
             settings_note: lang::get(match row.code {
@@ -1988,7 +1990,9 @@ impl Boot {
             self.data.sizes = Some(sizes);
             changed = true;
         }
-        if let Some(picked) = (self.picked_file)() {
+        if self.picking.is_some()
+            && let Some(picked) = (self.picked_file)()
+        {
             changed = true;
             match (picked, self.picking.take()) {
                 (Ok(path), Some(PickKind::Picture)) => {
@@ -2084,9 +2088,14 @@ impl Boot {
         let settings = launcher_mod_settings::read(&self.game_dir)
             .remove(&id)
             .unwrap_or_default();
+        let values = settings
+            .iter()
+            .map(|setting| launcher_mod_settings::value(&self.game_dir, &id, setting))
+            .collect();
         self.open_mod = Some(OpenMod {
             id,
             settings,
+            values,
             confirm_remove: false,
         });
         if let Some(launcher) = self.launcher.as_mut() {
@@ -2498,13 +2507,17 @@ impl Boot {
             }
             Action::OpenMod(i) => self.open_mod(i),
             Action::ModStep(i, forward) => {
-                if let Some(open) = &self.open_mod
+                if let Some(open) = &mut self.open_mod
                     && let Some(setting) = open.settings.get(i)
                 {
-                    let now = launcher_mod_settings::value(&self.game_dir, &open.id, setting);
+                    let now = open.values.get(i).copied().unwrap_or_else(|| {
+                        launcher_mod_settings::value(&self.game_dir, &open.id, setting)
+                    });
                     let next = launcher_mod_settings::step(setting, now, forward);
                     if !launcher_mod_settings::store(&self.game_dir, &open.id, setting, next) {
                         note(self, "horizon.launcher.mods.settings.failed");
+                    } else if let Some(slot) = open.values.get_mut(i) {
+                        *slot = next;
                     }
                 }
             }
@@ -3243,6 +3256,14 @@ impl ApplicationHandler for Boot {
         }
         self.sync_screen();
         self.sync_surface_size();
+        if self.renderer.as_ref().is_some_and(|r| r.suspended) {
+            event_loop.set_control_flow(if self.ctrl.installing {
+                ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250))
+            } else {
+                ControlFlow::Wait
+            });
+            return;
+        }
         if self.ctrl.version != self.drawn || self.ctrl.installing || self.frame_missed {
             self.drawn = self.ctrl.version;
             self.frame_missed = false;

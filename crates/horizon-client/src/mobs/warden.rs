@@ -339,6 +339,71 @@ impl Warden {
     pub fn target(&self) -> Option<Who> {
         self.brain.mem.attack_target.value()
     }
+
+    /// Visits every mob id held anywhere in this warden's state without allocating.
+    /// Exhaustively matches [`Warden`], [`AngerManagement`], [`sculk::Data`], and [`sculk::Info`]
+    /// so adding new fields triggers a compile check.
+    pub fn for_each_linked_mob(&self, mut f: impl FnMut(u32)) {
+        let Warden {
+            anger,
+            vibration,
+            brain,
+            client_anger: _,
+            hurt_by,
+        } = self;
+        let AngerManagement {
+            suspects,
+            anger,
+            unloaded: _,
+            conversion_delay: _,
+            highest: _,
+        } = anger;
+        for &who in suspects {
+            if let Who::Mob(id) = who {
+                f(id);
+            }
+        }
+        for &who in anger.keys() {
+            if let Who::Mob(id) = who {
+                f(id);
+            }
+        }
+        let sculk::Data {
+            current,
+            travel: _,
+            selector: sculk::Selector { current: pending },
+            reload_particle: _,
+        } = vibration;
+        let mut visit_info = |info: &Info| {
+            let Info {
+                event: _,
+                distance: _,
+                pos: _,
+                source,
+                owner,
+                source_uuid: _,
+                owner_uuid: _,
+            } = info;
+            if let Some(horizon_client_core::who::EventSource::Mob(id)) = source {
+                f(*id);
+            }
+            if let Some(Who::Mob(id)) = owner {
+                f(*id);
+            }
+        };
+        if let Some(info) = current {
+            visit_info(info);
+        }
+        if let Some((info, _)) = pending {
+            visit_info(info);
+        }
+        brain.for_each_linked_mob(&mut f);
+        for &(who, _) in hurt_by {
+            if let Some(Who::Mob(id)) = who {
+                f(id);
+            }
+        }
+    }
 }
 
 pub fn register(m: &mut Mob) {
@@ -1329,6 +1394,93 @@ mod digging_tests {
                 .any(|e| matches!(e, MobEvent::DigParticles { .. })),
             "the animation is over: {out:?}"
         );
+    }
+
+    #[test]
+    fn for_each_linked_mob_matches_debug_scan() {
+        let mut state = Warden::default();
+        state.anger.suspects.push(Who::Mob(11));
+        state.anger.suspects.push(Who::Player);
+        state.anger.anger.insert(Who::Mob(12), 40);
+        state.hurt_by.push((Some(Who::Mob(13)), true));
+        state.brain.mem.attack_target.set(Who::Mob(14));
+        state.brain.mem.roar_target.set(Who::Mob(15));
+        state.brain.mem.nearest_attackable.set(Who::Mob(16));
+        state.brain.mem.nearest_visible_player.set(Who::Mob(17));
+        state
+            .brain
+            .mem
+            .nearest_visible_targetable_player
+            .set(Who::Mob(18));
+        state.brain.mem.nearest_players.set(vec![Who::Mob(19)]);
+        state
+            .brain
+            .mem
+            .nearest_visible_targetable_players
+            .set(vec![Who::Mob(20)]);
+        state.brain.mem.mobs.set(vec![Who::Mob(21)]);
+        state
+            .brain
+            .mem
+            .visible_mobs
+            .set(crate::mobs::villager_brain::Visible {
+                list: vec![Who::Mob(22)],
+                cache: vec![(Who::Mob(23), true)],
+            });
+        state
+            .brain
+            .mem
+            .look_target
+            .set(crate::mobs::villager_brain::Tracker::Entity(
+                Who::Mob(24),
+                true,
+            ));
+        state
+            .brain
+            .mem
+            .walk_target
+            .set(crate::mobs::villager_brain::WalkTarget {
+                target: crate::mobs::villager_brain::Tracker::Entity(Who::Mob(25), false),
+                speed: 1.0,
+                close: 2,
+            });
+        let info = |source, owner| Info {
+            event: "minecraft:step",
+            distance: 1.0,
+            pos: [0.0, 0.0, 0.0],
+            source,
+            owner,
+            source_uuid: None,
+            owner_uuid: None,
+        };
+        state.vibration.current = Some(info(
+            Some(horizon_client_core::who::EventSource::Mob(26)),
+            Some(Who::Mob(27)),
+        ));
+        state.vibration.selector.current = Some((
+            info(
+                Some(horizon_client_core::who::EventSource::Mob(28)),
+                Some(Who::Mob(29)),
+            ),
+            10,
+        ));
+
+        let mut direct = std::collections::BTreeSet::new();
+        state.for_each_linked_mob(|id| {
+            direct.insert(id);
+        });
+
+        let text = format!("{state:?}");
+        let mut rest = text.as_str();
+        let mut scanned = std::collections::BTreeSet::new();
+        while let Some(at) = rest.find("Mob(") {
+            rest = &rest[at + 4..];
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if let Ok(id) = rest[..digits].parse::<u32>() {
+                scanned.insert(id);
+            }
+        }
+        assert_eq!(direct, scanned);
     }
 }
 

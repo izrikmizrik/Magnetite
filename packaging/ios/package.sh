@@ -15,6 +15,7 @@ app="$work/Payload/Magnetite.app"
 mkdir -p "$app"
 cp "$binary" "$app/magnetite"
 chmod 755 "$app/magnetite"
+strip -x "$app/magnetite" || true
 cp "$root/packaging/ios/Info.plist" "$app/Info.plist"
 if [ -n "$wasm_std" ]; then
   cp "$wasm_std" "$app/horizon-wasm-std.wasm"

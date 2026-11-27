@@ -1050,14 +1050,26 @@ impl Writer {
             }
             Tag::IntArray(v) => {
                 self.count(v.len())?;
+                let byte_len = v
+                    .len()
+                    .checked_mul(4)
+                    .filter(|&n| n <= self.limits.max_bytes.saturating_sub(self.bytes.len()))
+                    .ok_or_else(|| self.error("byte limit exceeded"))?;
+                self.bytes.reserve(byte_len);
                 for item in v {
-                    self.put(&item.to_be_bytes())?;
+                    self.bytes.extend_from_slice(&item.to_be_bytes());
                 }
             }
             Tag::LongArray(v) => {
                 self.count(v.len())?;
+                let byte_len = v
+                    .len()
+                    .checked_mul(8)
+                    .filter(|&n| n <= self.limits.max_bytes.saturating_sub(self.bytes.len()))
+                    .ok_or_else(|| self.error("byte limit exceeded"))?;
+                self.bytes.reserve(byte_len);
                 for item in v {
-                    self.put(&item.to_be_bytes())?;
+                    self.bytes.extend_from_slice(&item.to_be_bytes());
                 }
             }
         }
